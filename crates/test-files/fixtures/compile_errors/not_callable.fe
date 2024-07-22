@@ -1,0 +1,9 @@
+contract Foo {
+    fn call_int() {
+        5()
+    }
+
+    fn call_self(self) {
+        self()
+    }
+}

@@ -1,0 +1,5 @@
+type Tup = (u8, address)
+
+contract Foo {
+    tup: Tup
+}

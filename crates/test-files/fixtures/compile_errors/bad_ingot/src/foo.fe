@@ -1,0 +1,9 @@
+use ingot::bing::Bong::*
+use ingot::bing::Tong
+use ingot::bing as std
+
+struct Foo {
+    pub my_num: u256
+}
+
+struct Bar {}

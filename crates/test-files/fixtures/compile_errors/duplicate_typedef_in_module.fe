@@ -1,0 +1,7 @@
+type bar = u8
+
+type bar = u8
+
+contract Foo {
+    pub fn bar() {}
+}

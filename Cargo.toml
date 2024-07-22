@@ -1,0 +1,9 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[profile.dev.package.solc]
+opt-level = 3
+
+[profile.dev]
+debug = 1

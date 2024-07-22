@@ -1,0 +1,7 @@
+struct tuple_bool_address_ {
+    m: bool
+}
+
+contract o {
+    e: (bool, address)
+}

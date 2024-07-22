@@ -1,0 +1,9 @@
+contract Foo {
+    pub fn foo() {
+        revert
+    }
+
+    pub fn bar() -> u256 {
+        return foo()
+    }
+}

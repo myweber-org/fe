@@ -1,0 +1,7 @@
+contract Foo {
+    fn pure() {}
+
+    fn bar(self) {
+        self.pure()
+    }
+}

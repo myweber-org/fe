@@ -1,0 +1,7 @@
+contract Foo {
+    pub fn __call__() {}
+
+    fn bar(self) {
+        self.__call__()
+    }
+}
