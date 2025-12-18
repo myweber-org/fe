@@ -107,4 +107,79 @@ mod tests {
         assert_eq!(result1, result2);
         assert_eq!(processor.cache_stats(), (1, 3));
     }
+}use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+pub struct DataProcessor {
+    file_path: String,
+}
+
+impl DataProcessor {
+    pub fn new(file_path: &str) -> Self {
+        DataProcessor {
+            file_path: file_path.to_string(),
+        }
+    }
+
+    pub fn process(&self) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let path = Path::new(&self.file_path);
+        let file = File::open(path)?;
+        let mut rdr = csv::Reader::from_reader(file);
+        
+        let mut records = Vec::new();
+        for result in rdr.records() {
+            let record = result?;
+            let row: Vec<String> = record.iter().map(|field| field.to_string()).collect();
+            
+            if self.validate_row(&row) {
+                records.push(row);
+            } else {
+                eprintln!("Warning: Skipping invalid row: {:?}", row);
+            }
+        }
+        
+        Ok(records)
+    }
+
+    fn validate_row(&self, row: &[String]) -> bool {
+        !row.is_empty() && row.iter().all(|field| !field.trim().is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processor() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "John,30,New York").unwrap();
+        writeln!(temp_file, "Alice,25,London").unwrap();
+        
+        let processor = DataProcessor::new(temp_file.path().to_str().unwrap());
+        let result = processor.process().unwrap();
+        
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], vec!["John", "30", "New York"]);
+        assert_eq!(result[1], vec!["Alice", "25", "London"]);
+    }
+
+    #[test]
+    fn test_invalid_data_skipping() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "field1,field2").unwrap();
+        writeln!(temp_file, "value1,").unwrap();
+        writeln!(temp_file, ",value2").unwrap();
+        writeln!(temp_file, "valid1,valid2").unwrap();
+        
+        let processor = DataProcessor::new(temp_file.path().to_str().unwrap());
+        let result = processor.process().unwrap();
+        
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], vec!["valid1", "valid2"]);
+    }
 }
