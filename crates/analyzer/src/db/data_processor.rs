@@ -122,3 +122,138 @@ mod tests {
         assert!((stats.0 - expected_mean).abs() < 0.0001);
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    validators: HashMap<String, Box<dyn Fn(&str) -> bool>>,
+    transformers: HashMap<String, Box<dyn Fn(String) -> String>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        let mut processor = DataProcessor {
+            validators: HashMap::new(),
+            transformers: HashMap::new(),
+        };
+        
+        processor.register_default_validators();
+        processor.register_default_transformers();
+        
+        processor
+    }
+    
+    fn register_default_validators(&mut self) {
+        self.validators.insert(
+            "email".to_string(),
+            Box::new(|input: &str| input.contains('@') && input.contains('.')),
+        );
+        
+        self.validators.insert(
+            "numeric".to_string(),
+            Box::new(|input: &str| input.chars().all(|c| c.is_ascii_digit())),
+        );
+        
+        self.validators.insert(
+            "alphanumeric".to_string(),
+            Box::new(|input: &str| input.chars().all(|c| c.is_ascii_alphanumeric())),
+        );
+    }
+    
+    fn register_default_transformers(&mut self) {
+        self.transformers.insert(
+            "uppercase".to_string(),
+            Box::new(|input: String| input.to_uppercase()),
+        );
+        
+        self.transformers.insert(
+            "lowercase".to_string(),
+            Box::new(|input: String| input.to_lowercase()),
+        );
+        
+        self.transformers.insert(
+            "trim".to_string(),
+            Box::new(|input: String| input.trim().to_string()),
+        );
+    }
+    
+    pub fn validate(&self, validator_name: &str, input: &str) -> bool {
+        match self.validators.get(validator_name) {
+            Some(validator) => validator(input),
+            None => false,
+        }
+    }
+    
+    pub fn transform(&self, transformer_name: &str, input: String) -> String {
+        match self.transformers.get(transformer_name) {
+            Some(transformer) => transformer(input),
+            None => input,
+        }
+    }
+    
+    pub fn process_data(&self, input: &str) -> Result<String, String> {
+        let trimmed = self.transform("trim", input.to_string());
+        
+        if trimmed.is_empty() {
+            return Err("Input cannot be empty after trimming".to_string());
+        }
+        
+        if !self.validate("alphanumeric", &trimmed) {
+            return Err("Input contains invalid characters".to_string());
+        }
+        
+        let processed = self.transform("uppercase", trimmed);
+        Ok(processed)
+    }
+    
+    pub fn register_validator<F>(&mut self, name: String, validator: F)
+    where
+        F: Fn(&str) -> bool + 'static,
+    {
+        self.validators.insert(name, Box::new(validator));
+    }
+    
+    pub fn register_transformer<F>(&mut self, name: String, transformer: F)
+    where
+        F: Fn(String) -> String + 'static,
+    {
+        self.transformers.insert(name, Box::new(transformer));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_email_validation() {
+        let processor = DataProcessor::new();
+        assert!(processor.validate("email", "test@example.com"));
+        assert!(!processor.validate("email", "invalid-email"));
+    }
+    
+    #[test]
+    fn test_numeric_validation() {
+        let processor = DataProcessor::new();
+        assert!(processor.validate("numeric", "12345"));
+        assert!(!processor.validate("numeric", "123abc"));
+    }
+    
+    #[test]
+    fn test_data_processing() {
+        let processor = DataProcessor::new();
+        let result = processor.process_data("  hello123  ");
+        assert_eq!(result, Ok("HELLO123".to_string()));
+        
+        let invalid_result = processor.process_data("  hello!@#  ");
+        assert!(invalid_result.is_err());
+    }
+    
+    #[test]
+    fn test_custom_validator() {
+        let mut processor = DataProcessor::new();
+        processor.register_validator("even_length".to_string(), |input: &str| input.len() % 2 == 0);
+        
+        assert!(processor.validate("even_length", "abcd"));
+        assert!(!processor.validate("even_length", "abc"));
+    }
+}
