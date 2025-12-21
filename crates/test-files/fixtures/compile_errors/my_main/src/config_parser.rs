@@ -117,4 +117,90 @@ mod tests {
         assert_eq!(config.get_with_default("timeout", "10"), "30");
         assert_eq!(config.get_with_default("unknown", "default_value"), "default_value");
     }
+}use std::collections::HashMap;
+use std::fs;
+use std::io;
+
+#[derive(Debug, PartialEq)]
+pub struct Config {
+    pub settings: HashMap<String, String>,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        Config {
+            settings: HashMap::new(),
+        }
+    }
+
+    pub fn from_file(path: &str) -> Result<Self, io::Error> {
+        let content = fs::read_to_string(path)?;
+        let mut config = Config::new();
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            if let Some((key, value)) = trimmed.split_once('=') {
+                config.settings.insert(
+                    key.trim().to_string(),
+                    value.trim().trim_matches('"').to_string(),
+                );
+            }
+        }
+
+        Ok(config)
+    }
+
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.settings.get(key)
+    }
+
+    pub fn get_or_default(&self, key: &str, default: &str) -> String {
+        self.settings
+            .get(key)
+            .map(|s| s.as_str())
+            .unwrap_or(default)
+            .to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_empty_config() {
+        let config = Config::new();
+        assert!(config.settings.is_empty());
+    }
+
+    #[test]
+    fn test_parse_config() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "HOST=localhost").unwrap();
+        writeln!(file, "PORT=8080").unwrap();
+        writeln!(file, "# This is a comment").unwrap();
+        writeln!(file, "").unwrap();
+        writeln!(file, "ENVIRONMENT=\"production\"").unwrap();
+
+        let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.get("HOST"), Some(&"localhost".to_string()));
+        assert_eq!(config.get("PORT"), Some(&"8080".to_string()));
+        assert_eq!(config.get("ENVIRONMENT"), Some(&"production".to_string()));
+        assert_eq!(config.get("MISSING"), None);
+    }
+
+    #[test]
+    fn test_get_or_default() {
+        let mut config = Config::new();
+        config.settings.insert("EXISTING".to_string(), "value".to_string());
+
+        assert_eq!(config.get_or_default("EXISTING", "default"), "value");
+        assert_eq!(config.get_or_default("MISSING", "default"), "default");
+    }
 }
