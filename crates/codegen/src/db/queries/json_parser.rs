@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::str::Chars;
 
 #[derive(Debug, PartialEq)]
 pub enum JsonValue {
@@ -10,24 +11,27 @@ pub enum JsonValue {
     Object(HashMap<String, JsonValue>),
 }
 
-pub struct JsonParser {
-    input: String,
-    pos: usize,
+#[derive(Debug)]
+pub struct JsonParser<'a> {
+    chars: Chars<'a>,
+    current: Option<char>,
 }
 
-impl JsonParser {
-    pub fn new(input: &str) -> Self {
-        JsonParser {
-            input: input.to_string(),
-            pos: 0,
-        }
+impl<'a> JsonParser<'a> {
+    pub fn new(input: &'a str) -> Self {
+        let mut chars = input.chars();
+        let current = chars.next();
+        JsonParser { chars, current }
+    }
+
+    fn advance(&mut self) {
+        self.current = self.chars.next();
     }
 
     fn skip_whitespace(&mut self) {
-        while self.pos < self.input.len() {
-            let c = self.input.chars().nth(self.pos).unwrap();
+        while let Some(c) = self.current {
             if c.is_whitespace() {
-                self.pos += 1;
+                self.advance();
             } else {
                 break;
             }
@@ -36,131 +40,132 @@ impl JsonParser {
 
     fn parse_value(&mut self) -> Result<JsonValue, String> {
         self.skip_whitespace();
-        if self.pos >= self.input.len() {
-            return Err("Unexpected end of input".to_string());
-        }
-
-        let c = self.input.chars().nth(self.pos).unwrap();
-        match c {
-            'n' => self.parse_null(),
-            't' | 'f' => self.parse_bool(),
-            '"' => self.parse_string(),
-            '[' => self.parse_array(),
-            '{' => self.parse_object(),
-            '-' | '0'..='9' => self.parse_number(),
-            _ => Err(format!("Unexpected character: {}", c)),
+        match self.current {
+            Some('n') => self.parse_null(),
+            Some('t') | Some('f') => self.parse_bool(),
+            Some('"') => self.parse_string(),
+            Some('[') => self.parse_array(),
+            Some('{') => self.parse_object(),
+            Some(c) if c.is_digit(10) || c == '-' => self.parse_number(),
+            _ => Err("Invalid JSON value".to_string()),
         }
     }
 
     fn parse_null(&mut self) -> Result<JsonValue, String> {
-        if self.input[self.pos..].starts_with("null") {
-            self.pos += 4;
-            Ok(JsonValue::Null)
-        } else {
-            Err("Expected 'null'".to_string())
+        let expected = "null";
+        for ch in expected.chars() {
+            match self.current {
+                Some(c) if c == ch => self.advance(),
+                _ => return Err("Invalid null value".to_string()),
+            }
         }
+        Ok(JsonValue::Null)
     }
 
     fn parse_bool(&mut self) -> Result<JsonValue, String> {
-        if self.input[self.pos..].starts_with("true") {
-            self.pos += 4;
+        if let Some('t') = self.current {
+            let expected = "true";
+            for ch in expected.chars() {
+                match self.current {
+                    Some(c) if c == ch => self.advance(),
+                    _ => return Err("Invalid boolean value".to_string()),
+                }
+            }
             Ok(JsonValue::Bool(true))
-        } else if self.input[self.pos..].starts_with("false") {
-            self.pos += 5;
-            Ok(JsonValue::Bool(false))
         } else {
-            Err("Expected 'true' or 'false'".to_string())
+            let expected = "false";
+            for ch in expected.chars() {
+                match self.current {
+                    Some(c) if c == ch => self.advance(),
+                    _ => return Err("Invalid boolean value".to_string()),
+                }
+            }
+            Ok(JsonValue::Bool(false))
         }
     }
 
     fn parse_string(&mut self) -> Result<JsonValue, String> {
-        self.pos += 1; // Skip opening quote
-        let start = self.pos;
-        let mut escaped = false;
+        self.advance(); // Skip opening quote
         let mut result = String::new();
 
-        while self.pos < self.input.len() {
-            let c = self.input.chars().nth(self.pos).unwrap();
-            if escaped {
-                match c {
-                    '"' => result.push('"'),
-                    '\\' => result.push('\\'),
-                    '/' => result.push('/'),
-                    'b' => result.push('\x08'),
-                    'f' => result.push('\x0c'),
-                    'n' => result.push('\n'),
-                    'r' => result.push('\r'),
-                    't' => result.push('\t'),
-                    _ => return Err(format!("Invalid escape sequence: \\{}", c)),
-                }
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                self.pos += 1;
+        while let Some(c) = self.current {
+            if c == '"' {
+                self.advance();
                 return Ok(JsonValue::String(result));
+            } else if c == '\\' {
+                self.advance();
+                if let Some(escaped) = self.current {
+                    match escaped {
+                        '"' => result.push('"'),
+                        '\\' => result.push('\\'),
+                        '/' => result.push('/'),
+                        'b' => result.push('\x08'),
+                        'f' => result.push('\x0c'),
+                        'n' => result.push('\n'),
+                        'r' => result.push('\r'),
+                        't' => result.push('\t'),
+                        _ => return Err("Invalid escape sequence".to_string()),
+                    }
+                    self.advance();
+                } else {
+                    return Err("Unterminated string".to_string());
+                }
             } else {
                 result.push(c);
+                self.advance();
             }
-            self.pos += 1;
         }
 
         Err("Unterminated string".to_string())
     }
 
     fn parse_number(&mut self) -> Result<JsonValue, String> {
-        let start = self.pos;
-        let mut has_dot = false;
-        let mut has_exp = false;
+        let mut num_str = String::new();
+        let mut has_decimal = false;
+        let mut has_exponent = false;
 
-        while self.pos < self.input.len() {
-            let c = self.input.chars().nth(self.pos).unwrap();
-            match c {
-                '0'..='9' => {}
-                '.' => {
-                    if has_dot || has_exp {
-                        return Err("Invalid number format".to_string());
-                    }
-                    has_dot = true;
-                }
-                'e' | 'E' => {
-                    if has_exp {
-                        return Err("Invalid number format".to_string());
-                    }
-                    has_exp = true;
-                    self.pos += 1;
-                    if self.pos < self.input.len() {
-                        let next = self.input.chars().nth(self.pos).unwrap();
-                        if next == '+' || next == '-' || next.is_digit(10) {
-                            continue;
-                        }
-                    }
-                    return Err("Invalid exponent".to_string());
-                }
-                '+' | '-' => {
-                    if self.pos != start && !has_exp {
-                        return Err("Invalid number format".to_string());
-                    }
-                }
-                _ => break,
-            }
-            self.pos += 1;
+        if let Some('-') = self.current {
+            num_str.push('-');
+            self.advance();
         }
 
-        let num_str = &self.input[start..self.pos];
+        while let Some(c) = self.current {
+            if c.is_digit(10) {
+                num_str.push(c);
+                self.advance();
+            } else if c == '.' && !has_decimal && !has_exponent {
+                num_str.push(c);
+                has_decimal = true;
+                self.advance();
+            } else if (c == 'e' || c == 'E') && !has_exponent {
+                num_str.push(c);
+                has_exponent = true;
+                self.advance();
+
+                if let Some(sign) = self.current {
+                    if sign == '+' || sign == '-' {
+                        num_str.push(sign);
+                        self.advance();
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
         match num_str.parse::<f64>() {
             Ok(num) => Ok(JsonValue::Number(num)),
-            Err(_) => Err("Invalid number".to_string()),
+            Err(_) => Err("Invalid number format".to_string()),
         }
     }
 
     fn parse_array(&mut self) -> Result<JsonValue, String> {
-        self.pos += 1; // Skip '['
+        self.advance(); // Skip '['
         self.skip_whitespace();
         let mut array = Vec::new();
 
-        if self.pos < self.input.len() && self.input.chars().nth(self.pos).unwrap() == ']' {
-            self.pos += 1;
+        if let Some(']') = self.current {
+            self.advance();
             return Ok(JsonValue::Array(array));
         }
 
@@ -169,20 +174,16 @@ impl JsonParser {
             array.push(value);
             self.skip_whitespace();
 
-            if self.pos >= self.input.len() {
-                return Err("Unterminated array".to_string());
-            }
-
-            let c = self.input.chars().nth(self.pos).unwrap();
-            if c == ']' {
-                self.pos += 1;
-                break;
-            } else if c == ',' {
-                self.pos += 1;
-                self.skip_whitespace();
-                continue;
-            } else {
-                return Err(format!("Expected ',' or ']', found: {}", c));
+            match self.current {
+                Some(',') => {
+                    self.advance();
+                    self.skip_whitespace();
+                }
+                Some(']') => {
+                    self.advance();
+                    break;
+                }
+                _ => return Err("Expected ',' or ']' in array".to_string()),
             }
         }
 
@@ -190,49 +191,42 @@ impl JsonParser {
     }
 
     fn parse_object(&mut self) -> Result<JsonValue, String> {
-        self.pos += 1; // Skip '{'
+        self.advance(); // Skip '{'
         self.skip_whitespace();
         let mut object = HashMap::new();
 
-        if self.pos < self.input.len() && self.input.chars().nth(self.pos).unwrap() == '}' {
-            self.pos += 1;
+        if let Some('}') = self.current {
+            self.advance();
             return Ok(JsonValue::Object(object));
         }
 
         loop {
             self.skip_whitespace();
-            if self.pos >= self.input.len() {
-                return Err("Unterminated object".to_string());
-            }
-
-            let key = match self.parse_value()? {
+            let key = match self.parse_string()? {
                 JsonValue::String(s) => s,
                 _ => return Err("Object key must be a string".to_string()),
             };
 
             self.skip_whitespace();
-            if self.pos >= self.input.len() || self.input.chars().nth(self.pos).unwrap() != ':' {
-                return Err("Expected ':' after object key".to_string());
+            match self.current {
+                Some(':') => self.advance(),
+                _ => return Err("Expected ':' after object key".to_string()),
             }
-            self.pos += 1;
 
             let value = self.parse_value()?;
             object.insert(key, value);
-
             self.skip_whitespace();
-            if self.pos >= self.input.len() {
-                return Err("Unterminated object".to_string());
-            }
 
-            let c = self.input.chars().nth(self.pos).unwrap();
-            if c == '}' {
-                self.pos += 1;
-                break;
-            } else if c == ',' {
-                self.pos += 1;
-                continue;
-            } else {
-                return Err(format!("Expected ',' or '}}', found: {}", c));
+            match self.current {
+                Some(',') => {
+                    self.advance();
+                    self.skip_whitespace();
+                }
+                Some('}') => {
+                    self.advance();
+                    break;
+                }
+                _ => return Err("Expected ',' or '}' in object".to_string()),
             }
         }
 
@@ -242,11 +236,16 @@ impl JsonParser {
     pub fn parse(&mut self) -> Result<JsonValue, String> {
         let result = self.parse_value()?;
         self.skip_whitespace();
-        if self.pos < self.input.len() {
+        if self.current.is_some() {
             return Err("Trailing characters after JSON value".to_string());
         }
         Ok(result)
     }
+}
+
+pub fn parse_json(input: &str) -> Result<JsonValue, String> {
+    let mut parser = JsonParser::new(input);
+    parser.parse()
 }
 
 #[cfg(test)]
@@ -255,65 +254,59 @@ mod tests {
 
     #[test]
     fn test_parse_null() {
-        let mut parser = JsonParser::new("null");
-        assert_eq!(parser.parse(), Ok(JsonValue::Null));
+        assert_eq!(parse_json("null").unwrap(), JsonValue::Null);
     }
 
     #[test]
     fn test_parse_bool() {
-        let mut parser = JsonParser::new("true");
-        assert_eq!(parser.parse(), Ok(JsonValue::Bool(true)));
-
-        let mut parser = JsonParser::new("false");
-        assert_eq!(parser.parse(), Ok(JsonValue::Bool(false)));
+        assert_eq!(parse_json("true").unwrap(), JsonValue::Bool(true));
+        assert_eq!(parse_json("false").unwrap(), JsonValue::Bool(false));
     }
 
     #[test]
     fn test_parse_number() {
-        let mut parser = JsonParser::new("42");
-        assert_eq!(parser.parse(), Ok(JsonValue::Number(42.0)));
-
-        let mut parser = JsonParser::new("-3.14");
-        assert_eq!(parser.parse(), Ok(JsonValue::Number(-3.14)));
-
-        let mut parser = JsonParser::new("1.23e-4");
-        assert_eq!(parser.parse(), Ok(JsonValue::Number(1.23e-4)));
+        assert_eq!(parse_json("42").unwrap(), JsonValue::Number(42.0));
+        assert_eq!(parse_json("-3.14").unwrap(), JsonValue::Number(-3.14));
+        assert_eq!(parse_json("1.23e4").unwrap(), JsonValue::Number(12300.0));
     }
 
     #[test]
     fn test_parse_string() {
-        let mut parser = JsonParser::new(r#""hello world""#);
         assert_eq!(
-            parser.parse(),
-            Ok(JsonValue::String("hello world".to_string()))
+            parse_json(r#""hello""#).unwrap(),
+            JsonValue::String("hello".to_string())
         );
-
-        let mut parser = JsonParser::new(r#""escape\nsequence""#);
         assert_eq!(
-            parser.parse(),
-            Ok(JsonValue::String("escape\nsequence".to_string()))
+            parse_json(r#""escape\"test""#).unwrap(),
+            JsonValue::String("escape\"test".to_string())
         );
     }
 
     #[test]
     fn test_parse_array() {
-        let mut parser = JsonParser::new("[1, 2, 3]");
-        assert_eq!(
-            parser.parse(),
-            Ok(JsonValue::Array(vec![
-                JsonValue::Number(1.0),
-                JsonValue::Number(2.0),
-                JsonValue::Number(3.0),
-            ]))
-        );
+        let result = parse_json("[1, 2, 3]").unwrap();
+        if let JsonValue::Array(arr) = result {
+            assert_eq!(arr.len(), 3);
+            assert_eq!(arr[0], JsonValue::Number(1.0));
+            assert_eq!(arr[1], JsonValue::Number(2.0));
+            assert_eq!(arr[2], JsonValue::Number(3.0));
+        } else {
+            panic!("Expected array");
+        }
     }
 
     #[test]
     fn test_parse_object() {
-        let mut parser = JsonParser::new(r#"{"key": "value", "num": 42}"#);
-        let mut expected = HashMap::new();
-        expected.insert("key".to_string(), JsonValue::String("value".to_string()));
-        expected.insert("num".to_string(), JsonValue::Number(42.0));
-        assert_eq!(parser.parse(), Ok(JsonValue::Object(expected)));
+        let result = parse_json(r#"{"key": "value", "num": 42}"#).unwrap();
+        if let JsonValue::Object(obj) = result {
+            assert_eq!(obj.len(), 2);
+            assert_eq!(
+                obj.get("key"),
+                Some(&JsonValue::String("value".to_string()))
+            );
+            assert_eq!(obj.get("num"), Some(&JsonValue::Number(42.0)));
+        } else {
+            panic!("Expected object");
+        }
     }
 }
