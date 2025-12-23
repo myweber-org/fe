@@ -278,3 +278,153 @@ mod tests {
         assert_eq!(averages, vec![20.0, 30.0]);
     }
 }
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidInput(String),
+    TransformationFailed(String),
+    ValidationError(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
+            ProcessingError::TransformationFailed(msg) => write!(f, "Transformation failed: {}", msg),
+            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    threshold: f64,
+    max_items: usize,
+}
+
+impl DataProcessor {
+    pub fn new(threshold: f64, max_items: usize) -> Result<Self, ProcessingError> {
+        if threshold < 0.0 || threshold > 1.0 {
+            return Err(ProcessingError::InvalidInput(
+                "Threshold must be between 0.0 and 1.0".to_string(),
+            ));
+        }
+        if max_items == 0 {
+            return Err(ProcessingError::InvalidInput(
+                "Max items must be greater than zero".to_string(),
+            ));
+        }
+        Ok(DataProcessor {
+            threshold,
+            max_items,
+        })
+    }
+
+    pub fn process_data(&self, input: &[f64]) -> Result<Vec<f64>, ProcessingError> {
+        if input.len() > self.max_items {
+            return Err(ProcessingError::ValidationError(format!(
+                "Input length {} exceeds maximum allowed {}",
+                input.len(),
+                self.max_items
+            )));
+        }
+
+        let filtered: Vec<f64> = input
+            .iter()
+            .filter(|&&value| value >= self.threshold)
+            .cloned()
+            .collect();
+
+        if filtered.is_empty() {
+            return Err(ProcessingError::TransformationFailed(
+                "No values meet the threshold criteria".to_string(),
+            ));
+        }
+
+        let normalized = self.normalize_values(&filtered)?;
+        Ok(normalized)
+    }
+
+    fn normalize_values(&self, values: &[f64]) -> Result<Vec<f64>, ProcessingError> {
+        let max_value = values
+            .iter()
+            .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+        if max_value <= 0.0 {
+            return Err(ProcessingError::TransformationFailed(
+                "Cannot normalize non-positive values".to_string(),
+            ));
+        }
+
+        let normalized: Vec<f64> = values
+            .iter()
+            .map(|&value| value / max_value)
+            .collect();
+
+        Ok(normalized)
+    }
+
+    pub fn calculate_statistics(&self, data: &[f64]) -> Result<(f64, f64), ProcessingError> {
+        if data.is_empty() {
+            return Err(ProcessingError::InvalidInput(
+                "Cannot calculate statistics for empty dataset".to_string(),
+            ));
+        }
+
+        let sum: f64 = data.iter().sum();
+        let mean = sum / data.len() as f64;
+
+        let variance: f64 = data
+            .iter()
+            .map(|&value| {
+                let diff = value - mean;
+                diff * diff
+            })
+            .sum::<f64>()
+            / data.len() as f64;
+
+        let std_dev = variance.sqrt();
+        Ok((mean, std_dev))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_processor_creation() {
+        let processor = DataProcessor::new(0.5, 100);
+        assert!(processor.is_ok());
+
+        let invalid_processor = DataProcessor::new(1.5, 100);
+        assert!(invalid_processor.is_err());
+    }
+
+    #[test]
+    fn test_data_processing() {
+        let processor = DataProcessor::new(0.3, 10).unwrap();
+        let input = vec![0.1, 0.4, 0.5, 0.2, 0.8];
+        let result = processor.process_data(&input);
+        assert!(result.is_ok());
+
+        let processed = result.unwrap();
+        assert_eq!(processed.len(), 3);
+        assert!(processed.iter().all(|&x| x >= 0.0 && x <= 1.0));
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let processor = DataProcessor::new(0.0, 100).unwrap();
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let stats = processor.calculate_statistics(&data);
+        assert!(stats.is_ok());
+
+        let (mean, std_dev) = stats.unwrap();
+        assert_eq!(mean, 3.0);
+        assert!(std_dev > 1.41 && std_dev < 1.42);
+    }
+}
