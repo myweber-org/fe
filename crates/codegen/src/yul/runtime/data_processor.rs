@@ -217,3 +217,134 @@ mod tests {
         assert_eq!(processor.average_value(), Some(200.0));
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    EmptyName,
+    NegativeValue,
+    DuplicateTag,
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "ID must be greater than zero"),
+            ValidationError::EmptyName => write!(f, "Name cannot be empty"),
+            ValidationError::NegativeValue => write!(f, "Value cannot be negative"),
+            ValidationError::DuplicateTag => write!(f, "Tags must be unique"),
+        }
+    }
+}
+
+impl Error for ValidationError {}
+
+pub fn validate_record(record: &DataRecord) -> Result<(), ValidationError> {
+    if record.id == 0 {
+        return Err(ValidationError::InvalidId);
+    }
+    
+    if record.name.trim().is_empty() {
+        return Err(ValidationError::EmptyName);
+    }
+    
+    if record.value < 0.0 {
+        return Err(ValidationError::NegativeValue);
+    }
+    
+    let mut seen_tags = HashMap::new();
+    for tag in &record.tags {
+        if seen_tags.insert(tag, true).is_some() {
+            return Err(ValidationError::DuplicateTag);
+        }
+    }
+    
+    Ok(())
+}
+
+pub fn transform_record(record: &DataRecord) -> DataRecord {
+    let normalized_name = record.name.trim().to_lowercase();
+    let adjusted_value = if record.value > 100.0 {
+        record.value * 0.9
+    } else {
+        record.value
+    };
+    
+    let mut sorted_tags = record.tags.clone();
+    sorted_tags.sort();
+    sorted_tags.dedup();
+    
+    DataRecord {
+        id: record.id,
+        name: normalized_name,
+        value: adjusted_value,
+        tags: sorted_tags,
+    }
+}
+
+pub fn process_records(records: Vec<DataRecord>) -> Result<Vec<DataRecord>, ValidationError> {
+    let mut processed = Vec::with_capacity(records.len());
+    
+    for record in records {
+        validate_record(&record)?;
+        let transformed = transform_record(&record);
+        processed.push(transformed);
+    }
+    
+    Ok(processed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_valid_record() {
+        let record = DataRecord {
+            id: 1,
+            name: "Test Record".to_string(),
+            value: 42.5,
+            tags: vec!["tag1".to_string(), "tag2".to_string()],
+        };
+        
+        assert!(validate_record(&record).is_ok());
+    }
+    
+    #[test]
+    fn test_invalid_id() {
+        let record = DataRecord {
+            id: 0,
+            name: "Test".to_string(),
+            value: 10.0,
+            tags: vec![],
+        };
+        
+        assert!(matches!(validate_record(&record), Err(ValidationError::InvalidId)));
+    }
+    
+    #[test]
+    fn test_transform_record() {
+        let record = DataRecord {
+            id: 1,
+            name: "  TEST Record  ".to_string(),
+            value: 150.0,
+            tags: vec!["beta".to_string(), "alpha".to_string(), "beta".to_string()],
+        };
+        
+        let transformed = transform_record(&record);
+        assert_eq!(transformed.name, "test record");
+        assert_eq!(transformed.value, 135.0);
+        assert_eq!(transformed.tags, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+}
