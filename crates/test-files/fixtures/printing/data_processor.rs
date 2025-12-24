@@ -1,66 +1,72 @@
 use std::error::Error;
 use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-pub struct DataSet {
-    values: Vec<f64>,
+pub struct DataProcessor {
+    delimiter: char,
+    has_header: bool,
 }
 
-impl DataSet {
-    pub fn new() -> Self {
-        DataSet { values: Vec::new() }
+impl DataProcessor {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        DataProcessor {
+            delimiter,
+            has_header,
+        }
     }
 
-    pub fn from_csv<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
-        let file = File::open(path)?;
-        let mut rdr = csv::Reader::from_reader(file);
-        let mut values = Vec::new();
+    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut records = Vec::new();
+        let mut lines = reader.lines();
 
-        for result in rdr.records() {
-            let record = result?;
-            if let Some(field) = record.get(0) {
-                if let Ok(num) = field.parse::<f64>() {
-                    values.push(num);
+        if self.has_header {
+            lines.next();
+        }
+
+        for line_result in lines {
+            let line = line_result?;
+            let fields: Vec<String> = line
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+            
+            if !fields.is_empty() {
+                records.push(fields);
+            }
+        }
+
+        Ok(records)
+    }
+
+    pub fn validate_record(&self, record: &[String]) -> bool {
+        !record.is_empty() && record.iter().all(|field| !field.is_empty())
+    }
+
+    pub fn calculate_statistics(&self, records: &[Vec<String>], column_index: usize) -> Option<(f64, f64)> {
+        let mut values = Vec::new();
+        
+        for record in records {
+            if column_index < record.len() {
+                if let Ok(value) = record[column_index].parse::<f64>() {
+                    values.push(value);
                 }
             }
         }
 
-        Ok(DataSet { values })
-    }
-
-    pub fn add_value(&mut self, value: f64) {
-        self.values.push(value);
-    }
-
-    pub fn mean(&self) -> Option<f64> {
-        if self.values.is_empty() {
+        if values.is_empty() {
             return None;
         }
-        let sum: f64 = self.values.iter().sum();
-        Some(sum / self.values.len() as f64)
-    }
 
-    pub fn variance(&self) -> Option<f64> {
-        if self.values.len() < 2 {
-            return None;
-        }
-        let mean = self.mean().unwrap();
-        let sum_sq_diff: f64 = self.values.iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum();
-        Some(sum_sq_diff / (self.values.len() - 1) as f64)
-    }
-
-    pub fn standard_deviation(&self) -> Option<f64> {
-        self.variance().map(|v| v.sqrt())
-    }
-
-    pub fn count(&self) -> usize {
-        self.values.len()
-    }
-
-    pub fn clear(&mut self) {
-        self.values.clear();
+        let sum: f64 = values.iter().sum();
+        let mean = sum / values.len() as f64;
+        let variance: f64 = values.iter()
+            .map(|v| (v - mean).powi(2))
+            .sum::<f64>() / values.len() as f64;
+        
+        Some((mean, variance.sqrt()))
     }
 }
 
@@ -71,52 +77,23 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_empty_dataset() {
-        let ds = DataSet::new();
-        assert_eq!(ds.count(), 0);
-        assert_eq!(ds.mean(), None);
-        assert_eq!(ds.variance(), None);
-    }
+    fn test_data_processing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,score").unwrap();
+        writeln!(temp_file, "Alice,25,95.5").unwrap();
+        writeln!(temp_file, "Bob,30,87.2").unwrap();
+        writeln!(temp_file, "Charlie,35,91.8").unwrap();
 
-    #[test]
-    fn test_basic_statistics() {
-        let mut ds = DataSet::new();
-        ds.add_value(1.0);
-        ds.add_value(2.0);
-        ds.add_value(3.0);
-        ds.add_value(4.0);
-        ds.add_value(5.0);
-
-        assert_eq!(ds.count(), 5);
-        assert_eq!(ds.mean(), Some(3.0));
-        assert_eq!(ds.variance(), Some(2.5));
-        assert_eq!(ds.standard_deviation(), Some(2.5_f64.sqrt()));
-    }
-
-    #[test]
-    fn test_csv_parsing() -> Result<(), Box<dyn Error>> {
-        let mut tmp_file = NamedTempFile::new()?;
-        writeln!(tmp_file, "value")?;
-        writeln!(tmp_file, "10.5")?;
-        writeln!(tmp_file, "20.3")?;
-        writeln!(tmp_file, "15.7")?;
-
-        let ds = DataSet::from_csv(tmp_file.path())?;
-        assert_eq!(ds.count(), 3);
-        assert!((ds.mean().unwrap() - 15.5).abs() < 0.01);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_clear() {
-        let mut ds = DataSet::new();
-        ds.add_value(1.0);
-        ds.add_value(2.0);
-        assert_eq!(ds.count(), 2);
-
-        ds.clear();
-        assert_eq!(ds.count(), 0);
-        assert_eq!(ds.mean(), None);
+        let processor = DataProcessor::new(',', true);
+        let records = processor.process_file(temp_file.path()).unwrap();
+        
+        assert_eq!(records.len(), 3);
+        assert!(processor.validate_record(&records[0]));
+        
+        let stats = processor.calculate_statistics(&records, 2);
+        assert!(stats.is_some());
+        
+        let (mean, _) = stats.unwrap();
+        assert!((mean - 91.5).abs() < 0.1);
     }
 }
