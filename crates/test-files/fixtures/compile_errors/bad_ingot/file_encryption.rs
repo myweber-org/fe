@@ -1,83 +1,97 @@
-
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use argon2::{
+    password_hash::{rand_core::OsRng as ArgonRng, PasswordHasher, SaltString},
+    Argon2
+};
 use std::fs;
 use std::io::{self, Read, Write};
-use std::path::Path;
 
-const DEFAULT_KEY: u8 = 0xAA;
+const NONCE_SIZE: usize = 12;
+const SALT_SIZE: usize = 16;
 
-pub fn xor_encrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
-    let encryption_key = key.unwrap_or(DEFAULT_KEY);
-    
-    let input_data = fs::read(input_path)?;
-    
-    let encrypted_data: Vec<u8> = input_data
-        .iter()
-        .map(|byte| byte ^ encryption_key)
-        .collect();
-    
-    fs::write(output_path, encrypted_data)?;
-    
+pub fn encrypt_file(input_path: &str, output_path: &str, password: &str) -> io::Result<()> {
+    let mut file_data = Vec::new();
+    fs::File::open(input_path)?.read_to_end(&mut file_data)?;
+
+    let salt = SaltString::generate(&mut ArgonRng);
+    let argon2 = Argon2::default();
+    let password_hash = argon2.hash_password(password.as_bytes(), &salt)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    let key = Key::<Aes256Gcm>::from_slice(password_hash.hash.unwrap().as_bytes());
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&[0u8; NONCE_SIZE]);
+
+    let encrypted_data = cipher.encrypt(nonce, file_data.as_ref())
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    let mut output = fs::File::create(output_path)?;
+    output.write_all(salt.as_bytes())?;
+    output.write_all(&encrypted_data)?;
+
     Ok(())
 }
 
-pub fn xor_decrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
-    xor_encrypt_file(input_path, output_path, key)
+pub fn decrypt_file(input_path: &str, output_path: &str, password: &str) -> io::Result<()> {
+    let mut encrypted_data = Vec::new();
+    fs::File::open(input_path)?.read_to_end(&mut encrypted_data)?;
+
+    if encrypted_data.len() < SALT_SIZE {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "File too short"));
+    }
+
+    let (salt_bytes, ciphertext) = encrypted_data.split_at(SALT_SIZE);
+    let salt = SaltString::from_b64(std::str::from_utf8(salt_bytes)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    let argon2 = Argon2::default();
+    let password_hash = argon2.hash_password(password.as_bytes(), &salt)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    let key = Key::<Aes256Gcm>::from_slice(password_hash.hash.unwrap().as_bytes());
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&[0u8; NONCE_SIZE]);
+
+    let decrypted_data = cipher.decrypt(nonce, ciphertext)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    fs::write(output_path, decrypted_data)?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
-    
+
     #[test]
-    fn test_encryption_decryption() {
-        let original_text = b"Hello, Rust encryption!";
-        
+    fn test_encryption_roundtrip() {
+        let plaintext = b"Secret data that needs protection";
+        let password = "strong_password_123";
+
         let input_file = NamedTempFile::new().unwrap();
         let encrypted_file = NamedTempFile::new().unwrap();
         let decrypted_file = NamedTempFile::new().unwrap();
-        
-        fs::write(input_file.path(), original_text).unwrap();
-        
-        xor_encrypt_file(
+
+        fs::write(input_file.path(), plaintext).unwrap();
+
+        encrypt_file(
             input_file.path().to_str().unwrap(),
             encrypted_file.path().to_str().unwrap(),
-            Some(0x55)
+            password
         ).unwrap();
-        
-        xor_decrypt_file(
+
+        decrypt_file(
             encrypted_file.path().to_str().unwrap(),
             decrypted_file.path().to_str().unwrap(),
-            Some(0x55)
+            password
         ).unwrap();
-        
-        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
-        assert_eq!(decrypted_data, original_text);
-    }
-    
-    #[test]
-    fn test_default_key() {
-        let test_data = b"Test with default key";
-        
-        let input_file = NamedTempFile::new().unwrap();
-        let encrypted_file = NamedTempFile::new().unwrap();
-        let decrypted_file = NamedTempFile::new().unwrap();
-        
-        fs::write(input_file.path(), test_data).unwrap();
-        
-        xor_encrypt_file(
-            input_file.path().to_str().unwrap(),
-            encrypted_file.path().to_str().unwrap(),
-            None
-        ).unwrap();
-        
-        xor_decrypt_file(
-            encrypted_file.path().to_str().unwrap(),
-            decrypted_file.path().to_str().unwrap(),
-            None
-        ).unwrap();
-        
-        let result = fs::read(decrypted_file.path()).unwrap();
-        assert_eq!(result, test_data);
+
+        let decrypted_content = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(decrypted_content, plaintext);
     }
 }
