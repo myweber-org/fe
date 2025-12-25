@@ -1,126 +1,100 @@
 
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
+    validators: HashMap<String, Box<dyn Fn(&str) -> bool>>,
+    transformers: HashMap<String, Box<dyn Fn(String) -> String>>,
 }
 
 impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
+    pub fn new() -> Self {
         DataProcessor {
-            delimiter,
-            has_header,
+            validators: HashMap::new(),
+            transformers: HashMap::new(),
         }
     }
 
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
+    pub fn register_validator(&mut self, name: &str, validator: Box<dyn Fn(&str) -> bool>) {
+        self.validators.insert(name.to_string(), validator);
+    }
 
-        for (line_number, line) in reader.lines().enumerate() {
-            let line = line?;
-            
-            if line.trim().is_empty() {
-                continue;
-            }
+    pub fn register_transformer(&mut self, name: &str, transformer: Box<dyn Fn(String) -> String>) {
+        self.transformers.insert(name.to_string(), transformer);
+    }
 
-            if self.has_header && line_number == 0 {
-                continue;
-            }
+    pub fn validate(&self, name: &str, data: &str) -> bool {
+        self.validators
+            .get(name)
+            .map_or(false, |validator| validator(data))
+    }
 
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
+    pub fn transform(&self, name: &str, data: String) -> Option<String> {
+        self.transformers
+            .get(name)
+            .map(|transformer| transformer(data))
+    }
 
-            if !fields.is_empty() {
-                records.push(fields);
+    pub fn process_pipeline(&self, data: &str, validators: &[&str], transformers: &[&str]) -> Option<String> {
+        for validator_name in validators {
+            if !self.validate(validator_name, data) {
+                return None;
             }
         }
 
-        Ok(records)
-    }
-
-    pub fn validate_record(&self, record: &[String]) -> bool {
-        !record.is_empty() && record.iter().all(|field| !field.is_empty())
-    }
-
-    pub fn calculate_statistics(&self, records: &[Vec<String>], column_index: usize) -> Option<(f64, f64, f64)> {
-        let values: Vec<f64> = records
-            .iter()
-            .filter_map(|record| record.get(column_index))
-            .filter_map(|value| value.parse::<f64>().ok())
-            .collect();
-
-        if values.is_empty() {
-            return None;
+        let mut result = data.to_string();
+        for transformer_name in transformers {
+            if let Some(transformed) = self.transform(transformer_name, result) {
+                result = transformed;
+            } else {
+                return None;
+            }
         }
 
-        let sum: f64 = values.iter().sum();
-        let count = values.len() as f64;
-        let mean = sum / count;
-
-        let variance: f64 = values
-            .iter()
-            .map(|value| {
-                let diff = value - mean;
-                diff * diff
-            })
-            .sum::<f64>() / count;
-
-        let std_dev = variance.sqrt();
-
-        Some((mean, variance, std_dev))
+        Some(result)
     }
+}
+
+pub fn create_default_processor() -> DataProcessor {
+    let mut processor = DataProcessor::new();
+
+    processor.register_validator("not_empty", Box::new(|s| !s.trim().is_empty()));
+    processor.register_validator("is_numeric", Box::new(|s| s.chars().all(|c| c.is_ascii_digit())));
+
+    processor.register_transformer("uppercase", Box::new(|s| s.to_uppercase()));
+    processor.register_transformer("trim", Box::new(|s| s.trim().to_string()));
+    processor.register_transformer("reverse", Box::new(|s| s.chars().rev().collect()));
+
+    processor
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_file_with_header() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "John,25,New York").unwrap();
-        writeln!(temp_file, "Alice,30,London").unwrap();
-
-        let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path()).unwrap();
-
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["John", "25", "New York"]);
+    fn test_validation() {
+        let processor = create_default_processor();
+        assert!(processor.validate("not_empty", "hello"));
+        assert!(!processor.validate("not_empty", "   "));
+        assert!(processor.validate("is_numeric", "12345"));
+        assert!(!processor.validate("is_numeric", "123a"));
     }
 
     #[test]
-    fn test_validate_record() {
-        let processor = DataProcessor::new(',', false);
-        
-        let valid_record = vec!["data".to_string(), "123".to_string()];
-        assert!(processor.validate_record(&valid_record));
-
-        let invalid_record = vec!["".to_string(), "value".to_string()];
-        assert!(!processor.validate_record(&invalid_record));
+    fn test_transformation() {
+        let processor = create_default_processor();
+        assert_eq!(processor.transform("uppercase", "hello".to_string()), Some("HELLO".to_string()));
+        assert_eq!(processor.transform("trim", "  hello  ".to_string()), Some("hello".to_string()));
+        assert_eq!(processor.transform("reverse", "hello".to_string()), Some("olleh".to_string()));
     }
 
     #[test]
-    fn test_calculate_statistics() {
-        let processor = DataProcessor::new(',', false);
-        let records = vec![
-            vec!["10.5".to_string(), "20.0".to_string()],
-            vec!["15.5".to_string(), "25.0".to_string()],
-            vec!["12.0".to_string(), "30.0".to_string()],
-        ];
+    fn test_pipeline() {
+        let processor = create_default_processor();
+        let result = processor.process_pipeline("  hello  ", &["not_empty"], &["trim", "uppercase"]);
+        assert_eq!(result, Some("HELLO".to_string()));
 
-        let stats = processor.calculate_statistics(&records, 0).unwrap();
-        assert!((stats.0 - 12.666).abs() < 0.001);
-        assert!((stats.2 - 2.054).abs() < 0.001);
+        let invalid_result = processor.process_pipeline("   ", &["not_empty"], &["trim"]);
+        assert_eq!(invalid_result, None);
     }
 }
