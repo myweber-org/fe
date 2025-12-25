@@ -1,66 +1,43 @@
 
-use serde_json::{Map, Value};
-use std::collections::HashSet;
+use serde_json::{Value, Map};
+use std::fs;
+use std::path::Path;
 
-pub enum ConflictResolution {
-    PreferFirst,
-    PreferSecond,
-    MergeArrays,
-    FailOnConflict,
-}
-
-pub fn merge_json(
-    first: &Map<String, Value>,
-    second: &Map<String, Value>,
-    resolution: ConflictResolution,
-) -> Result<Map<String, Value>, String> {
-    let mut result = Map::new();
-    let mut all_keys: HashSet<&String> = first.keys().chain(second.keys()).collect();
-
-    for key in all_keys {
-        let first_val = first.get(key);
-        let second_val = second.get(key);
-
-        match (first_val, second_val) {
-            (Some(f), None) => {
-                result.insert(key.clone(), f.clone());
-            }
-            (None, Some(s)) => {
-                result.insert(key.clone(), s.clone());
-            }
-            (Some(f), Some(s)) => {
-                let merged = handle_conflict(key, f, s, &resolution)?;
-                result.insert(key.clone(), merged);
-            }
-            _ => unreachable!(),
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P]) -> Result<Value, String> {
+    let mut merged = Map::new();
+    
+    for path in paths {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {}", path.as_ref().display(), e))?;
+        
+        let json: Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Invalid JSON in {}: {}", path.as_ref().display(), e))?;
+        
+        if let Value::Object(obj) = json {
+            merge_objects(&mut merged, obj);
+        } else {
+            return Err("Top-level JSON must be an object".to_string());
         }
     }
-
-    Ok(result)
+    
+    Ok(Value::Object(merged))
 }
 
-fn handle_conflict(
-    key: &str,
-    first: &Value,
-    second: &Value,
-    resolution: &ConflictResolution,
-) -> Result<Value, String> {
-    match resolution {
-        ConflictResolution::PreferFirst => Ok(first.clone()),
-        ConflictResolution::PreferSecond => Ok(second.clone()),
-        ConflictResolution::MergeArrays => {
-            if let (Value::Array(a1), Value::Array(a2)) = (first, second) {
-                let mut merged = a1.clone();
-                merged.extend(a2.clone());
-                Ok(Value::Array(merged))
-            } else {
-                Err(format!(
-                    "Cannot merge non-array values for key '{}' with MergeArrays strategy",
-                    key
-                ))
+fn merge_objects(target: &mut Map<String, Value>, source: Map<String, Value>) {
+    for (key, source_value) in source {
+        match target.get_mut(&key) {
+            Some(target_value) => {
+                if let (Value::Object(mut target_obj), Value::Object(source_obj)) = (target_value.clone(), source_value) {
+                    merge_objects(&mut target_obj, source_obj);
+                    target.insert(key, Value::Object(target_obj));
+                } else if target_value != &source_value {
+                    target.insert(key, Value::Array(vec![target_value.clone(), source_value]));
+                }
+            }
+            None => {
+                target.insert(key, source_value);
             }
         }
-        ConflictResolution::FailOnConflict => Err(format!("Conflict detected for key '{}'", key)),
     }
 }
 
@@ -68,39 +45,23 @@ fn handle_conflict(
 mod tests {
     use super::*;
     use serde_json::json;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_merge_prefer_first() {
-        let mut first = Map::new();
-        first.insert("a".to_string(), json!(1));
-        first.insert("b".to_string(), json!("test"));
-
-        let mut second = Map::new();
-        second.insert("b".to_string(), json!("overridden"));
-        second.insert("c".to_string(), json!(true));
-
-        let merged = merge_json(&first, &second, ConflictResolution::PreferFirst).unwrap();
-
-        assert_eq!(merged.get("a"), Some(&json!(1)));
-        assert_eq!(merged.get("b"), Some(&json!("test")));
-        assert_eq!(merged.get("c"), Some(&json!(true)));
-    }
-
-    #[test]
-    fn test_merge_arrays() {
-        let mut first = Map::new();
-        first.insert("items".to_string(), json!([1, 2, 3]));
-
-        let mut second = Map::new();
-        second.insert("items".to_string(), json!([4, 5]));
-
-        let merged = merge_json(&first, &second, ConflictResolution::MergeArrays).unwrap();
-
-        if let Value::Array(arr) = merged.get("items").unwrap() {
-            assert_eq!(arr.len(), 5);
-            assert_eq!(arr, &vec![json!(1), json!(2), json!(3), json!(4), json!(5)]);
-        } else {
-            panic!("Expected array");
-        }
+    fn test_merge_json() {
+        let file1 = NamedTempFile::new().unwrap();
+        let file2 = NamedTempFile::new().unwrap();
+        
+        fs::write(&file1, r#"{"a": 1, "b": {"x": 10}}"#).unwrap();
+        fs::write(&file2, r#"{"b": {"y": 20}, "c": 3}"#).unwrap();
+        
+        let result = merge_json_files(&[file1.path(), file2.path()]).unwrap();
+        let expected = json!({
+            "a": 1,
+            "b": {"x": 10, "y": 20},
+            "c": 3
+        });
+        
+        assert_eq!(result, expected);
     }
 }
