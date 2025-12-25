@@ -1,62 +1,85 @@
-use csv::Reader;
-use serde::Deserialize;
 use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-#[derive(Debug, Deserialize)]
-pub struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
-}
-
 pub struct DataProcessor {
-    records: Vec<Record>,
+    file_path: String,
 }
 
 impl DataProcessor {
-    pub fn new() -> Self {
+    pub fn new(file_path: &str) -> Self {
         DataProcessor {
-            records: Vec::new(),
+            file_path: file_path.to_string(),
         }
     }
 
-    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
-        let mut rdr = Reader::from_path(path)?;
-        for result in rdr.deserialize() {
-            let record: Record = result?;
-            self.records.push(record);
+    pub fn process_csv(&self) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let path = Path::new(&self.file_path);
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        
+        let mut records = Vec::new();
+        
+        for (index, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if line.trim().is_empty() {
+                continue;
+            }
+            
+            let fields: Vec<String> = line.split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            
+            if fields.len() < 2 {
+                return Err(format!("Invalid CSV format at line {}", index + 1).into());
+            }
+            
+            records.push(fields);
         }
-        Ok(())
-    }
-
-    pub fn validate_records(&self) -> Vec<&Record> {
-        self.records
-            .iter()
-            .filter(|r| r.value >= 0.0 && !r.name.is_empty())
-            .collect()
-    }
-
-    pub fn calculate_average(&self) -> Option<f64> {
-        let valid_records: Vec<&Record> = self.validate_records();
-        if valid_records.is_empty() {
-            return None;
+        
+        if records.is_empty() {
+            return Err("CSV file is empty".into());
         }
-
-        let sum: f64 = valid_records.iter().map(|r| r.value).sum();
-        Some(sum / valid_records.len() as f64)
+        
+        Ok(records)
     }
-
-    pub fn group_by_category(&self) -> std::collections::HashMap<String, Vec<&Record>> {
-        let mut categories = std::collections::HashMap::new();
-        for record in &self.records {
-            categories
-                .entry(record.category.clone())
-                .or_insert_with(Vec::new)
-                .push(record);
+    
+    pub fn validate_numeric_fields(&self, records: &[Vec<String>], column_index: usize) -> Result<Vec<f64>, Box<dyn Error>> {
+        let mut numeric_values = Vec::new();
+        
+        for (row_index, record) in records.iter().enumerate() {
+            if column_index >= record.len() {
+                return Err(format!("Column index {} out of bounds at row {}", column_index, row_index + 1).into());
+            }
+            
+            let value = &record[column_index];
+            match value.parse::<f64>() {
+                Ok(num) => numeric_values.push(num),
+                Err(_) => return Err(format!("Non-numeric value '{}' at row {}, column {}", value, row_index + 1, column_index + 1).into()),
+            }
         }
-        categories
+        
+        Ok(numeric_values)
+    }
+    
+    pub fn calculate_statistics(&self, numbers: &[f64]) -> (f64, f64, f64) {
+        if numbers.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+        
+        let sum: f64 = numbers.iter().sum();
+        let count = numbers.len() as f64;
+        let mean = sum / count;
+        
+        let variance: f64 = numbers.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / count;
+        
+        let std_dev = variance.sqrt();
+        
+        (mean, variance, std_dev)
     }
 }
 
@@ -65,25 +88,43 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
-
+    
     #[test]
-    fn test_data_processing() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(
-            file,
-            "id,name,value,category\n1,ItemA,10.5,Alpha\n2,ItemB,-3.2,Beta\n3,,15.0,Alpha"
-        )
-        .unwrap();
-
-        let mut processor = DataProcessor::new();
-        processor.load_from_csv(file.path()).unwrap();
-
-        assert_eq!(processor.records.len(), 3);
-        assert_eq!(processor.validate_records().len(), 1);
-        assert_eq!(processor.calculate_average(), Some(10.5));
-
-        let groups = processor.group_by_category();
-        assert_eq!(groups.get("Alpha").unwrap().len(), 2);
-        assert_eq!(groups.get("Beta").unwrap().len(), 1);
+    fn test_process_csv_valid() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,salary").unwrap();
+        writeln!(temp_file, "Alice,30,50000").unwrap();
+        writeln!(temp_file, "Bob,25,45000").unwrap();
+        
+        let processor = DataProcessor::new(temp_file.path().to_str().unwrap());
+        let result = processor.process_csv().unwrap();
+        
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], vec!["Alice", "30", "50000"]);
+        assert_eq!(result[1], vec!["Bob", "25", "45000"]);
+    }
+    
+    #[test]
+    fn test_validate_numeric_fields() {
+        let records = vec![
+            vec!["Alice".to_string(), "30".to_string(), "50000".to_string()],
+            vec!["Bob".to_string(), "25".to_string(), "45000".to_string()],
+        ];
+        
+        let processor = DataProcessor::new("dummy.csv");
+        let ages = processor.validate_numeric_fields(&records, 1).unwrap();
+        
+        assert_eq!(ages, vec![30.0, 25.0]);
+    }
+    
+    #[test]
+    fn test_calculate_statistics() {
+        let numbers = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+        let processor = DataProcessor::new("dummy.csv");
+        let (mean, variance, std_dev) = processor.calculate_statistics(&numbers);
+        
+        assert_eq!(mean, 30.0);
+        assert_eq!(variance, 200.0);
+        assert_eq!(std_dev, 200.0_f64.sqrt());
     }
 }
