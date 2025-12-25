@@ -282,4 +282,63 @@ mod tests {
         let stats = processor.get_statistics();
         assert_eq!(stats, (10.0, 30.0, 20.0));
     }
+}use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+impl Record {
+    fn is_valid(&self) -> bool {
+        !self.name.is_empty() && self.value >= 0.0
+    }
+}
+
+fn process_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let file = File::open(input_path)?;
+    let mut rdr = ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(file);
+
+    let output_file = File::create(output_path)?;
+    let mut wtr = WriterBuilder::new()
+        .has_headers(true)
+        .from_writer(output_file);
+
+    let mut valid_count = 0;
+    let mut invalid_count = 0;
+
+    for result in rdr.deserialize() {
+        let record: Record = result?;
+        
+        if record.is_valid() {
+            wtr.serialize(&record)?;
+            valid_count += 1;
+        } else {
+            invalid_count += 1;
+        }
+    }
+
+    wtr.flush()?;
+    println!("Processing complete. Valid records: {}, Invalid records: {}", valid_count, invalid_count);
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let input_file = "input_data.csv";
+    let output_file = "processed_data.csv";
+    
+    match process_csv(input_file, output_file) {
+        Ok(_) => println!("Data processing successful"),
+        Err(e) => eprintln!("Error processing data: {}", e),
+    }
+    
+    Ok(())
 }
