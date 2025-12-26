@@ -1,78 +1,58 @@
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
 
 pub struct DataProcessor {
-    data: Vec<f64>,
+    file_path: String,
 }
 
 impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor { data: Vec::new() }
+    pub fn new(file_path: &str) -> Self {
+        DataProcessor {
+            file_path: file_path.to_string(),
+        }
     }
 
-    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
-        let file = File::open(path)?;
+    pub fn process_csv(&self, filter_column: usize, filter_value: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(&self.file_path)?;
         let reader = BufReader::new(file);
+        let mut results = Vec::new();
 
         for line in reader.lines() {
             let line = line?;
-            if line.trim().is_empty() {
-                continue;
+            let columns: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
+            
+            if columns.len() > filter_column && columns[filter_column] == filter_value {
+                results.push(columns);
             }
-            if let Ok(value) = line.trim().parse::<f64>() {
-                self.data.push(value);
+        }
+
+        Ok(results)
+    }
+
+    pub fn calculate_average(&self, column_index: usize) -> Result<f64, Box<dyn Error>> {
+        let file = File::open(&self.file_path)?;
+        let reader = BufReader::new(file);
+        let mut sum = 0.0;
+        let mut count = 0;
+
+        for line in reader.lines() {
+            let line = line?;
+            let columns: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
+            
+            if let Some(value_str) = columns.get(column_index) {
+                if let Ok(value) = value_str.parse::<f64>() {
+                    sum += value;
+                    count += 1;
+                }
             }
         }
 
-        Ok(())
-    }
-
-    pub fn calculate_mean(&self) -> Option<f64> {
-        if self.data.is_empty() {
-            return None;
-        }
-        let sum: f64 = self.data.iter().sum();
-        Some(sum / self.data.len() as f64)
-    }
-
-    pub fn calculate_standard_deviation(&self) -> Option<f64> {
-        if self.data.len() < 2 {
-            return None;
-        }
-        let mean = self.calculate_mean()?;
-        let variance: f64 = self.data
-            .iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / (self.data.len() - 1) as f64;
-        Some(variance.sqrt())
-    }
-
-    pub fn get_min_max(&self) -> Option<(f64, f64)> {
-        if self.data.is_empty() {
-            return None;
-        }
-        let min = self.data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let max = self.data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-        Some((min, max))
-    }
-
-    pub fn filter_outliers(&self, threshold: f64) -> Vec<f64> {
-        if let (Some(mean), Some(std_dev)) = (self.calculate_mean(), self.calculate_standard_deviation()) {
-            let lower_bound = mean - threshold * std_dev;
-            let upper_bound = mean + threshold * std_dev;
-            self.data.iter()
-                .filter(|&&x| x >= lower_bound && x <= upper_bound)
-                .cloned()
-                .collect()
+        if count > 0 {
+            Ok(sum / count as f64)
         } else {
-            self.data.clone()
+            Ok(0.0)
         }
-    }
-
-    pub fn data_count(&self) -> usize {
-        self.data.len()
     }
 }
 
@@ -83,23 +63,32 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_data_processing() {
-        let mut processor = DataProcessor::new();
-        
+    fn test_process_csv() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "10.5\n15.2\n12.8\n14.1\n11.9").unwrap();
-        
-        processor.load_from_csv(temp_file.path()).unwrap();
-        
-        assert_eq!(processor.data_count(), 5);
-        assert!(processor.calculate_mean().unwrap() - 12.9 < 0.1);
-        assert!(processor.calculate_standard_deviation().unwrap() - 1.7 < 0.1);
-        
-        let (min, max) = processor.get_min_max().unwrap();
-        assert_eq!(min, 10.5);
-        assert_eq!(max, 15.2);
-        
-        let filtered = processor.filter_outliers(2.0);
-        assert_eq!(filtered.len(), 5);
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "Alice,30,New York").unwrap();
+        writeln!(temp_file, "Bob,25,London").unwrap();
+        writeln!(temp_file, "Charlie,35,New York").unwrap();
+
+        let processor = DataProcessor::new(temp_file.path().to_str().unwrap());
+        let result = processor.process_csv(2, "New York").unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0][0], "Alice");
+        assert_eq!(result[1][0], "Charlie");
+    }
+
+    #[test]
+    fn test_calculate_average() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "Alice,30,New York").unwrap();
+        writeln!(temp_file, "Bob,25,London").unwrap();
+        writeln!(temp_file, "Charlie,35,New York").unwrap();
+
+        let processor = DataProcessor::new(temp_file.path().to_str().unwrap());
+        let average = processor.calculate_average(1).unwrap();
+
+        assert_eq!(average, 30.0);
     }
 }
