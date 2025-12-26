@@ -262,3 +262,119 @@ mod tests {
         assert!(filtered.iter().all(|r| r.category == "cat_a"));
     }
 }
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug)]
+pub struct ValidationError {
+    message: String,
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Validation error: {}", self.message)
+    }
+}
+
+impl Error for ValidationError {}
+
+pub struct DataProcessor {
+    threshold: f64,
+}
+
+impl DataProcessor {
+    pub fn new(threshold: f64) -> Result<Self, ValidationError> {
+        if threshold < 0.0 || threshold > 1.0 {
+            return Err(ValidationError {
+                message: format!("Threshold {} must be between 0.0 and 1.0", threshold),
+            });
+        }
+
+        Ok(DataProcessor { threshold })
+    }
+
+    pub fn process_data(&self, data: &[f64]) -> Result<Vec<f64>, ValidationError> {
+        if data.is_empty() {
+            return Err(ValidationError {
+                message: "Input data cannot be empty".to_string(),
+            });
+        }
+
+        let mean = data.iter().sum::<f64>() / data.len() as f64;
+        let filtered_data: Vec<f64> = data
+            .iter()
+            .filter(|&&value| value >= mean * self.threshold)
+            .cloned()
+            .collect();
+
+        if filtered_data.is_empty() {
+            return Err(ValidationError {
+                message: "All data filtered out, no values above threshold".to_string(),
+            });
+        }
+
+        Ok(filtered_data)
+    }
+
+    pub fn normalize_data(&self, data: &[f64]) -> Result<Vec<f64>, ValidationError> {
+        if data.is_empty() {
+            return Err(ValidationError {
+                message: "Input data cannot be empty".to_string(),
+            });
+        }
+
+        let max_value = data
+            .iter()
+            .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+        if max_value <= 0.0 {
+            return Err(ValidationError {
+                message: "Maximum value must be positive for normalization".to_string(),
+            });
+        }
+
+        let normalized: Vec<f64> = data
+            .iter()
+            .map(|&value| value / max_value)
+            .collect();
+
+        Ok(normalized)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_processor_creation() {
+        let processor = DataProcessor::new(0.5);
+        assert!(processor.is_ok());
+    }
+
+    #[test]
+    fn test_invalid_processor_creation() {
+        let processor = DataProcessor::new(1.5);
+        assert!(processor.is_err());
+    }
+
+    #[test]
+    fn test_process_data() {
+        let processor = DataProcessor::new(0.5).unwrap();
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let result = processor.process_data(&data);
+        assert!(result.is_ok());
+        let processed = result.unwrap();
+        assert!(!processed.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_data() {
+        let processor = DataProcessor::new(0.5).unwrap();
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let result = processor.normalize_data(&data);
+        assert!(result.is_ok());
+        let normalized = result.unwrap();
+        assert_eq!(normalized.last().unwrap(), &1.0);
+    }
+}
