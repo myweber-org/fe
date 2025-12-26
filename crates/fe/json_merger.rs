@@ -27,7 +27,6 @@ pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -36,32 +35,18 @@ mod tests {
         let mut file1 = NamedTempFile::new().unwrap();
         let mut file2 = NamedTempFile::new().unwrap();
 
-        let json1 = json!({
-            "name": "Alice",
-            "age": 30
-        });
+        writeln!(file1, r#"{"name": "Alice", "age": 30}"#).unwrap();
+        writeln!(file2, r#"{"city": "Berlin", "active": true}"#).unwrap();
 
-        let json2 = json!({
-            "city": "London",
-            "active": true
-        });
-
-        write!(file1, "{}", json1.to_string()).unwrap();
-        write!(file2, "{}", json2.to_string()).unwrap();
-
-        let paths = vec![
+        let result = merge_json_files(&[
             file1.path().to_str().unwrap(),
             file2.path().to_str().unwrap(),
-        ];
+        ])
+        .unwrap();
 
-        let result = merge_json_files(&paths).unwrap();
-        let expected = json!({
-            "name": "Alice",
-            "age": 30,
-            "city": "London",
-            "active": true
-        });
-
-        assert_eq!(result, expected);
+        assert_eq!(result["name"], "Alice");
+        assert_eq!(result["age"], 30);
+        assert_eq!(result["city"], "Berlin");
+        assert_eq!(result["active"], true);
     }
 }
