@@ -1,156 +1,138 @@
-use std::collections::HashMap;
 use std::error::Error;
-use std::fmt;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
-#[derive(Debug, Clone)]
-pub struct DataRecord {
-    pub id: u32,
-    pub name: String,
-    pub value: f64,
-    pub tags: Vec<String>,
+pub struct DataProcessor {
+    delimiter: char,
+    has_header: bool,
 }
 
-#[derive(Debug)]
-pub enum ValidationError {
-    InvalidId,
-    EmptyName,
-    NegativeValue,
-    DuplicateTag,
-}
-
-impl fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ValidationError::InvalidId => write!(f, "ID must be greater than zero"),
-            ValidationError::EmptyName => write!(f, "Name cannot be empty"),
-            ValidationError::NegativeValue => write!(f, "Value cannot be negative"),
-            ValidationError::DuplicateTag => write!(f, "Tags contain duplicates"),
+impl DataProcessor {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        DataProcessor {
+            delimiter,
+            has_header,
         }
     }
-}
 
-impl Error for ValidationError {}
+    pub fn process_csv<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut records = Vec::new();
+        let mut lines = reader.lines();
 
-impl DataRecord {
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        if self.id == 0 {
-            return Err(ValidationError::InvalidId);
+        if self.has_header {
+            lines.next();
         }
-        
-        if self.name.trim().is_empty() {
-            return Err(ValidationError::EmptyName);
+
+        for line_result in lines {
+            let line = line_result?;
+            let fields: Vec<String> = line.split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+            
+            if !fields.is_empty() {
+                records.push(fields);
+            }
         }
+
+        Ok(records)
+    }
+
+    pub fn validate_records(&self, records: &[Vec<String>]) -> Vec<usize> {
+        let mut invalid_indices = Vec::new();
         
-        if self.value < 0.0 {
-            return Err(ValidationError::NegativeValue);
-        }
-        
-        let mut seen = HashMap::new();
-        for tag in &self.tags {
-            if seen.insert(tag, true).is_some() {
-                return Err(ValidationError::DuplicateTag);
+        for (index, record) in records.iter().enumerate() {
+            if record.iter().any(|field| field.is_empty()) {
+                invalid_indices.push(index);
             }
         }
         
-        Ok(())
+        invalid_indices
     }
-    
-    pub fn transform(&mut self, multiplier: f64) -> &mut Self {
-        self.value *= multiplier;
-        self.name = self.name.to_uppercase();
-        self.tags.sort();
-        self.tags.dedup();
-        self
-    }
-}
 
-pub fn process_records(records: &mut [DataRecord], multiplier: f64) -> Result<Vec<DataRecord>, ValidationError> {
-    let mut processed = Vec::with_capacity(records.len());
-    
-    for record in records {
-        record.validate()?;
-        let mut transformed = record.clone();
-        transformed.transform(multiplier);
-        processed.push(transformed);
-    }
-    
-    Ok(processed)
-}
+    pub fn calculate_column_averages(&self, records: &[Vec<String>]) -> Result<Vec<f64>, Box<dyn Error>> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
 
-pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
-    if records.is_empty() {
-        return (0.0, 0.0, 0.0);
+        let column_count = records[0].len();
+        let mut sums = vec![0.0; column_count];
+        let mut counts = vec![0; column_count];
+
+        for record in records {
+            for (i, field) in record.iter().enumerate() {
+                if let Ok(value) = field.parse::<f64>() {
+                    sums[i] += value;
+                    counts[i] += 1;
+                }
+            }
+        }
+
+        let averages: Vec<f64> = sums.iter()
+            .zip(counts.iter())
+            .map(|(&sum, &count)| {
+                if count > 0 {
+                    sum / count as f64
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        Ok(averages)
     }
-    
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let count = records.len() as f64;
-    let mean = sum / count;
-    
-    let variance: f64 = records.iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>() / count;
-    
-    let std_dev = variance.sqrt();
-    
-    (mean, variance, std_dev)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
     #[test]
-    fn test_valid_record() {
-        let record = DataRecord {
-            id: 1,
-            name: "Test".to_string(),
-            value: 100.0,
-            tags: vec!["tag1".to_string(), "tag2".to_string()],
-        };
+    fn test_csv_processing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,salary").unwrap();
+        writeln!(temp_file, "Alice,30,50000.5").unwrap();
+        writeln!(temp_file, "Bob,25,45000.0").unwrap();
+        writeln!(temp_file, "Charlie,35,55000.75").unwrap();
+
+        let processor = DataProcessor::new(',', true);
+        let records = processor.process_csv(temp_file.path()).unwrap();
         
-        assert!(record.validate().is_ok());
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0], vec!["Alice", "30", "50000.5"]);
     }
-    
+
     #[test]
-    fn test_invalid_id() {
-        let record = DataRecord {
-            id: 0,
-            name: "Test".to_string(),
-            value: 100.0,
-            tags: vec![],
-        };
-        
-        assert!(matches!(record.validate(), Err(ValidationError::InvalidId)));
-    }
-    
-    #[test]
-    fn test_transform_record() {
-        let mut record = DataRecord {
-            id: 1,
-            name: "test".to_string(),
-            value: 10.0,
-            tags: vec!["b".to_string(), "a".to_string(), "b".to_string()],
-        };
-        
-        record.transform(2.0);
-        
-        assert_eq!(record.name, "TEST");
-        assert_eq!(record.value, 20.0);
-        assert_eq!(record.tags, vec!["a".to_string(), "b".to_string()]);
-    }
-    
-    #[test]
-    fn test_statistics() {
+    fn test_validation() {
         let records = vec![
-            DataRecord { id: 1, name: "A".to_string(), value: 10.0, tags: vec![] },
-            DataRecord { id: 2, name: "B".to_string(), value: 20.0, tags: vec![] },
-            DataRecord { id: 3, name: "C".to_string(), value: 30.0, tags: vec![] },
+            vec!["Alice".to_string(), "30".to_string(), "50000.5".to_string()],
+            vec!["Bob".to_string(), "".to_string(), "45000.0".to_string()],
+            vec!["Charlie".to_string(), "35".to_string(), "".to_string()],
         ];
+
+        let processor = DataProcessor::new(',', false);
+        let invalid_indices = processor.validate_records(&records);
         
-        let (mean, variance, std_dev) = calculate_statistics(&records);
+        assert_eq!(invalid_indices, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_average_calculation() {
+        let records = vec![
+            vec!["10.5".to_string(), "20.0".to_string()],
+            vec!["15.5".to_string(), "30.0".to_string()],
+            vec!["12.0".to_string(), "25.0".to_string()],
+        ];
+
+        let processor = DataProcessor::new(',', false);
+        let averages = processor.calculate_column_averages(&records).unwrap();
         
-        assert_eq!(mean, 20.0);
-        assert_eq!(variance, 66.66666666666667);
-        assert_eq!(std_dev, 8.16496580927726);
+        assert_eq!(averages.len(), 2);
+        assert!((averages[0] - 12.666666666666666).abs() < 0.0001);
+        assert!((averages[1] - 25.0).abs() < 0.0001);
     }
 }
