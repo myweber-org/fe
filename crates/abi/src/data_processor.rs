@@ -138,3 +138,148 @@ mod tests {
         assert_eq!(processor.get_record_count(), 0);
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::error::Error;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: HashMap<String, f64>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ValidationError {
+    InvalidId,
+    InvalidTimestamp,
+    EmptyValues,
+    DuplicateTags,
+}
+
+pub struct DataProcessor {
+    validation_enabled: bool,
+    max_value_count: usize,
+}
+
+impl DataProcessor {
+    pub fn new(validation_enabled: bool, max_value_count: usize) -> Self {
+        DataProcessor {
+            validation_enabled,
+            max_value_count,
+        }
+    }
+
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ValidationError> {
+        if !self.validation_enabled {
+            return Ok(());
+        }
+
+        if record.id == 0 {
+            return Err(ValidationError::InvalidId);
+        }
+
+        if record.timestamp <= 0 {
+            return Err(ValidationError::InvalidTimestamp);
+        }
+
+        if record.values.is_empty() {
+            return Err(ValidationError::EmptyValues);
+        }
+
+        if record.values.len() > self.max_value_count {
+            return Err(ValidationError::EmptyValues);
+        }
+
+        let unique_tags: std::collections::HashSet<_> = record.tags.iter().collect();
+        if unique_tags.len() != record.tags.len() {
+            return Err(ValidationError::DuplicateTags);
+        }
+
+        Ok(())
+    }
+
+    pub fn transform_values(&self, record: &DataRecord) -> HashMap<String, f64> {
+        let mut transformed = HashMap::new();
+        
+        for (key, value) in &record.values {
+            let transformed_value = match key.as_str() {
+                "temperature" => (value - 32.0) * 5.0 / 9.0,
+                "pressure" => value * 1000.0,
+                "humidity" => value.min(100.0).max(0.0),
+                _ => *value,
+            };
+            transformed.insert(key.clone(), transformed_value);
+        }
+        
+        transformed
+    }
+
+    pub fn process_record(&self, record: DataRecord) -> Result<DataRecord, Box<dyn Error>> {
+        self.validate_record(&record)?;
+        
+        let mut processed_record = record.clone();
+        processed_record.values = self.transform_values(&record);
+        
+        Ok(processed_record)
+    }
+
+    pub fn batch_process(&self, records: Vec<DataRecord>) -> Vec<Result<DataRecord, Box<dyn Error>>> {
+        records
+            .into_iter()
+            .map(|record| self.process_record(record))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_record() -> DataRecord {
+        let mut values = HashMap::new();
+        values.insert("temperature".to_string(), 68.0);
+        values.insert("pressure".to_string(), 1.0);
+        
+        DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values,
+            tags: vec!["sensor".to_string(), "room1".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_validation_success() {
+        let processor = DataProcessor::new(true, 10);
+        let record = create_test_record();
+        assert!(processor.validate_record(&record).is_ok());
+    }
+
+    #[test]
+    fn test_validation_invalid_id() {
+        let processor = DataProcessor::new(true, 10);
+        let mut record = create_test_record();
+        record.id = 0;
+        assert_eq!(processor.validate_record(&record), Err(ValidationError::InvalidId));
+    }
+
+    #[test]
+    fn test_transform_values() {
+        let processor = DataProcessor::new(false, 10);
+        let record = create_test_record();
+        let transformed = processor.transform_values(&record);
+        
+        assert!((transformed.get("temperature").unwrap() - 20.0).abs() < 0.001);
+        assert!((transformed.get("pressure").unwrap() - 1000.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_process_record() {
+        let processor = DataProcessor::new(true, 10);
+        let record = create_test_record();
+        let result = processor.process_record(record);
+        assert!(result.is_ok());
+    }
+}
