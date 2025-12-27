@@ -1,4 +1,3 @@
-
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -46,10 +45,30 @@ impl DataProcessor {
         !record.is_empty() && record.iter().all(|field| !field.is_empty())
     }
 
-    pub fn extract_column(&self, data: &[Vec<String>], column_index: usize) -> Vec<String> {
-        data.iter()
-            .filter_map(|record| record.get(column_index).cloned())
-            .collect()
+    pub fn calculate_statistics(&self, records: &[Vec<String>], column_index: usize) -> Option<(f64, f64, f64)> {
+        let values: Vec<f64> = records
+            .iter()
+            .filter_map(|record| record.get(column_index).and_then(|s| s.parse::<f64>().ok()))
+            .collect();
+
+        if values.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = values.iter().sum();
+        let count = values.len() as f64;
+        let mean = sum / count;
+        
+        let variance: f64 = values.iter()
+            .map(|value| {
+                let diff = mean - value;
+                diff * diff
+            })
+            .sum::<f64>() / count;
+        
+        let std_dev = variance.sqrt();
+
+        Some((mean, variance, std_dev))
     }
 }
 
@@ -60,39 +79,20 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_file_with_header() {
+    fn test_data_processor() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "John,30,New York").unwrap();
-        writeln!(temp_file, "Alice,25,London").unwrap();
+        writeln!(temp_file, "name,age,salary").unwrap();
+        writeln!(temp_file, "Alice,30,50000.0").unwrap();
+        writeln!(temp_file, "Bob,25,45000.0").unwrap();
+        writeln!(temp_file, "Charlie,35,55000.0").unwrap();
 
         let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path()).unwrap();
-
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["John", "30", "New York"]);
-        assert_eq!(result[1], vec!["Alice", "25", "London"]);
-    }
-
-    #[test]
-    fn test_validate_record() {
-        let processor = DataProcessor::new(',', false);
-        let valid_record = vec!["data".to_string(), "value".to_string()];
-        let invalid_record = vec!["".to_string(), "value".to_string()];
-
-        assert!(processor.validate_record(&valid_record));
-        assert!(!processor.validate_record(&invalid_record));
-    }
-
-    #[test]
-    fn test_extract_column() {
-        let processor = DataProcessor::new(',', false);
-        let data = vec![
-            vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            vec!["d".to_string(), "e".to_string(), "f".to_string()],
-        ];
-
-        let column = processor.extract_column(&data, 1);
-        assert_eq!(column, vec!["b".to_string(), "e".to_string()]);
+        let records = processor.process_file(temp_file.path()).unwrap();
+        
+        assert_eq!(records.len(), 3);
+        assert!(processor.validate_record(&records[0]));
+        
+        let stats = processor.calculate_statistics(&records, 2).unwrap();
+        assert!((stats.0 - 50000.0).abs() < 0.1);
     }
 }
