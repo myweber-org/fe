@@ -195,3 +195,144 @@ mod tests {
         assert_eq!(stats["record_count"], 2.0);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    id: u32,
+    values: Vec<f64>,
+    metadata: HashMap<String, String>,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, values: Vec<f64>) -> Self {
+        DataRecord {
+            id,
+            values,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+
+    pub fn validate(&self) -> Result<(), Box<dyn Error>> {
+        if self.id == 0 {
+            return Err("Invalid record ID".into());
+        }
+        
+        if self.values.is_empty() {
+            return Err("Empty values array".into());
+        }
+
+        for &value in &self.values {
+            if value.is_nan() || value.is_infinite() {
+                return Err("Invalid numeric value detected".into());
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn transform(&mut self, factor: f64) {
+        self.values.iter_mut().for_each(|v| *v *= factor);
+    }
+
+    pub fn calculate_statistics(&self) -> (f64, f64, f64) {
+        let count = self.values.len() as f64;
+        let sum: f64 = self.values.iter().sum();
+        let mean = sum / count;
+        
+        let variance: f64 = self.values
+            .iter()
+            .map(|&v| (v - mean).powi(2))
+            .sum::<f64>() / count;
+        
+        let std_dev = variance.sqrt();
+        
+        (mean, variance, std_dev)
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), Box<dyn Error>> {
+        record.validate()?;
+        self.records.push(record);
+        Ok(())
+    }
+
+    pub fn process_all(&mut self, factor: f64) {
+        self.records.iter_mut().for_each(|record| {
+            record.transform(factor);
+        });
+    }
+
+    pub fn get_summary(&self) -> HashMap<u32, (f64, f64, f64)> {
+        let mut summary = HashMap::new();
+        
+        for record in &self.records {
+            let stats = record.calculate_statistics();
+            summary.insert(record.id, stats);
+        }
+        
+        summary
+    }
+
+    pub fn filter_by_threshold(&self, threshold: f64) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|record| {
+                let (mean, _, _) = record.calculate_statistics();
+                mean > threshold
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = DataRecord::new(1, vec![1.0, 2.0, 3.0]);
+        assert!(valid_record.validate().is_ok());
+
+        let invalid_record = DataRecord::new(0, vec![1.0, 2.0]);
+        assert!(invalid_record.validate().is_err());
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let record = DataRecord::new(1, vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        let (mean, variance, std_dev) = record.calculate_statistics();
+        
+        assert_eq!(mean, 3.0);
+        assert_eq!(variance, 2.0);
+        assert_eq!(std_dev, 2.0_f64.sqrt());
+    }
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        let record = DataRecord::new(1, vec![1.0, 2.0, 3.0]);
+        
+        assert!(processor.add_record(record.clone()).is_ok());
+        processor.process_all(2.0);
+        
+        let summary = processor.get_summary();
+        assert!(summary.contains_key(&1));
+    }
+}
