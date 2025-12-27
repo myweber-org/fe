@@ -262,3 +262,79 @@ mod tests {
         assert_eq!(ids, vec!["a1", "a2", "a3"]);
     }
 }
+use serde_json::{Value, Map};
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], output_path: P) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
+
+    for path in paths {
+        let content = fs::read_to_string(path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                merge_value(&mut merged_map, key, value);
+            }
+        } else {
+            return Err("Top-level JSON must be an object".into());
+        }
+    }
+
+    let merged_json = Value::Object(merged_map);
+    let serialized = serde_json::to_string_pretty(&merged_json)?;
+    fs::write(output_path, serialized)?;
+
+    Ok(())
+}
+
+fn merge_value(map: &mut Map<String, Value>, key: String, new_value: Value) {
+    match map.get_mut(&key) {
+        Some(existing_value) => {
+            if existing_value.is_object() && new_value.is_object() {
+                let existing_obj = existing_value.as_object_mut().unwrap();
+                let new_obj = new_value.as_object().unwrap();
+
+                for (nested_key, nested_value) in new_obj {
+                    merge_value(existing_obj, nested_key.clone(), nested_value.clone());
+                }
+            } else if existing_value.is_array() && new_value.is_array() {
+                let existing_arr = existing_value.as_array_mut().unwrap();
+                let new_arr = new_value.as_array().unwrap();
+                existing_arr.extend_from_slice(new_arr);
+            } else {
+                *existing_value = new_value;
+            }
+        }
+        None => {
+            map.insert(key, new_value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_basic_merge() {
+        let file1 = NamedTempFile::new().unwrap();
+        let file2 = NamedTempFile::new().unwrap();
+        let output = NamedTempFile::new().unwrap();
+
+        fs::write(&file1, r#"{"a": 1, "b": {"x": 10}}"#).unwrap();
+        fs::write(&file2, r#"{"c": 3, "b": {"y": 20}}"#).unwrap();
+
+        merge_json_files(&[&file1, &file2], &output).unwrap();
+
+        let result = fs::read_to_string(output).unwrap();
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(parsed["a"], 1);
+        assert_eq!(parsed["c"], 3);
+        assert_eq!(parsed["b"]["x"], 10);
+        assert_eq!(parsed["b"]["y"], 20);
+    }
+}
