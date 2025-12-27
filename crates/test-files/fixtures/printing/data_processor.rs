@@ -1,99 +1,91 @@
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
 
-pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
+pub struct DataSet {
+    values: Vec<f64>,
 }
 
-impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
-        DataProcessor {
-            delimiter,
-            has_header,
-        }
+impl DataSet {
+    pub fn new() -> Self {
+        DataSet { values: Vec::new() }
     }
 
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+    pub fn from_csv(file_path: &str) -> Result<Self, Box<dyn Error>> {
         let file = File::open(file_path)?;
         let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        let mut lines = reader.lines();
-
-        if self.has_header {
-            lines.next();
-        }
-
-        for line_result in lines {
-            let line = line_result?;
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-            
-            if !fields.is_empty() {
-                records.push(fields);
-            }
-        }
-
-        Ok(records)
-    }
-
-    pub fn validate_record(&self, record: &[String]) -> bool {
-        !record.is_empty() && record.iter().all(|field| !field.is_empty())
-    }
-
-    pub fn calculate_statistics(&self, records: &[Vec<String>], column_index: usize) -> Option<(f64, f64)> {
         let mut values = Vec::new();
-        
-        for record in records {
-            if column_index < record.len() {
-                if let Ok(value) = record[column_index].parse::<f64>() {
-                    values.push(value);
-                }
+
+        for line in reader.lines() {
+            let line = line?;
+            if let Ok(value) = line.trim().parse::<f64>() {
+                values.push(value);
             }
         }
 
-        if values.is_empty() {
+        Ok(DataSet { values })
+    }
+
+    pub fn add_value(&mut self, value: f64) {
+        self.values.push(value);
+    }
+
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.values.is_empty() {
             return None;
         }
+        let sum: f64 = self.values.iter().sum();
+        Some(sum / self.values.len() as f64)
+    }
 
-        let sum: f64 = values.iter().sum();
-        let mean = sum / values.len() as f64;
-        let variance: f64 = values.iter()
-            .map(|v| (v - mean).powi(2))
-            .sum::<f64>() / values.len() as f64;
-        
-        Some((mean, variance.sqrt()))
+    pub fn calculate_standard_deviation(&self) -> Option<f64> {
+        if self.values.len() < 2 {
+            return None;
+        }
+        let mean = self.calculate_mean()?;
+        let variance: f64 = self.values
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / (self.values.len() - 1) as f64;
+        Some(variance.sqrt())
+    }
+
+    pub fn get_min_max(&self) -> Option<(f64, f64)> {
+        if self.values.is_empty() {
+            return None;
+        }
+        let min = self.values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = self.values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        Some((min, max))
+    }
+
+    pub fn count(&self) -> usize {
+        self.values.len()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_data_processing() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,score").unwrap();
-        writeln!(temp_file, "Alice,25,95.5").unwrap();
-        writeln!(temp_file, "Bob,30,87.2").unwrap();
-        writeln!(temp_file, "Charlie,35,91.8").unwrap();
+    fn test_empty_dataset() {
+        let dataset = DataSet::new();
+        assert_eq!(dataset.count(), 0);
+        assert_eq!(dataset.calculate_mean(), None);
+        assert_eq!(dataset.calculate_standard_deviation(), None);
+        assert_eq!(dataset.get_min_max(), None);
+    }
 
-        let processor = DataProcessor::new(',', true);
-        let records = processor.process_file(temp_file.path()).unwrap();
+    #[test]
+    fn test_basic_statistics() {
+        let mut dataset = DataSet::new();
+        dataset.add_value(10.0);
+        dataset.add_value(20.0);
+        dataset.add_value(30.0);
         
-        assert_eq!(records.len(), 3);
-        assert!(processor.validate_record(&records[0]));
-        
-        let stats = processor.calculate_statistics(&records, 2);
-        assert!(stats.is_some());
-        
-        let (mean, _) = stats.unwrap();
-        assert!((mean - 91.5).abs() < 0.1);
+        assert_eq!(dataset.count(), 3);
+        assert_eq!(dataset.calculate_mean(), Some(20.0));
+        assert_eq!(dataset.get_min_max(), Some((10.0, 30.0)));
     }
 }
