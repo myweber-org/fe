@@ -1,99 +1,140 @@
-
 use std::error::Error;
+use std::fmt;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
-use std::path::Path;
+use std::io::{BufRead, BufReader};
 
-pub struct CsvFilter {
-    input_path: String,
-    output_path: String,
-    selected_columns: Vec<usize>,
-    delimiter: char,
+#[derive(Debug)]
+pub enum CsvError {
+    IoError(std::io::Error),
+    ParseError(String, usize),
+    InvalidHeader(String),
 }
 
-impl CsvFilter {
-    pub fn new(input_path: &str, output_path: &str) -> Self {
-        CsvFilter {
-            input_path: input_path.to_string(),
-            output_path: output_path.to_string(),
-            selected_columns: Vec::new(),
-            delimiter: ',',
+impl fmt::Display for CsvError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CsvError::IoError(e) => write!(f, "IO error: {}", e),
+            CsvError::ParseError(msg, line) => write!(f, "Parse error at line {}: {}", line, msg),
+            CsvError::InvalidHeader(msg) => write!(f, "Invalid header: {}", msg),
+        }
+    }
+}
+
+impl Error for CsvError {}
+
+impl From<std::io::Error> for CsvError {
+    fn from(error: std::io::Error) -> Self {
+        CsvError::IoError(error)
+    }
+}
+
+pub struct CsvProcessor {
+    delimiter: char,
+    has_header: bool,
+}
+
+impl CsvProcessor {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        CsvProcessor {
+            delimiter,
+            has_header,
         }
     }
 
-    pub fn select_columns(&mut self, columns: &[usize]) -> &mut Self {
-        self.selected_columns = columns.to_vec();
-        self
+    pub fn process_file(&self, path: &str) -> Result<Vec<Vec<String>>, CsvError> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut records = Vec::new();
+        let mut line_number = 0;
+
+        for line in reader.lines() {
+            line_number += 1;
+            let line_content = line?;
+            
+            if line_content.trim().is_empty() {
+                continue;
+            }
+
+            let record: Vec<String> = line_content
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if record.is_empty() {
+                return Err(CsvError::ParseError(
+                    "Empty record found".to_string(),
+                    line_number,
+                ));
+            }
+
+            records.push(record);
+        }
+
+        if self.has_header && !records.is_empty() {
+            let header = &records[0];
+            if header.iter().any(|field| field.is_empty()) {
+                return Err(CsvError::InvalidHeader(
+                    "Header contains empty fields".to_string(),
+                ));
+            }
+        }
+
+        Ok(records)
     }
 
-    pub fn set_delimiter(&mut self, delimiter: char) -> &mut Self {
-        self.delimiter = delimiter;
-        self
-    }
+    pub fn validate_records(&self, records: &[Vec<String>]) -> Result<(), CsvError> {
+        if records.is_empty() {
+            return Ok(());
+        }
 
-    pub fn process(&self) -> Result<(), Box<dyn Error>> {
-        let input_file = File::open(Path::new(&self.input_path))?;
-        let reader = BufReader::new(input_file);
-        let mut output_file = File::create(Path::new(&self.output_path))?;
-
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line?;
-            let parts: Vec<&str> = line.split(self.delimiter).collect();
-
-            if line_num == 0 {
-                self.write_header(&parts, &mut output_file)?;
-            } else {
-                self.write_row(&parts, &mut output_file)?;
+        let expected_len = records[0].len();
+        for (idx, record) in records.iter().enumerate() {
+            if record.len() != expected_len {
+                return Err(CsvError::ParseError(
+                    format!("Record has {} fields, expected {}", record.len(), expected_len),
+                    idx + 1,
+                ));
             }
         }
 
         Ok(())
     }
-
-    fn write_header(&self, headers: &[&str], output: &mut File) -> io::Result<()> {
-        let selected_headers: Vec<&str> = if self.selected_columns.is_empty() {
-            headers.to_vec()
-        } else {
-            self.selected_columns
-                .iter()
-                .filter_map(|&idx| headers.get(idx))
-                .copied()
-                .collect()
-        };
-
-        writeln!(output, "{}", selected_headers.join(&self.delimiter.to_string()))
-    }
-
-    fn write_row(&self, row: &[&str], output: &mut File) -> io::Result<()> {
-        let selected_cells: Vec<&str> = if self.selected_columns.is_empty() {
-            row.to_vec()
-        } else {
-            self.selected_columns
-                .iter()
-                .filter_map(|&idx| row.get(idx))
-                .copied()
-                .collect()
-        };
-
-        writeln!(output, "{}", selected_cells.join(&self.delimiter.to_string()))
-    }
 }
 
-pub fn filter_csv(
-    input: &str,
-    output: &str,
-    columns: Option<&[usize]>,
-    delimiter: Option<char>,
-) -> Result<(), Box<dyn Error>> {
-    let mut processor = CsvFilter::new(input, output);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
-    if let Some(cols) = columns {
-        processor.select_columns(cols);
+    #[test]
+    fn test_csv_processing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "Alice,30,New York").unwrap();
+        writeln!(temp_file, "Bob,25,London").unwrap();
+
+        let processor = CsvProcessor::new(',', true);
+        let result = processor.process_file(temp_file.path().to_str().unwrap());
+        
+        assert!(result.is_ok());
+        let records = result.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0], vec!["Alice", "30", "New York"]);
     }
 
-    if let Some(delim) = delimiter {
-        processor.set_delimiter(delim);
-    }
+    #[test]
+    fn test_invalid_csv() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "Alice,30").unwrap();
 
-    processor.process()
+        let processor = CsvProcessor::new(',', true);
+        let result = processor.process_file(temp_file.path().to_str().unwrap());
+        
+        assert!(result.is_ok());
+        let records = result.unwrap();
+        let validation_result = processor.validate_records(&records);
+        assert!(validation_result.is_err());
+    }
 }
