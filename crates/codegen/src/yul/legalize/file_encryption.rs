@@ -1,158 +1,97 @@
-use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, Key, Nonce,
-};
-use std::error::Error;
 
-pub fn encrypt_data(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, Box<dyn Error>> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Nonce::from_slice(&[0u8; 12]);
-    let ciphertext = cipher.encrypt(nonce, plaintext)?;
-    Ok(ciphertext)
-}
-
-pub fn decrypt_data(ciphertext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, Box<dyn Error>> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Nonce::from_slice(&[0u8; 12]);
-    let plaintext = cipher.decrypt(nonce, ciphertext)?;
-    Ok(plaintext)
-}
-
-pub fn generate_key() -> [u8; 32] {
-    let mut key = [0u8; 32];
-    OsRng.fill_bytes(&mut key);
-    key
-}
-use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, Key, Nonce
-};
-use argon2::{
-    password_hash::{
-        rand_core::OsRng,
-        PasswordHasher, SaltString
-    },
-    Argon2
-};
-use std::fs;
+use std::fs::{File, read, write};
 use std::io::{Read, Write};
 use std::path::Path;
 
-const NONCE_SIZE: usize = 12;
-const SALT_SIZE: usize = 16;
-
-pub struct FileEncryptor {
-    key: [u8; 32],
+pub struct XorCipher {
+    key: Vec<u8>,
 }
 
-impl FileEncryptor {
-    pub fn from_password(password: &str, salt: &[u8]) -> Result<Self, String> {
-        let argon2 = Argon2::default();
-        let salt_string = SaltString::encode_b64(salt)
-            .map_err(|e| format!("Salt encoding failed: {}", e))?;
-        
-        let password_hash = argon2
-            .hash_password(password.as_bytes(), &salt_string)
-            .map_err(|e| format!("Key derivation failed: {}", e))?;
-        
-        let hash_bytes = password_hash.hash.ok_or("No hash generated")?;
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&hash_bytes.as_bytes()[..32]);
-        
-        Ok(FileEncryptor { key })
+impl XorCipher {
+    pub fn new(key: &str) -> Self {
+        XorCipher {
+            key: key.as_bytes().to_vec(),
+        }
     }
-    
-    pub fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), String> {
-        let mut file_data = Vec::new();
-        fs::File::open(input_path)
-            .map_err(|e| format!("Failed to open input file: {}", e))?
-            .read_to_end(&mut file_data)
-            .map_err(|e| format!("Failed to read input file: {}", e))?;
+
+    pub fn encrypt_file(&self, source_path: &Path, dest_path: &Path) -> Result<(), String> {
+        let mut source_file = File::open(source_path)
+            .map_err(|e| format!("Failed to open source file: {}", e))?;
         
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.key));
-        let nonce = Nonce::from_slice(&generate_random_bytes(NONCE_SIZE));
+        let mut buffer = Vec::new();
+        source_file.read_to_end(&mut buffer)
+            .map_err(|e| format!("Failed to read source file: {}", e))?;
         
-        let encrypted_data = cipher
-            .encrypt(nonce, file_data.as_ref())
-            .map_err(|e| format!("Encryption failed: {}", e))?;
+        let encrypted_data = self.xor_transform(&buffer);
         
-        let mut output = Vec::new();
-        output.extend_from_slice(nonce.as_slice());
-        output.extend_from_slice(&encrypted_data);
+        let mut dest_file = File::create(dest_path)
+            .map_err(|e| format!("Failed to create destination file: {}", e))?;
         
-        fs::File::create(output_path)
-            .map_err(|e| format!("Failed to create output file: {}", e))?
-            .write_all(&output)
+        dest_file.write_all(&encrypted_data)
             .map_err(|e| format!("Failed to write encrypted data: {}", e))?;
         
         Ok(())
     }
-    
-    pub fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), String> {
-        let mut encrypted_data = Vec::new();
-        fs::File::open(input_path)
-            .map_err(|e| format!("Failed to open encrypted file: {}", e))?
-            .read_to_end(&mut encrypted_data)
-            .map_err(|e| format!("Failed to read encrypted file: {}", e))?;
-        
-        if encrypted_data.len() < NONCE_SIZE {
-            return Err("Invalid encrypted file format".to_string());
-        }
-        
-        let nonce = Nonce::from_slice(&encrypted_data[..NONCE_SIZE]);
-        let ciphertext = &encrypted_data[NONCE_SIZE..];
-        
-        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.key));
-        let decrypted_data = cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|e| format!("Decryption failed: {}", e))?;
-        
-        fs::File::create(output_path)
-            .map_err(|e| format!("Failed to create output file: {}", e))?
-            .write_all(&decrypted_data)
-            .map_err(|e| format!("Failed to write decrypted data: {}", e))?;
-        
-        Ok(())
+
+    pub fn decrypt_file(&self, source_path: &Path, dest_path: &Path) -> Result<(), String> {
+        self.encrypt_file(source_path, dest_path)
     }
-    
-    pub fn generate_salt() -> [u8; SALT_SIZE] {
-        generate_random_bytes(SALT_SIZE)
+
+    fn xor_transform(&self, data: &[u8]) -> Vec<u8> {
+        data.iter()
+            .enumerate()
+            .map(|(i, &byte)| byte ^ self.key[i % self.key.len()])
+            .collect()
     }
 }
 
-fn generate_random_bytes(size: usize) -> [u8; SALT_SIZE] {
-    let mut bytes = [0u8; SALT_SIZE];
-    OsRng.fill_bytes(&mut bytes);
-    bytes
+pub fn encrypt_string(key: &str, input: &str) -> Vec<u8> {
+    let cipher = XorCipher::new(key);
+    cipher.xor_transform(input.as_bytes())
+}
+
+pub fn decrypt_string(key: &str, encrypted_data: &[u8]) -> String {
+    let cipher = XorCipher::new(key);
+    let decrypted_bytes = cipher.xor_transform(encrypted_data);
+    String::from_utf8_lossy(&decrypted_bytes).to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
-    
+
     #[test]
-    fn test_encryption_decryption() {
-        let password = "secure_password_123";
-        let salt = FileEncryptor::generate_salt();
+    fn test_string_encryption_decryption() {
+        let key = "secret_key";
+        let original = "Hello, World!";
         
-        let encryptor = FileEncryptor::from_password(password, &salt)
-            .expect("Failed to create encryptor");
+        let encrypted = encrypt_string(key, original);
+        let decrypted = decrypt_string(key, &encrypted);
         
-        let original_content = b"Hello, this is a secret message!";
-        let input_file = NamedTempFile::new().unwrap();
-        let encrypted_file = NamedTempFile::new().unwrap();
-        let decrypted_file = NamedTempFile::new().unwrap();
+        assert_eq!(original, decrypted);
+        assert_ne!(original.as_bytes(), encrypted);
+    }
+
+    #[test]
+    fn test_file_encryption() {
+        let key = "test_key";
+        let cipher = XorCipher::new(key);
         
-        fs::write(input_file.path(), original_content).unwrap();
+        let original_content = b"Test file content for encryption";
         
-        encryptor.encrypt_file(input_file.path(), encrypted_file.path())
-            .expect("Encryption failed");
+        let source_file = NamedTempFile::new().unwrap();
+        let dest_file = NamedTempFile::new().unwrap();
         
-        encryptor.decrypt_file(encrypted_file.path(), decrypted_file.path())
-            .expect("Decryption failed");
+        std::fs::write(source_file.path(), original_content).unwrap();
         
-        let decrypted_content = fs::read(decrypted_file.path()).unwrap();
-        assert_eq!(original_content.to_vec(), decrypted_content);
+        cipher.encrypt_file(source_file.path(), dest_file.path()).unwrap();
+        
+        let encrypted_content = std::fs::read(dest_file.path()).unwrap();
+        assert_ne!(original_content, encrypted_content.as_slice());
+        
+        cipher.decrypt_file(dest_file.path(), source_file.path()).unwrap();
+        let decrypted_content = std::fs::read(source_file.path()).unwrap();
+        assert_eq!(original_content, decrypted_content.as_slice());
     }
 }
