@@ -141,3 +141,131 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     Ok(())
 }
+use serde_json::Value;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum LogError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("JSON parsing error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+}
+
+pub struct LogProcessor {
+    field_filters: HashMap<String, String>,
+    required_fields: Vec<String>,
+}
+
+impl LogProcessor {
+    pub fn new() -> Self {
+        LogProcessor {
+            field_filters: HashMap::new(),
+            required_fields: Vec::new(),
+        }
+    }
+
+    pub fn add_filter(&mut self, field: &str, value: &str) {
+        self.field_filters.insert(field.to_string(), value.to_string());
+    }
+
+    pub fn require_field(&mut self, field: &str) {
+        self.required_fields.push(field.to_string());
+    }
+
+    pub fn process_file(&self, path: &str) -> Result<Vec<Value>, LogError> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut results = Vec::new();
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            match self.process_line(&line) {
+                Ok(Some(value)) => results.push(value),
+                Ok(None) => continue,
+                Err(e) => eprintln!("Line {} error: {}", line_num + 1, e),
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn process_line(&self, line: &str) -> Result<Option<Value>, LogError> {
+        let parsed: Value = serde_json::from_str(line)?;
+        
+        for field in &self.required_fields {
+            if !parsed.get(field).is_some() {
+                return Err(LogError::MissingField(field.clone()));
+            }
+        }
+
+        for (field, expected) in &self.field_filters {
+            if let Some(value) = parsed.get(field) {
+                if value.as_str() != Some(expected) {
+                    return Ok(None);
+                }
+            } else {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(parsed))
+    }
+
+    pub fn extract_fields(&self, logs: &[Value], fields: &[&str]) -> Vec<HashMap<String, String>> {
+        logs.iter()
+            .filter_map(|log| {
+                let mut extracted = HashMap::new();
+                
+                for field in fields {
+                    if let Some(value) = log.get(*field) {
+                        let str_value = match value {
+                            Value::String(s) => s.clone(),
+                            Value::Number(n) => n.to_string(),
+                            Value::Bool(b) => b.to_string(),
+                            _ => continue,
+                        };
+                        extracted.insert(field.to_string(), str_value);
+                    }
+                }
+                
+                if extracted.len() == fields.len() {
+                    Some(extracted)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_log_processing() {
+        let mut processor = LogProcessor::new();
+        processor.add_filter("level", "ERROR");
+        processor.require_field("timestamp");
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, r#"{{"level":"ERROR","timestamp":"2024-01-01","message":"Test error"}}"#).unwrap();
+        writeln!(temp_file, r#"{{"level":"INFO","timestamp":"2024-01-01","message":"Test info"}}"#).unwrap();
+
+        let results = processor.process_file(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(results.len(), 1);
+        
+        let extracted = processor.extract_fields(&results, &["level", "message"]);
+        assert_eq!(extracted[0]["level"], "ERROR");
+        assert_eq!(extracted[0]["message"], "Test error");
+    }
+}
