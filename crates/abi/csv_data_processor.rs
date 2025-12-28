@@ -101,3 +101,166 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     Ok(())
 }
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+pub struct CsvProcessor {
+    delimiter: char,
+    has_headers: bool,
+}
+
+impl CsvProcessor {
+    pub fn new(delimiter: char, has_headers: bool) -> Self {
+        CsvProcessor {
+            delimiter,
+            has_headers,
+        }
+    }
+
+    pub fn validate_file(&self, file_path: &str) -> Result<bool, Box<dyn Error>> {
+        let path = Path::new(file_path);
+        if !path.exists() {
+            return Err("File does not exist".into());
+        }
+
+        let file = File::open(path)?;
+        let mut rdr = csv::ReaderBuilder::new()
+            .delimiter(self.delimiter as u8)
+            .has_headers(self.has_headers)
+            .from_reader(file);
+
+        let mut record_count = 0;
+        for result in rdr.records() {
+            let record = result?;
+            if record.is_empty() {
+                return Err("Empty record found".into());
+            }
+            record_count += 1;
+        }
+
+        if record_count == 0 {
+            return Err("No valid records found".into());
+        }
+
+        Ok(true)
+    }
+
+    pub fn transform_column(
+        &self,
+        file_path: &str,
+        column_index: usize,
+        transform_fn: fn(&str) -> String,
+    ) -> Result<Vec<String>, Box<dyn Error>> {
+        let path = Path::new(file_path);
+        let file = File::open(path)?;
+        let mut rdr = csv::ReaderBuilder::new()
+            .delimiter(self.delimiter as u8)
+            .has_headers(self.has_headers)
+            .from_reader(file);
+
+        let mut transformed_values = Vec::new();
+        for result in rdr.records() {
+            let record = result?;
+            if let Some(field) = record.get(column_index) {
+                transformed_values.push(transform_fn(field));
+            }
+        }
+
+        Ok(transformed_values)
+    }
+
+    pub fn calculate_column_stats(
+        &self,
+        file_path: &str,
+        column_index: usize,
+    ) -> Result<(f64, f64, f64), Box<dyn Error>> {
+        let path = Path::new(file_path);
+        let file = File::open(path)?;
+        let mut rdr = csv::ReaderBuilder::new()
+            .delimiter(self.delimiter as u8)
+            .has_headers(self.has_headers)
+            .from_reader(file);
+
+        let mut values = Vec::new();
+        for result in rdr.records() {
+            let record = result?;
+            if let Some(field) = record.get(column_index) {
+                if let Ok(num) = field.parse::<f64>() {
+                    values.push(num);
+                }
+            }
+        }
+
+        if values.is_empty() {
+            return Err("No numeric values found in column".into());
+        }
+
+        let sum: f64 = values.iter().sum();
+        let count = values.len() as f64;
+        let mean = sum / count;
+
+        let variance: f64 = values.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / count;
+        let std_dev = variance.sqrt();
+
+        Ok((mean, variance, std_dev))
+    }
+}
+
+pub fn uppercase_transform(value: &str) -> String {
+    value.to_uppercase()
+}
+
+pub fn trim_transform(value: &str) -> String {
+    value.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn create_test_csv() -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "name,age,salary").unwrap();
+        writeln!(file, "John,30,50000").unwrap();
+        writeln!(file, "Jane,25,60000").unwrap();
+        writeln!(file, "Bob,35,55000").unwrap();
+        file
+    }
+
+    #[test]
+    fn test_validate_file() {
+        let test_file = create_test_csv();
+        let processor = CsvProcessor::new(',', true);
+        let result = processor.validate_file(test_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_transform_column() {
+        let test_file = create_test_csv();
+        let processor = CsvProcessor::new(',', true);
+        let result = processor.transform_column(
+            test_file.path().to_str().unwrap(),
+            0,
+            uppercase_transform,
+        );
+        assert!(result.is_ok());
+        let transformed = result.unwrap();
+        assert_eq!(transformed, vec!["JOHN", "JANE", "BOB"]);
+    }
+
+    #[test]
+    fn test_calculate_column_stats() {
+        let test_file = create_test_csv();
+        let processor = CsvProcessor::new(',', true);
+        let result = processor.calculate_column_stats(test_file.path().to_str().unwrap(), 2);
+        assert!(result.is_ok());
+        let (mean, variance, std_dev) = result.unwrap();
+        assert!((mean - 55000.0).abs() < 0.001);
+        assert!(variance > 0.0);
+        assert!(std_dev > 0.0);
+    }
+}
