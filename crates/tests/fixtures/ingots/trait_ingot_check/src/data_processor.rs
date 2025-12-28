@@ -62,17 +62,19 @@ impl DataProcessor {
         }
 
         let mut column_data = Vec::with_capacity(records.len());
+        
         for (row_index, record) in records.iter().enumerate() {
             if column_index >= record.len() {
                 return Err(format!(
-                    "Column index {} out of bounds for record {} (has {} columns)",
+                    "Column index {} out of bounds for record {} (max index: {})",
                     column_index,
                     row_index + 1,
-                    record.len()
+                    record.len() - 1
                 ));
             }
             column_data.push(record[column_index].clone());
         }
+        
         Ok(column_data)
     }
 }
@@ -84,37 +86,39 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_csv_with_header() {
+    fn test_process_file_with_header() {
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "Alice,30,New York").unwrap();
-        writeln!(temp_file, "Bob,25,London").unwrap();
-
+        writeln!(temp_file, "John,30,New York").unwrap();
+        writeln!(temp_file, "Alice,25,London").unwrap();
+        
         let processor = DataProcessor::new(',', true);
         let result = processor.process_file(temp_file.path()).unwrap();
         
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["Alice", "30", "New York"]);
-        assert_eq!(result[1], vec!["Bob", "25", "London"]);
+        assert_eq!(result[0], vec!["John", "30", "New York"]);
+        assert_eq!(result[1], vec!["Alice", "25", "London"]);
     }
 
     #[test]
     fn test_validate_records_valid() {
+        let processor = DataProcessor::new(',', false);
         let records = vec![
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
             vec!["d".to_string(), "e".to_string(), "f".to_string()],
         ];
-        let processor = DataProcessor::new(',', false);
+        
         assert!(processor.validate_records(&records, 3).is_ok());
     }
 
     #[test]
     fn test_extract_column() {
+        let processor = DataProcessor::new(',', false);
         let records = vec![
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
             vec!["d".to_string(), "e".to_string(), "f".to_string()],
         ];
-        let processor = DataProcessor::new(',', false);
+        
         let column = processor.extract_column(&records, 1).unwrap();
         assert_eq!(column, vec!["b", "e"]);
     }
