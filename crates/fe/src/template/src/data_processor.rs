@@ -370,3 +370,86 @@ mod tests {
         assert_eq!(category_a.len(), 2);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+}
+
+pub fn load_csv_data(file_path: &str) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let path = Path::new(file_path);
+    let file = File::open(path)?;
+    let mut rdr = csv::Reader::from_reader(file);
+    
+    let mut records = Vec::new();
+    
+    for result in rdr.deserialize() {
+        let record: DataRecord = result?;
+        records.push(record);
+    }
+    
+    Ok(records)
+}
+
+pub fn filter_records(records: &[DataRecord], min_value: f64) -> Vec<DataRecord> {
+    records
+        .iter()
+        .filter(|r| r.value >= min_value)
+        .cloned()
+        .collect()
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
+    if records.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+    
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let count = records.len() as f64;
+    let mean = sum / count;
+    
+    let variance: f64 = records
+        .iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (mean, variance, std_dev)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_filter_records() {
+        let records = vec![
+            DataRecord { id: 1, value: 10.5, category: "A".to_string() },
+            DataRecord { id: 2, value: 5.2, category: "B".to_string() },
+            DataRecord { id: 3, value: 15.8, category: "A".to_string() },
+        ];
+        
+        let filtered = filter_records(&records, 10.0);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|r| r.value >= 10.0));
+    }
+    
+    #[test]
+    fn test_statistics_calculation() {
+        let records = vec![
+            DataRecord { id: 1, value: 2.0, category: "A".to_string() },
+            DataRecord { id: 2, value: 4.0, category: "B".to_string() },
+            DataRecord { id: 3, value: 6.0, category: "A".to_string() },
+        ];
+        
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        assert_eq!(mean, 4.0);
+        assert_eq!(variance, 2.6666666666666665);
+        assert_eq!(std_dev, 1.632993161855452);
+    }
+}
