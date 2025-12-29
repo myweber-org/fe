@@ -1,81 +1,53 @@
-
-use serde_json::{Value, Map};
-use std::fs;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, Read};
 use std::path::Path;
 
-pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], output_path: P) -> Result<(), Box<dyn std::error::Error>> {
-    let mut merged = Map::new();
-    
-    for path in paths {
-        let content = fs::read_to_string(path)?;
-        let json: Value = serde_json::from_str(&content)?;
-        
-        if let Value::Object(obj) = json {
-            merge_objects(&mut merged, obj);
-        }
-    }
-    
-    let output_json = Value::Object(merged);
-    let serialized = serde_json::to_string_pretty(&output_json)?;
-    fs::write(output_path, serialized)?;
-    
-    Ok(())
-}
+type JsonValue = serde_json::Value;
 
-fn merge_objects(target: &mut Map<String, Value>, source: Map<String, Value>) {
-    for (key, source_value) in source {
-        match target.get_mut(&key) {
-            Some(target_value) => {
-                if let (Value::Object(mut target_obj), Value::Object(source_obj)) = (target_value.clone(), source_value.clone()) {
-                    merge_objects(&mut target_obj, source_obj);
-                    target.insert(key, Value::Object(target_obj));
-                } else if target_value != &source_value {
-                    let merged_array = Value::Array(vec![target_value.clone(), source_value]);
-                    target.insert(key, merged_array);
-                }
+pub fn merge_json_files(file_paths: &[impl AsRef<Path>]) -> Result<JsonValue, Box<dyn std::error::Error>> {
+    let mut merged = HashMap::new();
+
+    for path in file_paths {
+        let file = File::open(path.as_ref())?;
+        let mut reader = BufReader::new(file);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents)?;
+
+        let json_data: JsonValue = serde_json::from_str(&contents)?;
+
+        if let JsonValue::Object(map) = json_data {
+            for (key, value) in map {
+                merged.insert(key, value);
             }
-            None => {
-                target.insert(key, source_value);
-            }
+        } else {
+            return Err("Each JSON file must contain an object at the root".into());
         }
     }
+
+    Ok(serde_json::to_value(merged)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use tempfile::NamedTempFile;
-    
+
     #[test]
-    fn test_basic_merge() {
-        let file1 = NamedTempFile::new().unwrap();
-        let file2 = NamedTempFile::new().unwrap();
-        let output = NamedTempFile::new().unwrap();
-        
-        fs::write(&file1, r#"{"a": 1, "b": {"x": 10}}"#).unwrap();
-        fs::write(&file2, r#"{"c": 3, "b": {"y": 20}}"#).unwrap();
-        
-        merge_json_files(&[&file1, &file2], &output).unwrap();
-        
-        let result = fs::read_to_string(output).unwrap();
-        assert!(result.contains("\"a\": 1"));
-        assert!(result.contains("\"c\": 3"));
-        assert!(result.contains("\"x\": 10"));
-        assert!(result.contains("\"y\": 20"));
-    }
-    
-    #[test]
-    fn test_conflict_resolution() {
-        let file1 = NamedTempFile::new().unwrap();
-        let file2 = NamedTempFile::new().unwrap();
-        let output = NamedTempFile::new().unwrap();
-        
-        fs::write(&file1, r#"{"version": "1.0"}"#).unwrap();
-        fs::write(&file2, r#"{"version": "2.0"}"#).unwrap();
-        
-        merge_json_files(&[&file1, &file2], &output).unwrap();
-        
-        let result = fs::read_to_string(output).unwrap();
-        assert!(result.contains(r#""version": ["1.0", "2.0"]"#));
+    fn test_merge_json_files() {
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
+
+        writeln!(file1, r#"{"a": 1, "b": "test"}"#).unwrap();
+        writeln!(file2, r#"{"c": true, "d": [1,2,3]}"#).unwrap();
+
+        let result = merge_json_files(&[file1.path(), file2.path()]).unwrap();
+        let obj = result.as_object().unwrap();
+
+        assert_eq!(obj.get("a").unwrap(), &JsonValue::from(1));
+        assert_eq!(obj.get("b").unwrap(), &JsonValue::from("test"));
+        assert_eq!(obj.get("c").unwrap(), &JsonValue::from(true));
+        assert_eq!(obj.get("d").unwrap(), &JsonValue::from(vec![1, 2, 3]));
     }
 }
