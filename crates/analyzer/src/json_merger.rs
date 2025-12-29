@@ -51,3 +51,131 @@ mod tests {
         assert_eq!(obj.get("age").unwrap().as_u64().unwrap(), 35);
     }
 }
+use serde_json::{Map, Value};
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            continue;
+        }
+
+        let content = fs::read_to_string(path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(obj) = json_value {
+            for (key, value) in obj {
+                merged_map.insert(key, value);
+            }
+        }
+    }
+
+    Ok(Value::Object(merged_map))
+}
+
+pub fn merge_with_strategy(
+    file_paths: &[&str],
+    strategy: MergeStrategy,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    match strategy {
+        MergeStrategy::Overwrite => merge_json_files(file_paths),
+        MergeStrategy::CombineArrays => merge_with_array_combination(file_paths),
+    }
+}
+
+fn merge_with_array_combination(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut combined_map: HashMap<String, Vec<Value>> = HashMap::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            continue;
+        }
+
+        let content = fs::read_to_string(path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(obj) = json_value {
+            for (key, value) in obj {
+                let entry = combined_map.entry(key).or_insert_with(Vec::new);
+                match value {
+                    Value::Array(arr) => entry.extend(arr),
+                    _ => entry.push(value),
+                }
+            }
+        }
+    }
+
+    let mut result_map = Map::new();
+    for (key, values) in combined_map {
+        result_map.insert(key, Value::Array(values));
+    }
+
+    Ok(Value::Object(result_map))
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MergeStrategy {
+    Overwrite,
+    CombineArrays,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn create_temp_json(content: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "{}", content).unwrap();
+        file
+    }
+
+    #[test]
+    fn test_merge_json_files() {
+        let file1 = create_temp_json(r#"{"a": 1, "b": 2}"#);
+        let file2 = create_temp_json(r#"{"c": 3, "d": 4}"#);
+
+        let result = merge_json_files(&[
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ])
+        .unwrap();
+
+        let expected = json!({
+            "a": 1,
+            "b": 2,
+            "c": 3,
+            "d": 4
+        });
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_merge_with_array_combination() {
+        let file1 = create_temp_json(r#"{"items": [1, 2], "data": "test1"}"#);
+        let file2 = create_temp_json(r#"{"items": [3, 4], "extra": true}"#);
+
+        let result = merge_with_array_combination(&[
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ])
+        .unwrap();
+
+        let expected = json!({
+            "items": [1, 2, 3, 4],
+            "data": ["test1"],
+            "extra": [true]
+        });
+
+        assert_eq!(result, expected);
+    }
+}
