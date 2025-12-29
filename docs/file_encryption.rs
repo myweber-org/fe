@@ -75,3 +75,56 @@ mod tests {
         assert!(decrypt_file(&ciphertext, &key2).is_err());
     }
 }
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use std::error::Error;
+
+pub fn encrypt_data(plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let key = Aes256Gcm::generate_key(&mut OsRng);
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = Nonce::from_slice(b"unique nonce");
+    
+    let ciphertext = cipher.encrypt(nonce, plaintext)
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+    
+    let mut result = Vec::with_capacity(key.len() + ciphertext.len());
+    result.extend_from_slice(&key);
+    result.extend_from_slice(&ciphertext);
+    
+    Ok(result)
+}
+
+pub fn decrypt_data(ciphertext: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    if ciphertext.len() < 32 {
+        return Err("Invalid ciphertext length".into());
+    }
+    
+    let key = Key::<Aes256Gcm>::from_slice(&ciphertext[..32]);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(b"unique nonce");
+    
+    cipher.decrypt(nonce, &ciphertext[32..])
+        .map_err(|e| format!("Decryption failed: {}", e).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encryption_roundtrip() {
+        let original_data = b"secret message";
+        let encrypted = encrypt_data(original_data).unwrap();
+        let decrypted = decrypt_data(&encrypted).unwrap();
+        
+        assert_eq!(original_data.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn test_invalid_ciphertext() {
+        let result = decrypt_data(b"short");
+        assert!(result.is_err());
+    }
+}
