@@ -37,3 +37,77 @@ pub fn clean_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Erro
     wtr.flush()?;
     Ok(())
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub struct CsvFilter {
+    delimiter: char,
+    has_header: bool,
+}
+
+impl CsvFilter {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        CsvFilter {
+            delimiter,
+            has_header,
+        }
+    }
+
+    pub fn filter_rows<P>(
+        &self,
+        file_path: P,
+        predicate: impl Fn(&[String]) -> bool,
+    ) -> Result<Vec<Vec<String>>, Box<dyn Error>>
+    where
+        P: AsRef<std::path::Path>,
+    {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
+
+        if self.has_header {
+            lines.next();
+        }
+
+        let mut filtered_rows = Vec::new();
+
+        for line_result in lines {
+            let line = line_result?;
+            let fields: Vec<String> = line
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if predicate(&fields) {
+                filtered_rows.push(fields);
+            }
+        }
+
+        Ok(filtered_rows)
+    }
+
+    pub fn extract_column(&self, rows: &[Vec<String>], column_index: usize) -> Vec<String> {
+        rows.iter()
+            .filter_map(|row| row.get(column_index).cloned())
+            .collect()
+    }
+}
+
+pub fn calculate_average(values: &[String]) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut count = 0;
+
+    for value in values {
+        if let Ok(num) = value.parse::<f64>() {
+            sum += num;
+            count += 1;
+        }
+    }
+
+    if count > 0 {
+        Some(sum / count as f64)
+    } else {
+        None
+    }
+}
