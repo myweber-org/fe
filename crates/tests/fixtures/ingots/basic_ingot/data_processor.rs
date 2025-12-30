@@ -16,7 +16,7 @@ impl DataProcessor {
         }
     }
 
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+    pub fn process_csv<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
         let file = File::open(file_path)?;
         let reader = BufReader::new(file);
         let mut records = Vec::new();
@@ -45,11 +45,24 @@ impl DataProcessor {
         !record.is_empty() && record.iter().all(|field| !field.is_empty())
     }
 
-    pub fn filter_valid_records(&self, records: Vec<Vec<String>>) -> Vec<Vec<String>> {
-        records
-            .into_iter()
-            .filter(|record| self.validate_record(record))
-            .collect()
+    pub fn calculate_average(&self, records: &[Vec<String>], column_index: usize) -> Option<f64> {
+        let mut sum = 0.0;
+        let mut count = 0;
+
+        for record in records {
+            if record.len() > column_index {
+                if let Ok(value) = record[column_index].parse::<f64>() {
+                    sum += value;
+                    count += 1;
+                }
+            }
+        }
+
+        if count > 0 {
+            Some(sum / count as f64)
+        } else {
+            None
+        }
     }
 }
 
@@ -60,24 +73,31 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_file_with_header() {
+    fn test_csv_processing() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "Alice,30,New York").unwrap();
-        writeln!(temp_file, "Bob,25,London").unwrap();
+        writeln!(temp_file, "name,age,salary").unwrap();
+        writeln!(temp_file, "Alice,30,50000.0").unwrap();
+        writeln!(temp_file, "Bob,25,45000.0").unwrap();
+        writeln!(temp_file, "Charlie,35,55000.0").unwrap();
 
         let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path()).unwrap();
+        let records = processor.process_csv(temp_file.path()).unwrap();
         
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["Alice", "30", "New York"]);
+        assert_eq!(records.len(), 3);
+        assert!(processor.validate_record(&records[0]));
+        
+        let avg_age = processor.calculate_average(&records, 1);
+        assert!(avg_age.is_some());
+        assert!((avg_age.unwrap() - 30.0).abs() < 0.001);
     }
 
     #[test]
-    fn test_validate_record() {
+    fn test_invalid_record() {
         let processor = DataProcessor::new(',', false);
-        assert!(processor.validate_record(&["test".to_string(), "data".to_string()]));
-        assert!(!processor.validate_record(&[]));
-        assert!(!processor.validate_record(&["".to_string(), "value".to_string()]));
+        let valid_record = vec!["data".to_string(), "value".to_string()];
+        let invalid_record = vec!["".to_string(), "value".to_string()];
+        
+        assert!(processor.validate_record(&valid_record));
+        assert!(!processor.validate_record(&invalid_record));
     }
 }
