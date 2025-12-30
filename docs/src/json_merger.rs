@@ -60,4 +60,27 @@ mod tests {
 
         assert_eq!(result, expected);
     }
+}use serde_json::{json, Value};
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files(file_paths: &[&str], output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged_array = Vec::new();
+
+    for file_path in file_paths {
+        let content = fs::read_to_string(file_path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
+        merged_array.push(json_value);
+    }
+
+    let output_json = json!(merged_array);
+    let output_str = serde_json::to_string_pretty(&output_json)?;
+
+    let output_dir = Path::new(output_path).parent().unwrap();
+    if !output_dir.exists() {
+        fs::create_dir_all(output_dir)?;
+    }
+
+    fs::write(output_path, output_str)?;
+    Ok(())
 }
