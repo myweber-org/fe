@@ -84,4 +84,84 @@ mod tests {
         assert!(parsed.get("item3").is_none());
         assert!(parsed.get("item4").is_some());
     }
+}use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
+use std::path::Path;
+
+type JsonValue = serde_json::Value;
+
+pub fn merge_json_files(file_paths: &[impl AsRef<Path>]) -> Result<JsonValue, Box<dyn std::error::Error>> {
+    let mut merged_array = Vec::new();
+
+    for path in file_paths {
+        let file = File::open(path.as_ref())?;
+        let mut reader = BufReader::new(file);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents)?;
+
+        let json_value: JsonValue = serde_json::from_str(&contents)?;
+        
+        match json_value {
+            JsonValue::Array(arr) => {
+                merged_array.extend(arr);
+            }
+            _ => {
+                merged_array.push(json_value);
+            }
+        }
+    }
+
+    Ok(JsonValue::Array(merged_array))
+}
+
+pub fn write_merged_json(output_path: impl AsRef<Path>, json_value: &JsonValue) -> Result<(), Box<dyn std::error::Error>> {
+    let pretty_json = serde_json::to_string_pretty(json_value)?;
+    let mut file = File::create(output_path)?;
+    file.write_all(pretty_json.as_bytes())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_json_arrays() -> Result<(), Box<dyn std::error::Error>> {
+        let json1 = r#"[{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]"#;
+        let json2 = r#"[{"id": 3, "name": "Charlie"}]"#;
+
+        let mut file1 = NamedTempFile::new()?;
+        let mut file2 = NamedTempFile::new()?;
+        file1.write_all(json1.as_bytes())?;
+        file2.write_all(json2.as_bytes())?;
+
+        let paths = [file1.path(), file2.path()];
+        let merged = merge_json_files(&paths)?;
+
+        assert!(merged.is_array());
+        let array = merged.as_array().unwrap();
+        assert_eq!(array.len(), 3);
+        assert_eq!(array[0]["name"], "Alice");
+        assert_eq!(array[2]["name"], "Charlie");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_merge_single_json_object() -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"{"status": "success", "code": 200}"#;
+        let mut file = NamedTempFile::new()?;
+        file.write_all(json.as_bytes())?;
+
+        let merged = merge_json_files(&[file.path()])?;
+        assert!(merged.is_array());
+        let array = merged.as_array().unwrap();
+        assert_eq!(array.len(), 1);
+        assert_eq!(array[0]["code"], 200);
+
+        Ok(())
+    }
 }
