@@ -1,125 +1,144 @@
 
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub struct ProcessedData {
+    pub record_id: u64,
+    pub normalized_values: Vec<f64>,
+    pub is_valid: bool,
+    pub processing_time_ms: u64,
+}
 
 pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
+    validation_threshold: f64,
+    normalization_factor: f64,
 }
 
 impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
+    pub fn new(validation_threshold: f64, normalization_factor: f64) -> Self {
         DataProcessor {
-            delimiter,
-            has_header,
+            validation_threshold,
+            normalization_factor,
         }
     }
 
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        let mut lines = reader.lines();
+    pub fn process_record(&self, record: &DataRecord) -> Result<ProcessedData, Box<dyn Error>> {
+        let start_time = std::time::Instant::now();
+        
+        let is_valid = self.validate_record(record);
+        let normalized_values = if is_valid {
+            self.normalize_values(&record.values)
+        } else {
+            Vec::new()
+        };
+        
+        let processing_time = start_time.elapsed().as_millis() as u64;
+        
+        Ok(ProcessedData {
+            record_id: record.id,
+            normalized_values,
+            is_valid,
+            processing_time_ms: processing_time,
+        })
+    }
 
-        if self.has_header {
-            lines.next();
+    fn validate_record(&self, record: &DataRecord) -> bool {
+        if record.values.is_empty() {
+            return false;
         }
-
-        for line_result in lines {
-            let line = line_result?;
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
+        
+        for value in &record.values {
+            if value.is_nan() || value.is_infinite() {
+                return false;
+            }
             
-            if !fields.is_empty() && !fields.iter().all(|f| f.is_empty()) {
-                records.push(fields);
+            if value.abs() > self.validation_threshold {
+                return false;
             }
-        }
-
-        Ok(records)
-    }
-
-    pub fn validate_records(&self, records: &[Vec<String>], expected_columns: usize) -> Result<(), String> {
-        for (index, record) in records.iter().enumerate() {
-            if record.len() != expected_columns {
-                return Err(format!(
-                    "Record {} has {} columns, expected {}",
-                    index + 1,
-                    record.len(),
-                    expected_columns
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    pub fn extract_column(&self, records: &[Vec<String>], column_index: usize) -> Result<Vec<String>, String> {
-        if records.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut column_data = Vec::with_capacity(records.len());
-        
-        for (row_index, record) in records.iter().enumerate() {
-            if column_index >= record.len() {
-                return Err(format!(
-                    "Column index {} out of bounds for record {} (max index: {})",
-                    column_index,
-                    row_index + 1,
-                    record.len() - 1
-                ));
-            }
-            column_data.push(record[column_index].clone());
         }
         
-        Ok(column_data)
+        true
+    }
+
+    fn normalize_values(&self, values: &[f64]) -> Vec<f64> {
+        values
+            .iter()
+            .map(|&v| v * self.normalization_factor)
+            .collect()
+    }
+
+    pub fn batch_process(&self, records: &[DataRecord]) -> Vec<Result<ProcessedData, Box<dyn Error>>> {
+        records
+            .iter()
+            .map(|record| self.process_record(record))
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_file_with_header() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "John,30,New York").unwrap();
-        writeln!(temp_file, "Alice,25,London").unwrap();
+    fn test_data_processor_validation() {
+        let processor = DataProcessor::new(1000.0, 2.0);
         
-        let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path()).unwrap();
+        let valid_record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![10.5, 20.3, 30.7],
+            metadata: HashMap::new(),
+        };
         
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["John", "30", "New York"]);
-        assert_eq!(result[1], vec!["Alice", "25", "London"]);
+        let invalid_record = DataRecord {
+            id: 2,
+            timestamp: 1234567891,
+            values: vec![f64::NAN, 20.3],
+            metadata: HashMap::new(),
+        };
+        
+        assert!(processor.validate_record(&valid_record));
+        assert!(!processor.validate_record(&invalid_record));
     }
 
     #[test]
-    fn test_validate_records_valid() {
-        let processor = DataProcessor::new(',', false);
-        let records = vec![
-            vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            vec!["d".to_string(), "e".to_string(), "f".to_string()],
-        ];
+    fn test_normalization() {
+        let processor = DataProcessor::new(1000.0, 0.5);
+        let values = vec![2.0, 4.0, 6.0];
+        let normalized = processor.normalize_values(&values);
         
-        assert!(processor.validate_records(&records, 3).is_ok());
+        assert_eq!(normalized, vec![1.0, 2.0, 3.0]);
     }
 
     #[test]
-    fn test_extract_column() {
-        let processor = DataProcessor::new(',', false);
-        let records = vec![
-            vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            vec!["d".to_string(), "e".to_string(), "f".to_string()],
-        ];
+    fn test_process_record() {
+        let processor = DataProcessor::new(1000.0, 2.0);
         
-        let column = processor.extract_column(&records, 1).unwrap();
-        assert_eq!(column, vec!["b", "e"]);
+        let mut metadata = HashMap::new();
+        metadata.insert("source".to_string(), "test".to_string());
+        
+        let record = DataRecord {
+            id: 42,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0],
+            metadata,
+        };
+        
+        let result = processor.process_record(&record).unwrap();
+        
+        assert_eq!(result.record_id, 42);
+        assert_eq!(result.normalized_values, vec![2.0, 4.0, 6.0]);
+        assert!(result.is_valid);
+        assert!(result.processing_time_ms > 0);
     }
 }
