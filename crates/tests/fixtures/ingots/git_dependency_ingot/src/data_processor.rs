@@ -472,4 +472,135 @@ mod tests {
         assert!((stats.1 - 8.0).abs() < 0.001);
         assert!((stats.2 - 2.828).abs() < 0.001);
     }
+}use std::collections::HashMap;
+
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidationRule {
+    pub field_name: String,
+    pub min_value: f64,
+    pub max_value: f64,
+    pub required: bool,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
+            validation_rules: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn process_dataset(&mut self, dataset_name: &str, data: &[f64]) -> Result<Vec<f64>, String> {
+        if data.is_empty() {
+            return Err("Dataset cannot be empty".to_string());
+        }
+
+        for rule in &self.validation_rules {
+            if rule.required && data.iter().any(|&x| x.is_nan()) {
+                return Err(format!("Field '{}' contains invalid NaN values", rule.field_name));
+            }
+        }
+
+        let processed_data: Vec<f64> = data
+            .iter()
+            .map(|&value| {
+                let mut transformed = value;
+                
+                for rule in &self.validation_rules {
+                    if value < rule.min_value {
+                        transformed = rule.min_value;
+                    } else if value > rule.max_value {
+                        transformed = rule.max_value;
+                    }
+                }
+                
+                transformed * 1.05
+            })
+            .collect();
+
+        self.cache.insert(dataset_name.to_string(), processed_data.clone());
+        
+        Ok(processed_data)
+    }
+
+    pub fn get_cached_data(&self, dataset_name: &str) -> Option<&Vec<f64>> {
+        self.cache.get(dataset_name)
+    }
+
+    pub fn calculate_statistics(&self, dataset_name: &str) -> Option<DatasetStats> {
+        self.cache.get(dataset_name).map(|data| {
+            let count = data.len();
+            let sum: f64 = data.iter().sum();
+            let mean = sum / count as f64;
+            let variance: f64 = data.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / count as f64;
+            
+            DatasetStats {
+                count,
+                sum,
+                mean,
+                variance,
+                std_dev: variance.sqrt(),
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DatasetStats {
+    pub count: usize,
+    pub sum: f64,
+    pub mean: f64,
+    pub variance: f64,
+    pub std_dev: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        
+        let rule = ValidationRule {
+            field_name: "temperature".to_string(),
+            min_value: -50.0,
+            max_value: 100.0,
+            required: true,
+        };
+        processor.add_validation_rule(rule);
+
+        let test_data = vec![25.0, 30.0, 35.0, 40.0];
+        let result = processor.process_dataset("test_set", &test_data);
+        
+        assert!(result.is_ok());
+        assert_eq!(processor.get_cached_data("test_set").unwrap().len(), 4);
+    }
+
+    #[test]
+    fn test_validation_failure() {
+        let mut processor = DataProcessor::new();
+        
+        let rule = ValidationRule {
+            field_name: "pressure".to_string(),
+            min_value: 0.0,
+            max_value: 10.0,
+            required: true,
+        };
+        processor.add_validation_rule(rule);
+
+        let invalid_data = vec![5.0, f64::NAN, 8.0];
+        let result = processor.process_dataset("invalid_set", &invalid_data);
+        
+        assert!(result.is_err());
+    }
 }
