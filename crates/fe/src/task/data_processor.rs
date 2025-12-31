@@ -1,53 +1,72 @@
-
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DataRecord {
-    id: u32,
-    category: String,
-    value: f64,
-    metadata: HashMap<String, String>,
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
 }
 
-impl DataRecord {
-    pub fn new(id: u32, category: String, value: f64) -> Self {
-        Self {
-            id,
-            category,
-            value,
-            metadata: HashMap::new(),
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
         }
     }
 
-    pub fn validate(&self) -> Result<(), String> {
-        if self.id == 0 {
-            return Err("ID cannot be zero".to_string());
+    pub fn process_dataset(&mut self, key: &str, data: &[f64]) -> Result<Vec<f64>, String> {
+        if data.is_empty() {
+            return Err("Empty dataset provided".to_string());
         }
-        if self.category.is_empty() {
-            return Err("Category cannot be empty".to_string());
+
+        if let Some(cached) = self.cache.get(key) {
+            return Ok(cached.clone());
         }
-        if self.value < 0.0 {
-            return Err("Value cannot be negative".to_string());
-        }
-        Ok(())
+
+        let validated = self.validate_data(data)?;
+        let normalized = self.normalize_data(&validated);
+        let transformed = self.apply_transformations(&normalized);
+
+        self.cache.insert(key.to_string(), transformed.clone());
+        Ok(transformed)
     }
 
-    pub fn transform(&mut self, multiplier: f64) {
-        self.value *= multiplier;
+    fn validate_data(&self, data: &[f64]) -> Result<Vec<f64>, String> {
+        for &value in data {
+            if !value.is_finite() {
+                return Err("Invalid numeric value detected".to_string());
+            }
+        }
+        Ok(data.to_vec())
     }
 
-    pub fn add_metadata(&mut self, key: String, value: String) {
-        self.metadata.insert(key, value);
-    }
-}
+    fn normalize_data(&self, data: &[f64]) -> Vec<f64> {
+        let mean = data.iter().sum::<f64>() / data.len() as f64;
+        let variance = data.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / data.len() as f64;
+        let std_dev = variance.sqrt();
 
-pub fn process_records(records: &mut [DataRecord], multiplier: f64) -> Result<(), String> {
-    for record in records.iter_mut() {
-        record.validate()?;
-        record.transform(multiplier);
+        if std_dev.abs() < 1e-10 {
+            return vec![0.0; data.len()];
+        }
+
+        data.iter()
+            .map(|&x| (x - mean) / std_dev)
+            .collect()
     }
-    Ok(())
+
+    fn apply_transformations(&self, data: &[f64]) -> Vec<f64> {
+        data.iter()
+            .map(|&x| x.powi(2).ln().max(0.0))
+            .collect()
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn cache_stats(&self) -> (usize, usize) {
+        let total_items: usize = self.cache.values().map(|v| v.len()).sum();
+        (self.cache.len(), total_items)
+    }
 }
 
 #[cfg(test)]
@@ -55,25 +74,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_record_validation() {
-        let valid_record = DataRecord::new(1, "test".to_string(), 100.0);
-        assert!(valid_record.validate().is_ok());
-
-        let invalid_record = DataRecord::new(0, "test".to_string(), 100.0);
-        assert!(invalid_record.validate().is_err());
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        let test_data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        
+        let result = processor.process_dataset("test", &test_data);
+        assert!(result.is_ok());
+        
+        let processed = result.unwrap();
+        assert_eq!(processed.len(), test_data.len());
+        
+        let stats = processor.cache_stats();
+        assert_eq!(stats.0, 1);
     }
 
     #[test]
-    fn test_record_transformation() {
-        let mut record = DataRecord::new(1, "test".to_string(), 100.0);
-        record.transform(2.0);
-        assert_eq!(record.value, 200.0);
-    }
-
-    #[test]
-    fn test_metadata_addition() {
-        let mut record = DataRecord::new(1, "test".to_string(), 100.0);
-        record.add_metadata("source".to_string(), "api".to_string());
-        assert_eq!(record.metadata.get("source"), Some(&"api".to_string()));
+    fn test_invalid_data() {
+        let mut processor = DataProcessor::new();
+        let invalid_data = vec![1.0, f64::NAN, 3.0];
+        
+        let result = processor.process_dataset("invalid", &invalid_data);
+        assert!(result.is_err());
     }
 }
