@@ -96,3 +96,131 @@ mod tests {
         assert_eq!(column, vec!["a".to_string(), "c".to_string()]);
     }
 }
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum DataError {
+    #[error("Invalid data format")]
+    InvalidFormat,
+    #[error("Data validation failed: {0}")]
+    ValidationFailed(String),
+    #[error("Transformation error: {0}")]
+    TransformationError(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataRecord {
+    pub id: u64,
+    pub value: f64,
+    pub timestamp: i64,
+    pub metadata: Option<String>,
+}
+
+impl DataRecord {
+    pub fn validate(&self) -> Result<(), DataError> {
+        if self.id == 0 {
+            return Err(DataError::ValidationFailed("ID cannot be zero".to_string()));
+        }
+        
+        if self.value.is_nan() || self.value.is_infinite() {
+            return Err(DataError::ValidationFailed("Value must be finite".to_string()));
+        }
+        
+        if self.timestamp < 0 {
+            return Err(DataError::ValidationFailed("Timestamp cannot be negative".to_string()));
+        }
+        
+        Ok(())
+    }
+    
+    pub fn transform(&mut self, multiplier: f64) -> Result<(), DataError> {
+        if multiplier <= 0.0 {
+            return Err(DataError::TransformationError(
+                "Multiplier must be positive".to_string()
+            ));
+        }
+        
+        self.value *= multiplier;
+        self.timestamp += 1;
+        
+        Ok(())
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord], multiplier: f64) -> Result<Vec<DataRecord>, DataError> {
+    let mut processed = Vec::with_capacity(records.len());
+    
+    for record in records.iter_mut() {
+        record.validate()?;
+        record.transform(multiplier)?;
+        processed.push(record.clone());
+    }
+    
+    Ok(processed)
+}
+
+pub fn filter_records(records: &[DataRecord], min_value: f64) -> Vec<DataRecord> {
+    records
+        .iter()
+        .filter(|r| r.value >= min_value)
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_valid_record() {
+        let record = DataRecord {
+            id: 1,
+            value: 42.0,
+            timestamp: 1234567890,
+            metadata: Some("test".to_string()),
+        };
+        
+        assert!(record.validate().is_ok());
+    }
+    
+    #[test]
+    fn test_invalid_record() {
+        let record = DataRecord {
+            id: 0,
+            value: f64::NAN,
+            timestamp: -1,
+            metadata: None,
+        };
+        
+        assert!(record.validate().is_err());
+    }
+    
+    #[test]
+    fn test_transform_record() {
+        let mut record = DataRecord {
+            id: 1,
+            value: 10.0,
+            timestamp: 1000,
+            metadata: None,
+        };
+        
+        assert!(record.transform(2.0).is_ok());
+        assert_eq!(record.value, 20.0);
+        assert_eq!(record.timestamp, 1001);
+    }
+    
+    #[test]
+    fn test_filter_records() {
+        let records = vec![
+            DataRecord { id: 1, value: 5.0, timestamp: 1000, metadata: None },
+            DataRecord { id: 2, value: 15.0, timestamp: 1001, metadata: None },
+            DataRecord { id: 3, value: 25.0, timestamp: 1002, metadata: None },
+        ];
+        
+        let filtered = filter_records(&records, 10.0);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].id, 2);
+        assert_eq!(filtered[1].id, 3);
+    }
+}
