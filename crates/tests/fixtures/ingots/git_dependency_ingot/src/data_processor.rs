@@ -125,4 +125,111 @@ mod tests {
         assert_eq!(stats.mean, 2.0);
         assert_eq!(stats.sum, 6.0);
     }
+}use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub timestamp: i64,
+}
+
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    InvalidValue,
+    InvalidTimestamp,
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "ID must be greater than 0"),
+            ValidationError::InvalidValue => write!(f, "Value must be between 0.0 and 1000.0"),
+            ValidationError::InvalidTimestamp => write!(f, "Timestamp must be non-negative"),
+        }
+    }
+}
+
+impl Error for ValidationError {}
+
+impl DataRecord {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.id == 0 {
+            return Err(ValidationError::InvalidId);
+        }
+        
+        if self.value < 0.0 || self.value > 1000.0 {
+            return Err(ValidationError::InvalidValue);
+        }
+        
+        if self.timestamp < 0 {
+            return Err(ValidationError::InvalidTimestamp);
+        }
+        
+        Ok(())
+    }
+    
+    pub fn transform(&mut self, multiplier: f64) -> Result<(), Box<dyn Error>> {
+        self.validate()?;
+        
+        if multiplier <= 0.0 {
+            return Err("Multiplier must be positive".into());
+        }
+        
+        self.value *= multiplier;
+        Ok(())
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord], multiplier: f64) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let mut processed = Vec::with_capacity(records.len());
+    
+    for record in records {
+        let mut cloned = record.clone();
+        cloned.transform(multiplier)?;
+        processed.push(cloned);
+    }
+    
+    Ok(processed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_valid_record() {
+        let record = DataRecord {
+            id: 1,
+            value: 100.0,
+            timestamp: 1625097600,
+        };
+        
+        assert!(record.validate().is_ok());
+    }
+    
+    #[test]
+    fn test_invalid_id() {
+        let record = DataRecord {
+            id: 0,
+            value: 100.0,
+            timestamp: 1625097600,
+        };
+        
+        assert!(matches!(record.validate(), Err(ValidationError::InvalidId)));
+    }
+    
+    #[test]
+    fn test_transform_record() {
+        let mut record = DataRecord {
+            id: 1,
+            value: 100.0,
+            timestamp: 1625097600,
+        };
+        
+        assert!(record.transform(2.0).is_ok());
+        assert_eq!(record.value, 200.0);
+    }
 }
