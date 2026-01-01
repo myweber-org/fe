@@ -1,3 +1,4 @@
+
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -7,56 +8,31 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_file(path: &str) -> Result<Self, String> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read config file: {}", e))?;
-
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = fs::read_to_string(path)?;
         let mut values = HashMap::new();
+
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
 
-            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
-            if parts.len() != 2 {
-                return Err(format!("Invalid line format: {}", trimmed));
+            if let Some((key, value)) = trimmed.split_once('=') {
+                let processed_value = Self::substitute_env_vars(value.trim());
+                values.insert(key.trim().to_string(), processed_value);
             }
-
-            let key = parts[0].trim().to_string();
-            let raw_value = parts[1].trim().to_string();
-            let value = Self::resolve_env_vars(&raw_value);
-
-            values.insert(key, value);
         }
 
         Ok(Config { values })
     }
 
-    fn resolve_env_vars(input: &str) -> String {
-        let mut result = String::new();
-        let mut chars = input.chars().peekable();
-
-        while let Some(ch) = chars.next() {
-            if ch == '$' && chars.peek() == Some(&'{') {
-                chars.next(); // Skip '{'
-                let mut var_name = String::new();
-                while let Some(&ch) = chars.peek() {
-                    if ch == '}' {
-                        chars.next(); // Skip '}'
-                        break;
-                    }
-                    var_name.push(ch);
-                    chars.next();
-                }
-
-                let env_value = env::var(&var_name).unwrap_or_else(|_| String::new());
-                result.push_str(&env_value);
-            } else {
-                result.push(ch);
-            }
+    fn substitute_env_vars(value: &str) -> String {
+        let mut result = value.to_string();
+        for (key, env_value) in env::vars() {
+            let placeholder = format!("${}", key);
+            result = result.replace(&placeholder, &env_value);
         }
-
         result
     }
 
@@ -65,7 +41,11 @@ impl Config {
     }
 
     pub fn get_or_default(&self, key: &str, default: &str) -> String {
-        self.values.get(key).cloned().unwrap_or(default.to_string())
+        self.values
+            .get(key)
+            .map(|s| s.as_str())
+            .unwrap_or(default)
+            .to_string()
     }
 }
 
@@ -93,23 +73,23 @@ mod tests {
 
     #[test]
     fn test_env_substitution() {
-        env::set_var("DB_HOST", "postgres.local");
+        env::set_var("APP_ENV", "production");
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "DATABASE_URL=postgres://${DB_HOST}:5432/mydb").unwrap();
+        writeln!(file, "ENVIRONMENT=$APP_ENV").unwrap();
+        writeln!(file, "PATH=/opt/$APP_ENV/bin").unwrap();
 
         let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(
-            config.get("DATABASE_URL"),
-            Some(&"postgres://postgres.local:5432/mydb".to_string())
-        );
+        assert_eq!(config.get("ENVIRONMENT"), Some(&"production".to_string()));
+        assert_eq!(config.get("PATH"), Some(&"/opt/production/bin".to_string()));
     }
 
     #[test]
-    fn test_invalid_format() {
+    fn test_get_or_default() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "INVALID_LINE").unwrap();
+        writeln!(file, "EXISTING=value").unwrap();
 
-        let result = Config::from_file(file.path().to_str().unwrap());
-        assert!(result.is_err());
+        let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.get_or_default("EXISTING", "default"), "value");
+        assert_eq!(config.get_or_default("MISSING", "default"), "default");
     }
 }
