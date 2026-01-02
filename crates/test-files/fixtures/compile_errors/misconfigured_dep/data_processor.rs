@@ -2,103 +2,89 @@
 use std::collections::HashMap;
 
 pub struct DataProcessor {
-    validators: HashMap<String, Box<dyn Fn(&str) -> bool>>,
-    transformers: HashMap<String, Box<dyn Fn(String) -> String>>,
+    cache: HashMap<String, Vec<f64>>,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
-        let mut processor = DataProcessor {
-            validators: HashMap::new(),
-            transformers: HashMap::new(),
-        };
-        
-        processor.register_default_validators();
-        processor.register_default_transformers();
-        
-        processor
-    }
-    
-    fn register_default_validators(&mut self) {
-        self.validators.insert(
-            "email".to_string(),
-            Box::new(|input: &str| {
-                input.contains('@') && input.contains('.') && input.len() > 5
-            })
-        );
-        
-        self.validators.insert(
-            "numeric".to_string(),
-            Box::new(|input: &str| {
-                input.parse::<f64>().is_ok()
-            })
-        );
-    }
-    
-    fn register_default_transformers(&mut self) {
-        self.transformers.insert(
-            "uppercase".to_string(),
-            Box::new(|input: String| {
-                input.to_uppercase()
-            })
-        );
-        
-        self.transformers.insert(
-            "trim".to_string(),
-            Box::new(|input: String| {
-                input.trim().to_string()
-            })
-        );
-    }
-    
-    pub fn validate(&self, validator_name: &str, input: &str) -> bool {
-        match self.validators.get(validator_name) {
-            Some(validator) => validator(input),
-            None => false,
+        DataProcessor {
+            cache: HashMap::new(),
         }
     }
-    
-    pub fn transform(&self, transformer_name: &str, input: String) -> String {
-        match self.transformers.get(transformer_name) {
-            Some(transformer) => transformer(input),
-            None => input,
+
+    pub fn process_dataset(&mut self, key: &str, data: &[f64]) -> Result<Vec<f64>, String> {
+        if data.is_empty() {
+            return Err("Empty dataset provided".to_string());
         }
-    }
-    
-    pub fn process_data(&self, input: &str) -> Result<String, String> {
-        if !self.validate("email", input) {
-            return Err("Invalid email format".to_string());
+
+        if let Some(cached) = self.cache.get(key) {
+            return Ok(cached.clone());
         }
-        
-        let trimmed = self.transform("trim", input.to_string());
-        let processed = self.transform("uppercase", trimmed);
+
+        let processed = Self::normalize_data(data);
+        self.cache.insert(key.to_string(), processed.clone());
         
         Ok(processed)
+    }
+
+    fn normalize_data(data: &[f64]) -> Vec<f64> {
+        let mean = data.iter().sum::<f64>() / data.len() as f64;
+        let variance = data.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / data.len() as f64;
+        let std_dev = variance.sqrt();
+
+        if std_dev.abs() < 1e-10 {
+            return vec![0.0; data.len()];
+        }
+
+        data.iter()
+            .map(|&x| (x - mean) / std_dev)
+            .collect()
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn cache_stats(&self) -> (usize, usize) {
+        let total_items: usize = self.cache.values().map(|v| v.len()).sum();
+        (self.cache.len(), total_items)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
-    fn test_email_validation() {
-        let processor = DataProcessor::new();
-        assert!(processor.validate("email", "test@example.com"));
-        assert!(!processor.validate("email", "invalid-email"));
+    fn test_normalize_data() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let normalized = DataProcessor::normalize_data(&data);
+        
+        let sum: f64 = normalized.iter().sum();
+        let sum_sq: f64 = normalized.iter().map(|&x| x * x).sum();
+        
+        assert!(sum.abs() < 1e-10);
+        assert!((sum_sq - (data.len() as f64 - 1.0)).abs() < 1e-10);
     }
-    
+
     #[test]
-    fn test_numeric_validation() {
-        let processor = DataProcessor::new();
-        assert!(processor.validate("numeric", "123.45"));
-        assert!(!processor.validate("numeric", "abc"));
+    fn test_empty_dataset() {
+        let mut processor = DataProcessor::new();
+        let result = processor.process_dataset("test", &[]);
+        assert!(result.is_err());
     }
-    
+
     #[test]
-    fn test_data_processing() {
-        let processor = DataProcessor::new();
-        let result = processor.process_data("  user@domain.com  ");
-        assert_eq!(result.unwrap(), "USER@DOMAIN.COM");
+    fn test_cache_functionality() {
+        let mut processor = DataProcessor::new();
+        let data = vec![10.0, 20.0, 30.0];
+        
+        let first_result = processor.process_dataset("dataset1", &data).unwrap();
+        let second_result = processor.process_dataset("dataset1", &data).unwrap();
+        
+        assert_eq!(first_result, second_result);
+        assert_eq!(processor.cache_stats(), (1, 1));
     }
 }
