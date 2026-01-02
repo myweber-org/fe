@@ -82,4 +82,42 @@ mod tests {
         assert_eq!(valid, 1);
         assert_eq!(invalid, 2);
     }
+}use std::collections::HashSet;
+use std::io::{self, BufRead, Write};
+
+pub fn clean_data(input: &str) -> String {
+    let lines: Vec<&str> = input.lines().collect();
+    let unique_lines: HashSet<&str> = lines.iter().cloned().collect();
+    let mut sorted_lines: Vec<&str> = unique_lines.into_iter().collect();
+    sorted_lines.sort();
+    sorted_lines.join("\n")
+}
+
+fn main() {
+    let stdin = io::stdin();
+    let mut input = String::new();
+    
+    println!("Enter data (press Ctrl+D when finished):");
+    for line in stdin.lock().lines() {
+        if let Ok(line) = line {
+            input.push_str(&line);
+            input.push('\n');
+        }
+    }
+    
+    let cleaned = clean_data(&input);
+    println!("Cleaned data:");
+    println!("{}", cleaned);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_clean_data() {
+        let input = "banana\napple\ncherry\nbanana\napple";
+        let expected = "apple\nbanana\ncherry";
+        assert_eq!(clean_data(input), expected);
+    }
 }
