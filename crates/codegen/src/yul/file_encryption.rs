@@ -226,3 +226,137 @@ mod tests {
         assert_eq!(hmac1.len(), 32);
     }
 }
+use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use pbkdf2::{pbkdf2_hmac, Params};
+use rand::RngCore;
+use sha2::Sha256;
+use std::fs;
+use std::io::{Read, Write};
+
+type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+
+const SALT_LENGTH: usize = 16;
+const IV_LENGTH: usize = 16;
+const KEY_ITERATIONS: u32 = 100_000;
+const KEY_LENGTH: usize = 32;
+
+pub struct EncryptionResult {
+    pub ciphertext: Vec<u8>,
+    pub salt: [u8; SALT_LENGTH],
+    pub iv: [u8; IV_LENGTH],
+}
+
+pub fn derive_key(password: &str, salt: &[u8]) -> [u8; KEY_LENGTH] {
+    let mut key = [0u8; KEY_LENGTH];
+    let params = Params {
+        rounds: KEY_ITERATIONS,
+        output_length: KEY_LENGTH,
+    };
+    pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, params.rounds, &mut key)
+        .expect("PBKDF2 should not fail");
+    key
+}
+
+pub fn encrypt_file(password: &str, input_path: &str, output_path: &str) -> Result<(), String> {
+    let mut file_content = fs::read(input_path).map_err(|e| format!("Read error: {}", e))?;
+    
+    let mut salt = [0u8; SALT_LENGTH];
+    let mut iv = [0u8; IV_LENGTH];
+    rand::thread_rng().fill_bytes(&mut salt);
+    rand::thread_rng().fill_bytes(&mut iv);
+    
+    let key = derive_key(password, &salt);
+    
+    let ciphertext = Aes256CbcEnc::new(&key.into(), &iv.into())
+        .encrypt_padded_vec_mut::<Pkcs7>(&file_content);
+    
+    let mut output_data = Vec::new();
+    output_data.extend_from_slice(&salt);
+    output_data.extend_from_slice(&iv);
+    output_data.extend_from_slice(&ciphertext);
+    
+    fs::write(output_path, &output_data)
+        .map_err(|e| format!("Write error: {}", e))?;
+    
+    Ok(())
+}
+
+pub fn decrypt_file(password: &str, input_path: &str, output_path: &str) -> Result<(), String> {
+    let encrypted_data = fs::read(input_path).map_err(|e| format!("Read error: {}", e))?;
+    
+    if encrypted_data.len() < SALT_LENGTH + IV_LENGTH {
+        return Err("Invalid encrypted file format".to_string());
+    }
+    
+    let salt = &encrypted_data[0..SALT_LENGTH];
+    let iv = &encrypted_data[SALT_LENGTH..SALT_LENGTH + IV_LENGTH];
+    let ciphertext = &encrypted_data[SALT_LENGTH + IV_LENGTH..];
+    
+    let key = derive_key(password, salt);
+    
+    let mut buffer = ciphertext.to_vec();
+    let plaintext = Aes256CbcDec::new(&key.into(), iv.into())
+        .decrypt_padded_vec_mut::<Pkcs7>(&mut buffer)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+    
+    fs::write(output_path, plaintext)
+        .map_err(|e| format!("Write error: {}", e))?;
+    
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_encryption_roundtrip() {
+        let password = "secure_password_123";
+        let test_data = b"Hello, this is a secret message!";
+        
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+        
+        fs::write(input_file.path(), test_data).unwrap();
+        
+        encrypt_file(password, 
+                    input_file.path().to_str().unwrap(),
+                    encrypted_file.path().to_str().unwrap())
+            .expect("Encryption should succeed");
+        
+        decrypt_file(password,
+                    encrypted_file.path().to_str().unwrap(),
+                    decrypted_file.path().to_str().unwrap())
+            .expect("Decryption should succeed");
+        
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(test_data.to_vec(), decrypted_data);
+    }
+    
+    #[test]
+    fn test_wrong_password_fails() {
+        let password = "correct_password";
+        let wrong_password = "wrong_password";
+        let test_data = b"Test data";
+        
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+        
+        fs::write(input_file.path(), test_data).unwrap();
+        
+        encrypt_file(password,
+                    input_file.path().to_str().unwrap(),
+                    encrypted_file.path().to_str().unwrap())
+            .expect("Encryption should succeed");
+        
+        let result = decrypt_file(wrong_password,
+                                 encrypted_file.path().to_str().unwrap(),
+                                 decrypted_file.path().to_str().unwrap());
+        
+        assert!(result.is_err());
+    }
+}
