@@ -475,3 +475,106 @@ mod tests {
         assert!((total - 1.0).abs() < f64::EPSILON);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+pub struct DataRecord {
+    id: u32,
+    value: f64,
+    category: String,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: &str) -> Result<Self, String> {
+        if value < 0.0 {
+            return Err("Value cannot be negative".to_string());
+        }
+        if category.is_empty() {
+            return Err("Category cannot be empty".to_string());
+        }
+        
+        Ok(Self {
+            id,
+            value,
+            category: category.to_string(),
+        })
+    }
+    
+    pub fn calculate_tax(&self, rate: f64) -> f64 {
+        self.value * rate
+    }
+}
+
+pub fn load_csv_data(file_path: &Path) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let mut rdr = csv::Reader::from_reader(file);
+    let mut records = Vec::new();
+    
+    for result in rdr.records() {
+        let record = result?;
+        if record.len() >= 3 {
+            let id: u32 = record[0].parse()?;
+            let value: f64 = record[1].parse()?;
+            let category = &record[2];
+            
+            match DataRecord::new(id, value, category) {
+                Ok(data_record) => records.push(data_record),
+                Err(e) => eprintln!("Skipping invalid record: {}", e),
+            }
+        }
+    }
+    
+    Ok(records)
+}
+
+pub fn process_records(records: &[DataRecord], tax_rate: f64) -> Vec<(u32, f64, f64)> {
+    records.iter()
+        .map(|record| {
+            let tax = record.calculate_tax(tax_rate);
+            (record.id, record.value, tax)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_data_record_creation() {
+        let record = DataRecord::new(1, 100.0, "Electronics").unwrap();
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 100.0);
+        assert_eq!(record.category, "Electronics");
+    }
+    
+    #[test]
+    fn test_invalid_data_record() {
+        assert!(DataRecord::new(1, -10.0, "Electronics").is_err());
+        assert!(DataRecord::new(1, 100.0, "").is_err());
+    }
+    
+    #[test]
+    fn test_tax_calculation() {
+        let record = DataRecord::new(1, 200.0, "Electronics").unwrap();
+        assert_eq!(record.calculate_tax(0.1), 20.0);
+    }
+    
+    #[test]
+    fn test_csv_loading() -> Result<(), Box<dyn Error>> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "id,value,category")?;
+        writeln!(temp_file, "1,100.0,Electronics")?;
+        writeln!(temp_file, "2,200.0,Books")?;
+        
+        let records = load_csv_data(temp_file.path())?;
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].category, "Electronics");
+        assert_eq!(records[1].value, 200.0);
+        
+        Ok(())
+    }
+}
