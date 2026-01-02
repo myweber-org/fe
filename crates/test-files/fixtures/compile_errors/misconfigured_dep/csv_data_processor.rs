@@ -192,4 +192,139 @@ mod tests {
         assert!((variance - 66.666).abs() < 0.001);
         assert!((std_dev - 8.1649).abs() < 0.001);
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::collections::HashMap;
+
+pub struct CsvProcessor {
+    headers: Vec<String>,
+    records: Vec<Vec<String>>,
+}
+
+impl CsvProcessor {
+    pub fn new(file_path: &str) -> Result<Self, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
+
+        let headers = match lines.next() {
+            Some(Ok(line)) => line.split(',').map(|s| s.to_string()).collect(),
+            _ => return Err("Failed to read headers".into()),
+        };
+
+        let mut records = Vec::new();
+        for line_result in lines {
+            let line = line_result?;
+            let fields: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
+            if fields.len() == headers.len() {
+                records.push(fields);
+            }
+        }
+
+        Ok(CsvProcessor { headers, records })
+    }
+
+    pub fn filter_by_column(&self, column_name: &str, value: &str) -> Vec<Vec<String>> {
+        let column_index = match self.headers.iter().position(|h| h == column_name) {
+            Some(idx) => idx,
+            None => return Vec::new(),
+        };
+
+        self.records
+            .iter()
+            .filter(|record| record.get(column_index) == Some(&value.to_string()))
+            .cloned()
+            .collect()
+    }
+
+    pub fn aggregate_numeric_column(&self, column_name: &str) -> Option<f64> {
+        let column_index = self.headers.iter().position(|h| h == column_name)?;
+
+        let sum: f64 = self.records
+            .iter()
+            .filter_map(|record| record.get(column_index))
+            .filter_map(|value| value.parse::<f64>().ok())
+            .sum();
+
+        let count = self.records.len() as f64;
+        if count > 0.0 {
+            Some(sum / count)
+        } else {
+            None
+        }
+    }
+
+    pub fn count_by_column(&self, column_name: &str) -> HashMap<String, usize> {
+        let column_index = match self.headers.iter().position(|h| h == column_name) {
+            Some(idx) => idx,
+            None => return HashMap::new(),
+        };
+
+        let mut counts = HashMap::new();
+        for record in &self.records {
+            if let Some(value) = record.get(column_index) {
+                *counts.entry(value.clone()).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+
+    pub fn get_record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn get_headers(&self) -> &Vec<String> {
+        &self.headers
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn create_test_csv() -> NamedTempFile {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "Alice,25,London").unwrap();
+        writeln!(temp_file, "Bob,30,Paris").unwrap();
+        writeln!(temp_file, "Charlie,25,London").unwrap();
+        writeln!(temp_file, "Diana,35,Tokyo").unwrap();
+        temp_file
+    }
+
+    #[test]
+    fn test_csv_loading() {
+        let temp_file = create_test_csv();
+        let processor = CsvProcessor::new(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(processor.get_record_count(), 4);
+        assert_eq!(processor.get_headers(), &vec!["name", "age", "city"]);
+    }
+
+    #[test]
+    fn test_filter_by_column() {
+        let temp_file = create_test_csv();
+        let processor = CsvProcessor::new(temp_file.path().to_str().unwrap()).unwrap();
+        let filtered = processor.filter_by_column("city", "London");
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_aggregate_numeric() {
+        let temp_file = create_test_csv();
+        let processor = CsvProcessor::new(temp_file.path().to_str().unwrap()).unwrap();
+        let avg_age = processor.aggregate_numeric_column("age").unwrap();
+        assert!((avg_age - 28.75).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_count_by_column() {
+        let temp_file = create_test_csv();
+        let processor = CsvProcessor::new(temp_file.path().to_str().unwrap()).unwrap();
+        let city_counts = processor.count_by_column("city");
+        assert_eq!(city_counts.get("London"), Some(&2));
+        assert_eq!(city_counts.get("Paris"), Some(&1));
+    }
 }
