@@ -64,3 +64,37 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     Ok(())
 }
+use std::collections::HashMap;
+
+pub fn filter_numeric_data(data: &HashMap<String, String>) -> HashMap<String, f64> {
+    let mut numeric_map = HashMap::new();
+
+    for (key, value) in data {
+        if let Ok(parsed_value) = value.parse::<f64>() {
+            numeric_map.insert(key.clone(), parsed_value);
+        }
+    }
+
+    numeric_map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_filter_numeric_data() {
+        let mut test_data = HashMap::new();
+        test_data.insert("age".to_string(), "25".to_string());
+        test_data.insert("name".to_string(), "Alice".to_string());
+        test_data.insert("height".to_string(), "1.75".to_string());
+        test_data.insert("city".to_string(), "London".to_string());
+
+        let result = filter_numeric_data(&test_data);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get("age"), Some(&25.0));
+        assert_eq!(result.get("height"), Some(&1.75));
+        assert_eq!(result.get("name"), None);
+    }
+}
