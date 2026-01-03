@@ -217,3 +217,84 @@ mod tests {
         assert_eq!(filtered.len(), 2);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+}
+
+pub fn load_csv_data(file_path: &str) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let path = Path::new(file_path);
+    let file = File::open(path)?;
+    let mut rdr = csv::Reader::from_reader(file);
+    
+    let mut records = Vec::new();
+    
+    for result in rdr.deserialize() {
+        let record: DataRecord = result?;
+        records.push(record);
+    }
+    
+    Ok(records)
+}
+
+pub fn validate_records(records: &[DataRecord]) -> Result<(), String> {
+    if records.is_empty() {
+        return Err("No records found".to_string());
+    }
+    
+    for (index, record) in records.iter().enumerate() {
+        if record.value.is_nan() || record.value.is_infinite() {
+            return Err(format!("Invalid value at record {}", index));
+        }
+        
+        if record.category.trim().is_empty() {
+            return Err(format!("Empty category at record {}", index));
+        }
+    }
+    
+    Ok(())
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
+    let count = records.len() as f64;
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let mean = sum / count;
+    
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (mean, variance, std_dev)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+    
+    #[test]
+    fn test_data_processing() {
+        let csv_data = "id,value,category\n1,10.5,TypeA\n2,20.3,TypeB\n3,15.7,TypeA";
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "{}", csv_data).unwrap();
+        
+        let records = load_csv_data(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(records.len(), 3);
+        
+        validate_records(&records).unwrap();
+        
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        assert!((mean - 15.5).abs() < 0.1);
+        assert!(variance > 0.0);
+        assert!(std_dev > 0.0);
+    }
+}
