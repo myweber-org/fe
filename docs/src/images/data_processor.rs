@@ -255,3 +255,147 @@ mod tests {
         assert_eq!(count.unwrap(), 3);
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+pub struct ValidationRule {
+    field_name: String,
+    min_value: f64,
+    max_value: f64,
+    required: bool,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
+            validation_rules: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn process_dataset(&mut self, dataset_name: &str, data: &[f64]) -> Result<Vec<f64>, String> {
+        if data.is_empty() {
+            return Err("Dataset cannot be empty".to_string());
+        }
+
+        let processed_data = self.apply_transformations(data);
+        self.validate_data(&processed_data)?;
+        
+        self.cache.insert(dataset_name.to_string(), processed_data.clone());
+        
+        Ok(processed_data)
+    }
+
+    pub fn get_cached_data(&self, dataset_name: &str) -> Option<&Vec<f64>> {
+        self.cache.get(dataset_name)
+    }
+
+    pub fn calculate_statistics(&self, dataset_name: &str) -> Option<DatasetStats> {
+        self.cache.get(dataset_name).map(|data| {
+            let sum: f64 = data.iter().sum();
+            let mean = sum / data.len() as f64;
+            let variance: f64 = data.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / data.len() as f64;
+            
+            DatasetStats {
+                count: data.len(),
+                mean,
+                variance,
+                min: *data.iter().fold(&f64::INFINITY, |a, b| a.min(b)),
+                max: *data.iter().fold(&f64::NEG_INFINITY, |a, b| a.max(b)),
+            }
+        })
+    }
+
+    fn apply_transformations(&self, data: &[f64]) -> Vec<f64> {
+        data.iter()
+            .map(|&x| {
+                if x < 0.0 {
+                    x.abs()
+                } else {
+                    x
+                }
+            })
+            .collect()
+    }
+
+    fn validate_data(&self, data: &[f64]) -> Result<(), String> {
+        for rule in &self.validation_rules {
+            if rule.required && data.is_empty() {
+                return Err(format!("Field '{}' is required but empty", rule.field_name));
+            }
+            
+            for &value in data {
+                if value < rule.min_value || value > rule.max_value {
+                    return Err(format!(
+                        "Value {} for field '{}' is outside valid range [{}, {}]",
+                        value, rule.field_name, rule.min_value, rule.max_value
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+pub struct DatasetStats {
+    pub count: usize,
+    pub mean: f64,
+    pub variance: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+impl ValidationRule {
+    pub fn new(field_name: &str, min_value: f64, max_value: f64, required: bool) -> Self {
+        ValidationRule {
+            field_name: field_name.to_string(),
+            min_value,
+            max_value,
+            required,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        let rule = ValidationRule::new("temperature", -50.0, 150.0, true);
+        processor.add_validation_rule(rule);
+
+        let data = vec![25.5, 30.2, -10.0, 45.8];
+        let result = processor.process_dataset("weather", &data);
+        
+        assert!(result.is_ok());
+        let processed = result.unwrap();
+        assert_eq!(processed.len(), 4);
+        assert!(processed[2] == 10.0);
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let mut processor = DataProcessor::new();
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        
+        processor.process_dataset("test", &data).unwrap();
+        let stats = processor.calculate_statistics("test").unwrap();
+        
+        assert_eq!(stats.count, 5);
+        assert_eq!(stats.mean, 3.0);
+        assert_eq!(stats.min, 1.0);
+        assert_eq!(stats.max, 5.0);
+    }
+}
