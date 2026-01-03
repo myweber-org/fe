@@ -118,3 +118,90 @@ mod tests {
         assert!(result.contains("Target: 127.0.0.1"));
     }
 }
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time::{Duration, Instant};
+use rand::Rng;
+
+pub struct NetworkProbe {
+    target: SocketAddr,
+    timeout: Duration,
+}
+
+impl NetworkProbe {
+    pub fn new(ip: Ipv4Addr, port: u16) -> Self {
+        Self {
+            target: SocketAddr::new(IpAddr::V4(ip), port),
+            timeout: Duration::from_secs(5),
+        }
+    }
+
+    pub fn measure_latency(&self, attempts: usize) -> Option<Duration> {
+        let mut latencies = Vec::with_capacity(attempts);
+        
+        for _ in 0..attempts {
+            let start = Instant::now();
+            
+            match std::net::TcpStream::connect_timeout(&self.target, self.timeout) {
+                Ok(_) => {
+                    let elapsed = start.elapsed();
+                    latencies.push(elapsed);
+                }
+                Err(_) => continue,
+            }
+            
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        if latencies.is_empty() {
+            None
+        } else {
+            let sum: Duration = latencies.iter().sum();
+            Some(sum / latencies.len() as u32)
+        }
+    }
+
+    pub fn simulate_packet_loss(&self, packets: usize) -> f64 {
+        let mut rng = rand::thread_rng();
+        let mut lost = 0;
+        
+        for _ in 0..packets {
+            if rng.gen_bool(0.05) {
+                lost += 1;
+            }
+        }
+        
+        (lost as f64 / packets as f64) * 100.0
+    }
+
+    pub fn check_connectivity(&self) -> bool {
+        std::net::TcpStream::connect_timeout(&self.target, self.timeout).is_ok()
+    }
+}
+
+pub fn analyze_network_quality(latency: Duration, packet_loss: f64) -> &'static str {
+    match (latency.as_millis(), packet_loss) {
+        (latency, loss) if latency < 50 && loss < 1.0 => "Excellent",
+        (latency, loss) if latency < 100 && loss < 3.0 => "Good",
+        (latency, loss) if latency < 200 && loss < 5.0 => "Fair",
+        _ => "Poor",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_connectivity_check() {
+        let probe = NetworkProbe::new(Ipv4Addr::new(8, 8, 8, 8), 53);
+        let connected = probe.check_connectivity();
+        assert!(connected);
+    }
+
+    #[test]
+    fn test_packet_loss_simulation() {
+        let probe = NetworkProbe::new(Ipv4Addr::new(127, 0, 0, 1), 8080);
+        let loss = probe.simulate_packet_loss(1000);
+        assert!(loss >= 0.0 && loss <= 100.0);
+    }
+}
