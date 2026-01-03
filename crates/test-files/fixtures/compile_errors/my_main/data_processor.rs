@@ -273,4 +273,117 @@ mod tests {
         assert_eq!(top_categories[0].0, "A");
         assert_eq!(top_categories[0].1, 2);
     }
+}use std::collections::HashMap;
+use std::error::Error;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+    pub metadata: HashMap<String, String>,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: &str) -> Self {
+        Self {
+            id,
+            value,
+            category: category.to_string(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn add_metadata(&mut self, key: &str, value: &str) {
+        self.metadata.insert(key.to_string(), value.to_string());
+    }
+
+    pub fn validate(&self) -> Result<(), Box<dyn Error>> {
+        if self.id == 0 {
+            return Err("ID cannot be zero".into());
+        }
+        if self.value < 0.0 {
+            return Err("Value cannot be negative".into());
+        }
+        if self.category.is_empty() {
+            return Err("Category cannot be empty".into());
+        }
+        Ok(())
+    }
+}
+
+pub fn process_records(records: &[DataRecord]) -> Vec<DataRecord> {
+    records
+        .iter()
+        .filter(|record| record.validate().is_ok())
+        .map(|record| {
+            let mut processed = record.clone();
+            if processed.value > 100.0 {
+                processed.value = 100.0;
+            }
+            processed.add_metadata("processed", "true");
+            processed
+        })
+        .collect()
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
+    let values: Vec<f64> = records.iter().map(|r| r.value).collect();
+    let count = values.len() as f64;
+    
+    if count == 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+
+    let sum: f64 = values.iter().sum();
+    let mean = sum / count;
+    
+    let variance: f64 = values.iter()
+        .map(|v| (v - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (mean, variance, std_dev)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = DataRecord::new(1, 50.0, "test");
+        assert!(valid_record.validate().is_ok());
+
+        let invalid_record = DataRecord::new(0, -10.0, "");
+        assert!(invalid_record.validate().is_err());
+    }
+
+    #[test]
+    fn test_process_records() {
+        let records = vec![
+            DataRecord::new(1, 150.0, "A"),
+            DataRecord::new(2, 75.0, "B"),
+            DataRecord::new(0, 50.0, "C"),
+        ];
+        
+        let processed = process_records(&records);
+        assert_eq!(processed.len(), 2);
+        assert_eq!(processed[0].value, 100.0);
+    }
+
+    #[test]
+    fn test_statistics() {
+        let records = vec![
+            DataRecord::new(1, 10.0, "A"),
+            DataRecord::new(2, 20.0, "B"),
+            DataRecord::new(3, 30.0, "C"),
+        ];
+        
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        assert_eq!(mean, 20.0);
+        assert_eq!(variance, 66.66666666666667);
+        assert_eq!(std_dev, 8.16496580927726);
+    }
 }
