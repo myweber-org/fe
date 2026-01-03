@@ -1,47 +1,113 @@
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    file_path: String,
-    delimiter: char,
+    data: Vec<f64>,
+    frequency_map: HashMap<String, u32>,
 }
 
 impl DataProcessor {
-    pub fn new(file_path: &str, delimiter: char) -> Self {
+    pub fn new() -> Self {
         DataProcessor {
-            file_path: file_path.to_string(),
-            delimiter,
+            data: Vec::new(),
+            frequency_map: HashMap::new(),
         }
     }
 
-    pub fn process_with_filter<F>(&self, filter_fn: F) -> Result<Vec<Vec<String>>, Box<dyn Error>>
-    where
-        F: Fn(&[String]) -> bool,
-    {
-        let file = File::open(&self.file_path)?;
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
         let reader = BufReader::new(file);
-        let mut results = Vec::new();
-
-        for line in reader.lines() {
+        
+        for line in reader.lines().skip(1) {
             let line = line?;
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-
-            if filter_fn(&fields) {
-                results.push(fields);
+            let parts: Vec<&str> = line.split(',').collect();
+            
+            if parts.len() >= 2 {
+                if let Ok(value) = parts[1].parse::<f64>() {
+                    self.data.push(value);
+                }
+                
+                let category = parts[0].to_string();
+                *self.frequency_map.entry(category).or_insert(0) += 1;
             }
         }
-
-        Ok(results)
+        
+        Ok(())
     }
 
-    pub fn count_records(&self) -> Result<usize, Box<dyn Error>> {
-        let file = File::open(&self.file_path)?;
-        let reader = BufReader::new(file);
-        Ok(reader.lines().count())
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.data.is_empty() {
+            return None;
+        }
+        
+        let sum: f64 = self.data.iter().sum();
+        Some(sum / self.data.len() as f64)
+    }
+
+    pub fn calculate_median(&mut self) -> Option<f64> {
+        if self.data.is_empty() {
+            return None;
+        }
+        
+        self.data.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mid = self.data.len() / 2;
+        
+        if self.data.len() % 2 == 0 {
+            Some((self.data[mid - 1] + self.data[mid]) / 2.0)
+        } else {
+            Some(self.data[mid])
+        }
+    }
+
+    pub fn calculate_standard_deviation(&self) -> Option<f64> {
+        if self.data.len() < 2 {
+            return None;
+        }
+        
+        let mean = self.calculate_mean()?;
+        let variance: f64 = self.data.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / (self.data.len() - 1) as f64;
+        
+        Some(variance.sqrt())
+    }
+
+    pub fn get_category_frequencies(&self) -> &HashMap<String, u32> {
+        &self.frequency_map
+    }
+
+    pub fn filter_by_threshold(&self, threshold: f64) -> Vec<f64> {
+        self.data.iter()
+            .filter(|&&x| x > threshold)
+            .copied()
+            .collect()
+    }
+
+    pub fn summary_statistics(&mut self) -> String {
+        let mut stats = String::new();
+        
+        stats.push_str(&format!("Data points: {}\n", self.data.len()));
+        
+        if let Some(mean) = self.calculate_mean() {
+            stats.push_str(&format!("Mean: {:.2}\n", mean));
+        }
+        
+        if let Some(median) = self.calculate_median() {
+            stats.push_str(&format!("Median: {:.2}\n", median));
+        }
+        
+        if let Some(std_dev) = self.calculate_standard_deviation() {
+            stats.push_str(&format!("Standard Deviation: {:.2}\n", std_dev));
+        }
+        
+        stats.push_str("Category frequencies:\n");
+        for (category, count) in &self.frequency_map {
+            stats.push_str(&format!("  {}: {}\n", category, count));
+        }
+        
+        stats
     }
 }
 
@@ -52,136 +118,28 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_data_processing() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "Alice,30,New York").unwrap();
-        writeln!(temp_file, "Bob,25,London").unwrap();
-        writeln!(temp_file, "Charlie,35,Tokyo").unwrap();
-
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap(), ',');
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
         
-        let filtered = processor
-            .process_with_filter(|fields| fields.get(1).and_then(|a| a.parse::<i32>().ok()).unwrap_or(0) > 30)
-            .unwrap();
-
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0][0], "Charlie");
-    }
-}use csv::{Reader, Writer};
-use serde::{Deserialize, Serialize};
-use std::error::Error;
-use std::fs::File;
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
-}
-
-impl Record {
-    fn is_valid(&self) -> bool {
-        !self.name.is_empty() && self.value >= 0.0 && !self.category.is_empty()
-    }
-}
-
-fn process_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(input_path)?;
-    let mut reader = Reader::from_reader(file);
-    let mut valid_records = Vec::new();
-
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        if record.is_valid() {
-            valid_records.push(record);
-        }
-    }
-
-    let output_file = File::create(output_path)?;
-    let mut writer = Writer::from_writer(output_file);
-
-    for record in valid_records {
-        writer.serialize(&record)?;
-    }
-
-    writer.flush()?;
-    Ok(())
-}
-
-fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
-    let count = records.len() as f64;
-    if count == 0.0 {
-        return (0.0, 0.0, 0.0);
-    }
-
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let mean = sum / count;
-
-    let variance: f64 = records.iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>() / count;
-
-    let std_dev = variance.sqrt();
-
-    (sum, mean, std_dev)
-}
-
-fn main() -> Result<(), Box<dyn Error>> {
-    let input_file = "input_data.csv";
-    let output_file = "processed_data.csv";
-
-    process_csv(input_file, output_file)?;
-
-    let file = File::open(output_file)?;
-    let mut reader = Reader::from_reader(file);
-    let records: Vec<Record> = reader.deserialize().collect::<Result<_, _>>()?;
-
-    let (total, average, deviation) = calculate_statistics(&records);
-    
-    println!("Processed {} records", records.len());
-    println!("Total value: {:.2}", total);
-    println!("Average value: {:.2}", average);
-    println!("Standard deviation: {:.2}", deviation);
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_record_validation() {
-        let valid_record = Record {
-            id: 1,
-            name: "Test".to_string(),
-            value: 10.5,
-            category: "A".to_string(),
-        };
-        assert!(valid_record.is_valid());
-
-        let invalid_record = Record {
-            id: 2,
-            name: "".to_string(),
-            value: -5.0,
-            category: "B".to_string(),
-        };
-        assert!(!invalid_record.is_valid());
-    }
-
-    #[test]
-    fn test_statistics_calculation() {
-        let records = vec![
-            Record { id: 1, name: "A".to_string(), value: 10.0, category: "X".to_string() },
-            Record { id: 2, name: "B".to_string(), value: 20.0, category: "X".to_string() },
-            Record { id: 3, name: "C".to_string(), value: 30.0, category: "Y".to_string() },
-        ];
-
-        let (total, average, deviation) = calculate_statistics(&records);
-        assert_eq!(total, 60.0);
-        assert_eq!(average, 20.0);
-        assert!((deviation - 8.164965).abs() < 0.0001);
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "category,value").unwrap();
+        writeln!(temp_file, "A,10.5").unwrap();
+        writeln!(temp_file, "B,20.3").unwrap();
+        writeln!(temp_file, "A,15.7").unwrap();
+        writeln!(temp_file, "C,8.9").unwrap();
+        
+        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+        assert_eq!(processor.data.len(), 4);
+        
+        let mean = processor.calculate_mean().unwrap();
+        assert!((mean - 13.85).abs() < 0.01);
+        
+        let frequencies = processor.get_category_frequencies();
+        assert_eq!(frequencies.get("A"), Some(&2));
+        assert_eq!(frequencies.get("B"), Some(&1));
+        
+        let filtered = processor.filter_by_threshold(12.0);
+        assert_eq!(filtered.len(), 2);
     }
 }
