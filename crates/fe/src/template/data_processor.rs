@@ -209,3 +209,134 @@ mod tests {
         assert_eq!(average.unwrap(), 20.0);
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Error)]
+pub enum ProcessingError {
+    #[error("Invalid data format")]
+    InvalidFormat,
+    #[error("Data validation failed: {0}")]
+    ValidationFailed(String),
+    #[error("Transformation error: {0}")]
+    TransformationError(String),
+}
+
+pub struct DataProcessor {
+    validation_rules: Vec<Box<dyn Fn(&DataRecord) -> Result<(), ProcessingError>>>,
+    transformation_pipeline: Vec<Box<dyn Fn(DataRecord) -> Result<DataRecord, ProcessingError>>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        Self {
+            validation_rules: Vec::new(),
+            transformation_pipeline: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule<F>(&mut self, rule: F)
+    where
+        F: Fn(&DataRecord) -> Result<(), ProcessingError> + 'static,
+    {
+        self.validation_rules.push(Box::new(rule));
+    }
+
+    pub fn add_transformation<F>(&mut self, transform: F)
+    where
+        F: Fn(DataRecord) -> Result<DataRecord, ProcessingError> + 'static,
+    {
+        self.transformation_pipeline.push(Box::new(transform));
+    }
+
+    pub fn process(&self, mut record: DataRecord) -> Result<DataRecord, ProcessingError> {
+        for rule in &self.validation_rules {
+            rule(&record)?;
+        }
+
+        for transform in &self.transformation_pipeline {
+            record = transform(record)?;
+        }
+
+        Ok(record)
+    }
+
+    pub fn batch_process(&self, records: Vec<DataRecord>) -> Vec<Result<DataRecord, ProcessingError>> {
+        records.into_iter().map(|r| self.process(r)).collect()
+    }
+}
+
+pub fn create_default_processor() -> DataProcessor {
+    let mut processor = DataProcessor::new();
+
+    processor.add_validation_rule(|record| {
+        if record.values.is_empty() {
+            return Err(ProcessingError::ValidationFailed(
+                "Record must contain at least one value".to_string(),
+            ));
+        }
+        Ok(())
+    });
+
+    processor.add_transformation(|mut record| {
+        let sum: f64 = record.values.iter().sum();
+        record.metadata.insert("value_sum".to_string(), sum.to_string());
+        Ok(record)
+    });
+
+    processor.add_transformation(|mut record| {
+        record.values = record.values.into_iter().map(|v| v * 1.1).collect();
+        Ok(record)
+    });
+
+    processor
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processing() {
+        let processor = create_default_processor();
+        let mut metadata = HashMap::new();
+        metadata.insert("source".to_string(), "test".to_string());
+
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0],
+            metadata,
+        };
+
+        let result = processor.process(record);
+        assert!(result.is_ok());
+
+        let processed = result.unwrap();
+        assert_eq!(processed.values.len(), 3);
+        assert!(processed.metadata.contains_key("value_sum"));
+    }
+
+    #[test]
+    fn test_validation_failure() {
+        let processor = create_default_processor();
+        let record = DataRecord {
+            id: 2,
+            timestamp: 1234567890,
+            values: vec![],
+            metadata: HashMap::new(),
+        };
+
+        let result = processor.process(record);
+        assert!(result.is_err());
+    }
+}
