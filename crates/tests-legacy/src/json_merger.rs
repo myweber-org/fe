@@ -1,53 +1,165 @@
+
+use serde_json::{Map, Value};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufReader, Read};
+use std::fs;
 use std::path::Path;
 
-type JsonValue = serde_json::Value;
+pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
 
-pub fn merge_json_files(file_paths: &[impl AsRef<Path>]) -> Result<JsonValue, Box<dyn std::error::Error>> {
-    let mut merged = HashMap::new();
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            continue;
+        }
 
-    for path in file_paths {
-        let file = File::open(path.as_ref())?;
-        let mut reader = BufReader::new(file);
-        let mut contents = String::new();
-        reader.read_to_string(&mut contents)?;
+        let content = fs::read_to_string(path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
 
-        let json_data: JsonValue = serde_json::from_str(&contents)?;
-
-        if let JsonValue::Object(map) = json_data {
+        if let Value::Object(map) = json_value {
             for (key, value) in map {
-                merged.insert(key, value);
+                merged_map.insert(key, value);
             }
-        } else {
-            return Err("Each JSON file must contain an object at the root".into());
         }
     }
 
-    Ok(serde_json::to_value(merged)?)
+    Ok(Value::Object(merged_map))
+}
+
+pub fn merge_json_with_strategy(
+    file_paths: &[&str],
+    conflict_strategy: ConflictStrategy,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut accumulator: HashMap<String, Value> = HashMap::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            continue;
+        }
+
+        let content = fs::read_to_string(path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                match conflict_strategy {
+                    ConflictStrategy::Overwrite => {
+                        accumulator.insert(key, value);
+                    }
+                    ConflictStrategy::Skip => {
+                        accumulator.entry(key).or_insert(value);
+                    }
+                    ConflictStrategy::MergeObjects => {
+                        if let Some(existing) = accumulator.get_mut(&key) {
+                            if let (Value::Object(existing_map), Value::Object(new_map)) =
+                                (existing, &value)
+                            {
+                                let mut merged = existing_map.clone();
+                                for (k, v) in new_map {
+                                    merged.insert(k.clone(), v.clone());
+                                }
+                                *existing = Value::Object(merged);
+                            } else {
+                                accumulator.insert(key, value);
+                            }
+                        } else {
+                            accumulator.insert(key, value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let final_map: Map<String, Value> = accumulator.into_iter().collect();
+    Ok(Value::Object(final_map))
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ConflictStrategy {
+    Overwrite,
+    Skip,
+    MergeObjects,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
+    fn create_temp_json(content: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "{}", content).unwrap();
+        file
+    }
+
     #[test]
-    fn test_merge_json_files() {
-        let mut file1 = NamedTempFile::new().unwrap();
-        let mut file2 = NamedTempFile::new().unwrap();
+    fn test_merge_basic() {
+        let file1 = create_temp_json(r#"{"a": 1, "b": 2}"#);
+        let file2 = create_temp_json(r#"{"c": 3, "d": 4}"#);
 
-        writeln!(file1, r#"{"a": 1, "b": "test"}"#).unwrap();
-        writeln!(file2, r#"{"c": true, "d": [1,2,3]}"#).unwrap();
+        let result = merge_json_files(&[
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ])
+        .unwrap();
 
-        let result = merge_json_files(&[file1.path(), file2.path()]).unwrap();
-        let obj = result.as_object().unwrap();
+        let expected = json!({
+            "a": 1,
+            "b": 2,
+            "c": 3,
+            "d": 4
+        });
 
-        assert_eq!(obj.get("a").unwrap(), &JsonValue::from(1));
-        assert_eq!(obj.get("b").unwrap(), &JsonValue::from("test"));
-        assert_eq!(obj.get("c").unwrap(), &JsonValue::from(true));
-        assert_eq!(obj.get("d").unwrap(), &JsonValue::from(vec![1, 2, 3]));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_conflict_overwrite() {
+        let file1 = create_temp_json(r#"{"a": 1, "b": 2}"#);
+        let file2 = create_temp_json(r#"{"b": 99, "c": 3}"#);
+
+        let result = merge_json_with_strategy(
+            &[
+                file1.path().to_str().unwrap(),
+                file2.path().to_str().unwrap(),
+            ],
+            ConflictStrategy::Overwrite,
+        )
+        .unwrap();
+
+        let expected = json!({
+            "a": 1,
+            "b": 99,
+            "c": 3
+        });
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_conflict_skip() {
+        let file1 = create_temp_json(r#"{"a": 1, "b": 2}"#);
+        let file2 = create_temp_json(r#"{"b": 99, "c": 3}"#);
+
+        let result = merge_json_with_strategy(
+            &[
+                file1.path().to_str().unwrap(),
+                file2.path().to_str().unwrap(),
+            ],
+            ConflictStrategy::Skip,
+        )
+        .unwrap();
+
+        let expected = json!({
+            "a": 1,
+            "b": 2,
+            "c": 3
+        });
+
+        assert_eq!(result, expected);
     }
 }
