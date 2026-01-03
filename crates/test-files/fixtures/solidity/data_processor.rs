@@ -1,161 +1,114 @@
 
-use csv::{Reader, Writer};
-use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fs::File;
-use std::path::Path;
+use std::fmt;
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
+#[derive(Debug)]
+pub struct ValidationError {
+    details: String,
 }
 
-impl Record {
-    pub fn new(id: u32, name: String, value: f64, category: String) -> Self {
-        Record {
-            id,
-            name,
-            value,
-            category,
+impl ValidationError {
+    fn new(msg: &str) -> ValidationError {
+        ValidationError {
+            details: msg.to_string(),
         }
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        if self.name.is_empty() {
-            return Err("Name cannot be empty".to_string());
-        }
-        if self.value < 0.0 {
-            return Err("Value must be non-negative".to_string());
-        }
-        if self.category.is_empty() {
-            return Err("Category cannot be empty".to_string());
-        }
-        Ok(())
     }
 }
 
-pub struct DataProcessor {
-    records: Vec<Record>,
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.details)
+    }
 }
 
-impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor {
-            records: Vec::new(),
+impl Error for ValidationError {
+    fn description(&self) -> &str {
+        &self.details
+    }
+}
+
+pub fn validate_numeric_data(data: &[f64]) -> Result<(), ValidationError> {
+    if data.is_empty() {
+        return Err(ValidationError::new("Data slice cannot be empty"));
+    }
+
+    for &value in data {
+        if value.is_nan() || value.is_infinite() {
+            return Err(ValidationError::new("Data contains invalid numeric values"));
         }
     }
 
-    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
-        let file = File::open(path)?;
-        let mut rdr = Reader::from_reader(file);
-        
-        self.records.clear();
-        
-        for result in rdr.deserialize() {
-            let record: Record = result?;
-            record.validate()?;
-            self.records.push(record);
-        }
-        
-        Ok(())
+    Ok(())
+}
+
+pub fn normalize_data(data: &[f64]) -> Vec<f64> {
+    if data.is_empty() {
+        return Vec::new();
     }
 
-    pub fn save_to_csv<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn Error>> {
-        let file = File::create(path)?;
-        let mut wtr = Writer::from_writer(file);
-        
-        for record in &self.records {
-            wtr.serialize(record)?;
-        }
-        
-        wtr.flush()?;
-        Ok(())
+    let min = data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let max = data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    let range = max - min;
+
+    if range == 0.0 {
+        return vec![0.0; data.len()];
     }
 
-    pub fn add_record(&mut self, record: Record) -> Result<(), String> {
-        record.validate()?;
-        self.records.push(record);
-        Ok(())
-    }
+    data.iter()
+        .map(|&x| (x - min) / range)
+        .collect()
+}
 
-    pub fn filter_by_category(&self, category: &str) -> Vec<Record> {
-        self.records
-            .iter()
-            .filter(|r| r.category == category)
-            .cloned()
-            .collect()
-    }
+pub fn calculate_statistics(data: &[f64]) -> Result<(f64, f64, f64), ValidationError> {
+    validate_numeric_data(data)?;
 
-    pub fn calculate_total_value(&self) -> f64 {
-        self.records.iter().map(|r| r.value).sum()
-    }
+    let sum: f64 = data.iter().sum();
+    let mean = sum / data.len() as f64;
 
-    pub fn calculate_average_value(&self) -> f64 {
-        if self.records.is_empty() {
-            0.0
-        } else {
-            self.calculate_total_value() / self.records.len() as f64
-        }
-    }
+    let variance: f64 = data
+        .iter()
+        .map(|&value| {
+            let diff = mean - value;
+            diff * diff
+        })
+        .sum::<f64>()
+        / data.len() as f64;
 
-    pub fn get_record_count(&self) -> usize {
-        self.records.len()
-    }
+    let std_dev = variance.sqrt();
 
-    pub fn clear(&mut self) {
-        self.records.clear();
-    }
+    Ok((mean, variance, std_dev))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_record_validation() {
-        let valid_record = Record::new(1, "Test".to_string(), 100.0, "A".to_string());
-        assert!(valid_record.validate().is_ok());
+    fn test_validate_numeric_data() {
+        let valid_data = vec![1.0, 2.0, 3.0];
+        assert!(validate_numeric_data(&valid_data).is_ok());
 
-        let invalid_record = Record::new(2, "".to_string(), -10.0, "".to_string());
-        assert!(invalid_record.validate().is_err());
+        let invalid_data = vec![1.0, f64::NAN, 3.0];
+        assert!(validate_numeric_data(&invalid_data).is_err());
     }
 
     #[test]
-    fn test_data_processor_operations() {
-        let mut processor = DataProcessor::new();
+    fn test_normalize_data() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let normalized = normalize_data(&data);
         
-        let record1 = Record::new(1, "Item1".to_string(), 50.0, "CategoryA".to_string());
-        let record2 = Record::new(2, "Item2".to_string(), 75.0, "CategoryB".to_string());
-        
-        assert!(processor.add_record(record1.clone()).is_ok());
-        assert!(processor.add_record(record2.clone()).is_ok());
-        
-        assert_eq!(processor.get_record_count(), 2);
-        assert_eq!(processor.calculate_total_value(), 125.0);
-        assert_eq!(processor.calculate_average_value(), 62.5);
-        
-        let filtered = processor.filter_by_category("CategoryA");
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].id, 1);
+        assert_eq!(normalized.len(), 5);
+        assert!((normalized[0] - 0.0).abs() < 1e-10);
+        assert!((normalized[4] - 1.0).abs() < 1e-10);
     }
 
     #[test]
-    fn test_csv_operations() {
-        let mut processor = DataProcessor::new();
-        let record = Record::new(1, "TestItem".to_string(), 99.99, "TestCategory".to_string());
-        processor.add_record(record).unwrap();
+    fn test_calculate_statistics() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let (mean, variance, std_dev) = calculate_statistics(&data).unwrap();
         
-        let temp_file = NamedTempFile::new().unwrap();
-        let path = temp_file.path();
-        
-        assert!(processor.save_to_csv(path).is_ok());
-        
-        let mut new_processor = DataProcessor::new();
-        assert!(new_processor.load_from_csv(path).is_ok());
-        assert_eq!(new_processor.get_record_count(), 1);
+        assert!((mean - 3.0).abs() < 1e-10);
+        assert!((variance - 2.0).abs() < 1e-10);
+        assert!((std_dev - 1.4142135623730951).abs() < 1e-10);
     }
 }
