@@ -1,92 +1,103 @@
+
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 
-pub struct CsvProcessor {
-    delimiter: char,
-    has_headers: bool,
+#[derive(Debug, PartialEq)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
 }
 
-impl CsvProcessor {
-    pub fn new(delimiter: char, has_headers: bool) -> Self {
-        CsvProcessor {
-            delimiter,
-            has_headers,
+impl Record {
+    pub fn new(id: u32, name: String, value: f64, category: String) -> Result<Self, String> {
+        if name.is_empty() {
+            return Err("Name cannot be empty".to_string());
+        }
+        if value < 0.0 {
+            return Err("Value must be non-negative".to_string());
+        }
+        if category.is_empty() {
+            return Err("Category cannot be empty".to_string());
+        }
+        
+        Ok(Self {
+            id,
+            name,
+            value,
+            category,
+        })
+    }
+    
+    pub fn transform_value(&mut self, multiplier: f64) {
+        self.value *= multiplier;
+    }
+    
+    pub fn get_category(&self) -> &str {
+        &self.category
+    }
+    
+    pub fn get_value(&self) -> f64 {
+        self.value
+    }
+}
+
+pub fn process_csv_file(file_path: &Path) -> Result<Vec<Record>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    let mut line_number = 0;
+    
+    for line in reader.lines() {
+        line_number += 1;
+        let line_content = line?;
+        
+        if line_content.trim().is_empty() || line_content.starts_with('#') {
+            continue;
+        }
+        
+        let parts: Vec<&str> = line_content.split(',').collect();
+        if parts.len() != 4 {
+            return Err(format!("Invalid CSV format at line {}", line_number).into());
+        }
+        
+        let id = parts[0].parse::<u32>()
+            .map_err(|e| format!("Invalid ID at line {}: {}", line_number, e))?;
+        
+        let name = parts[1].trim().to_string();
+        
+        let value = parts[2].parse::<f64>()
+            .map_err(|e| format!("Invalid value at line {}: {}", line_number, e))?;
+        
+        let category = parts[3].trim().to_string();
+        
+        match Record::new(id, name, value, category) {
+            Ok(record) => records.push(record),
+            Err(e) => return Err(format!("Validation error at line {}: {}", line_number, e).into()),
         }
     }
+    
+    Ok(records)
+}
 
-    pub fn process_file(&self, file_path: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        let mut lines_iter = reader.lines().enumerate();
-
-        if self.has_headers {
-            lines_iter.next();
-        }
-
-        for (line_num, line) in lines_iter {
-            let line_content = line?;
-            let record: Vec<String> = line_content
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-
-            if !record.is_empty() && !record.iter().all(|field| field.is_empty()) {
-                records.push(record);
-            } else {
-                eprintln!("Warning: Skipping empty line at {}", line_num + 1);
-            }
-        }
-
-        Ok(records)
+pub fn calculate_total_by_category(records: &[Record]) -> std::collections::HashMap<String, f64> {
+    let mut totals = std::collections::HashMap::new();
+    
+    for record in records {
+        let entry = totals.entry(record.get_category().to_string()).or_insert(0.0);
+        *entry += record.get_value();
     }
+    
+    totals
+}
 
-    pub fn validate_numeric_fields(&self, records: &[Vec<String>], field_index: usize) -> Vec<f64> {
-        let mut numeric_values = Vec::new();
-
-        for (row_num, record) in records.iter().enumerate() {
-            if field_index < record.len() {
-                match record[field_index].parse::<f64>() {
-                    Ok(value) => numeric_values.push(value),
-                    Err(_) => eprintln!(
-                        "Warning: Non-numeric value at row {}, field {}: '{}'",
-                        row_num + 1,
-                        field_index,
-                        record[field_index]
-                    ),
-                }
-            } else {
-                eprintln!(
-                    "Warning: Row {} doesn't have field at index {}",
-                    row_num + 1,
-                    field_index
-                );
-            }
-        }
-
-        numeric_values
-    }
-
-    pub fn calculate_statistics(&self, numeric_values: &[f64]) -> (f64, f64, f64) {
-        if numeric_values.is_empty() {
-            return (0.0, 0.0, 0.0);
-        }
-
-        let sum: f64 = numeric_values.iter().sum();
-        let count = numeric_values.len() as f64;
-        let mean = sum / count;
-
-        let variance: f64 = numeric_values
-            .iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>()
-            / count;
-
-        let std_dev = variance.sqrt();
-
-        (mean, variance, std_dev)
-    }
+pub fn filter_records_by_threshold(records: &[Record], threshold: f64) -> Vec<&Record> {
+    records.iter()
+        .filter(|r| r.get_value() >= threshold)
+        .collect()
 }
 
 #[cfg(test)]
@@ -94,34 +105,40 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
-
+    
+    #[test]
+    fn test_record_creation() {
+        let record = Record::new(1, "Test".to_string(), 100.0, "A".to_string());
+        assert!(record.is_ok());
+        
+        let invalid_record = Record::new(2, "".to_string(), -10.0, "".to_string());
+        assert!(invalid_record.is_err());
+    }
+    
+    #[test]
+    fn test_value_transformation() {
+        let mut record = Record::new(1, "Test".to_string(), 100.0, "A".to_string()).unwrap();
+        record.transform_value(1.5);
+        assert_eq!(record.get_value(), 150.0);
+    }
+    
     #[test]
     fn test_csv_processing() {
-        let csv_content = "name,age,salary\nJohn,30,50000.0\nJane,25,60000.0\nBob,35,55000.0";
         let mut temp_file = NamedTempFile::new().unwrap();
-        write!(temp_file, "{}", csv_content).unwrap();
-
-        let processor = CsvProcessor::new(',', true);
-        let records = processor.process_file(temp_file.path().to_str().unwrap()).unwrap();
-
+        writeln!(temp_file, "1,Item1,100.0,CategoryA").unwrap();
+        writeln!(temp_file, "2,Item2,200.0,CategoryB").unwrap();
+        writeln!(temp_file, "# This is a comment").unwrap();
+        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file, "3,Item3,300.0,CategoryA").unwrap();
+        
+        let records = process_csv_file(temp_file.path()).unwrap();
         assert_eq!(records.len(), 3);
-        assert_eq!(records[0], vec!["John", "30", "50000.0"]);
-
-        let salaries = processor.validate_numeric_fields(&records, 2);
-        assert_eq!(salaries.len(), 3);
-
-        let stats = processor.calculate_statistics(&salaries);
-        assert!((stats.0 - 55000.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_empty_file() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        write!(temp_file, "").unwrap();
-
-        let processor = CsvProcessor::new(',', false);
-        let records = processor.process_file(temp_file.path().to_str().unwrap()).unwrap();
-
-        assert!(records.is_empty());
+        
+        let totals = calculate_total_by_category(&records);
+        assert_eq!(totals.get("CategoryA"), Some(&400.0));
+        assert_eq!(totals.get("CategoryB"), Some(&200.0));
+        
+        let filtered = filter_records_by_threshold(&records, 150.0);
+        assert_eq!(filtered.len(), 2);
     }
 }
