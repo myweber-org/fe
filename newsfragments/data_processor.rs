@@ -84,3 +84,151 @@ mod tests {
         assert!(!processor.validate_record(&["".to_string(), "value".to_string()]));
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+pub struct ValidationRule {
+    field_name: String,
+    min_value: f64,
+    max_value: f64,
+    required: bool,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
+            validation_rules: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn process_dataset(&mut self, dataset: &[HashMap<String, f64>]) -> Result<Vec<ProcessedRecord>, String> {
+        let mut results = Vec::new();
+
+        for (index, record) in dataset.iter().enumerate() {
+            match self.validate_record(record) {
+                Ok(_) => {
+                    let processed = self.transform_record(record);
+                    self.cache.insert(format!("record_{}", index), processed.values().cloned().collect());
+                    results.push(ProcessedRecord::new(processed));
+                }
+                Err(e) => return Err(format!("Validation failed at record {}: {}", index, e)),
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn validate_record(&self, record: &HashMap<String, f64>) -> Result<(), String> {
+        for rule in &self.validation_rules {
+            if let Some(&value) = record.get(&rule.field_name) {
+                if value < rule.min_value || value > rule.max_value {
+                    return Err(format!("Field '{}' value {} out of range [{}, {}]", 
+                        rule.field_name, value, rule.min_value, rule.max_value));
+                }
+            } else if rule.required {
+                return Err(format!("Required field '{}' missing", rule.field_name));
+            }
+        }
+        Ok(())
+    }
+
+    fn transform_record(&self, record: &HashMap<String, f64>) -> HashMap<String, f64> {
+        let mut transformed = HashMap::new();
+        
+        for (key, value) in record {
+            let transformed_value = match key.as_str() {
+                "temperature" => (value - 32.0) * 5.0 / 9.0,
+                "pressure" => value * 0.0689476,
+                "humidity" => value.min(100.0).max(0.0),
+                _ => *value,
+            };
+            transformed.insert(key.clone(), transformed_value);
+        }
+        
+        transformed
+    }
+
+    pub fn get_cached_data(&self, key: &str) -> Option<&Vec<f64>> {
+        self.cache.get(key)
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+}
+
+pub struct ProcessedRecord {
+    data: HashMap<String, f64>,
+    timestamp: std::time::SystemTime,
+}
+
+impl ProcessedRecord {
+    fn new(data: HashMap<String, f64>) -> Self {
+        ProcessedRecord {
+            data,
+            timestamp: std::time::SystemTime::now(),
+        }
+    }
+
+    pub fn get_value(&self, field: &str) -> Option<f64> {
+        self.data.get(field).copied()
+    }
+
+    pub fn get_timestamp(&self) -> std::time::SystemTime {
+        self.timestamp
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        
+        processor.add_validation_rule(ValidationRule {
+            field_name: "temperature".to_string(),
+            min_value: -50.0,
+            max_value: 150.0,
+            required: true,
+        });
+
+        let test_data = vec![
+            [("temperature".to_string(), 68.0)].iter().cloned().collect(),
+            [("temperature".to_string(), 32.0)].iter().cloned().collect(),
+        ];
+
+        let result = processor.process_dataset(&test_data);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_validation_failure() {
+        let mut processor = DataProcessor::new();
+        
+        processor.add_validation_rule(ValidationRule {
+            field_name: "pressure".to_string(),
+            min_value: 0.0,
+            max_value: 100.0,
+            required: true,
+        });
+
+        let invalid_data = vec![
+            [("pressure".to_string(), 150.0)].iter().cloned().collect(),
+        ];
+
+        let result = processor.process_dataset(&invalid_data);
+        assert!(result.is_err());
+    }
+}
