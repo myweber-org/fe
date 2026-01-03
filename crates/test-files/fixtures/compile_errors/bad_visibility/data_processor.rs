@@ -1,89 +1,163 @@
 
-use std::collections::HashMap;
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
-pub struct DataProcessor {
-    cache: HashMap<String, Vec<f64>>,
-    validation_rules: Vec<ValidationRule>,
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+    pub timestamp: String,
 }
 
-pub struct ValidationRule {
-    field_name: String,
-    min_value: f64,
-    max_value: f64,
-    required: bool,
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String, timestamp: String) -> Self {
+        DataRecord {
+            id,
+            value,
+            category,
+            timestamp,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.id > 0 && self.value.is_finite() && !self.category.is_empty()
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
         DataProcessor {
-            cache: HashMap::new(),
-            validation_rules: Vec::new(),
+            records: Vec::new(),
         }
     }
 
-    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
-        self.validation_rules.push(rule);
-    }
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
 
-    pub fn process_dataset(&mut self, dataset_name: &str, data: &[f64]) -> Result<Vec<f64>, String> {
-        if data.is_empty() {
-            return Err("Dataset cannot be empty".to_string());
-        }
-
-        let validated_data = self.validate_data(data)?;
-        let transformed_data = self.transform_data(&validated_data);
-        
-        self.cache.insert(dataset_name.to_string(), transformed_data.clone());
-        
-        Ok(transformed_data)
-    }
-
-    fn validate_data(&self, data: &[f64]) -> Result<Vec<f64>, String> {
-        for rule in &self.validation_rules {
-            if rule.required && data.is_empty() {
-                return Err(format!("Field '{}' is required but missing", rule.field_name));
-            }
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
             
-            for &value in data {
-                if value < rule.min_value || value > rule.max_value {
-                    return Err(format!(
-                        "Value {} for field '{}' is outside allowed range [{}, {}]",
-                        value, rule.field_name, rule.min_value, rule.max_value
-                    ));
-                }
+            if line_num == 0 {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 4 {
+                continue;
+            }
+
+            let id = match parts[0].parse::<u32>() {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+
+            let value = match parts[1].parse::<f64>() {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+
+            let category = parts[2].to_string();
+            let timestamp = parts[3].to_string();
+
+            let record = DataRecord::new(id, value, category, timestamp);
+            if record.is_valid() {
+                self.records.push(record);
+                count += 1;
             }
         }
-        
-        Ok(data.to_vec())
+
+        Ok(count)
     }
 
-    fn transform_data(&self, data: &[f64]) -> Vec<f64> {
-        let mean = data.iter().sum::<f64>() / data.len() as f64;
-        let std_dev = (data.iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / data.len() as f64).sqrt();
-
-        data.iter()
-            .map(|&x| (x - mean) / std_dev)
+    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.category == category)
             .collect()
     }
 
-    pub fn get_cached_data(&self, dataset_name: &str) -> Option<&Vec<f64>> {
-        self.cache.get(dataset_name)
+    pub fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        Some(sum / self.records.len() as f64)
     }
 
-    pub fn clear_cache(&mut self) {
-        self.cache.clear();
+    pub fn get_statistics(&self) -> (f64, f64, f64) {
+        if self.records.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+
+        let values: Vec<f64> = self.records.iter().map(|r| r.value).collect();
+        let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let avg = self.calculate_average().unwrap_or(0.0);
+
+        (min, max, avg)
+    }
+
+    pub fn count_records(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
     }
 }
 
-impl ValidationRule {
-    pub fn new(field_name: &str, min_value: f64, max_value: f64, required: bool) -> Self {
-        ValidationRule {
-            field_name: field_name.to_string(),
-            min_value,
-            max_value,
-            required,
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_record_validation() {
+        let valid_record = DataRecord::new(1, 42.5, "test".to_string(), "2024-01-01".to_string());
+        assert!(valid_record.is_valid());
+
+        let invalid_record = DataRecord::new(0, 42.5, "test".to_string(), "2024-01-01".to_string());
+        assert!(!invalid_record.is_valid());
+    }
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        assert_eq!(processor.count_records(), 0);
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,value,category,timestamp").unwrap();
+        writeln!(temp_file, "1,10.5,category_a,2024-01-01").unwrap();
+        writeln!(temp_file, "2,20.5,category_b,2024-01-02").unwrap();
+        writeln!(temp_file, "3,30.5,category_a,2024-01-03").unwrap();
+
+        let count = processor.load_from_csv(temp_file.path()).unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(processor.count_records(), 3);
+
+        let filtered = processor.filter_by_category("category_a");
+        assert_eq!(filtered.len(), 2);
+
+        let avg = processor.calculate_average().unwrap();
+        assert!((avg - 20.5).abs() < 0.001);
+
+        let (min, max, avg_stat) = processor.get_statistics();
+        assert!((min - 10.5).abs() < 0.001);
+        assert!((max - 30.5).abs() < 0.001);
+        assert!((avg_stat - 20.5).abs() < 0.001);
+
+        processor.clear();
+        assert_eq!(processor.count_records(), 0);
     }
 }
