@@ -369,4 +369,98 @@ mod tests {
         let averages = processor.calculate_column_averages(&records).unwrap();
         assert_eq!(averages, vec![20.0, 30.0]);
     }
+}use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+use std::path::Path;
+
+#[derive(Debug, Deserialize)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+pub fn process_csv_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
+    let path = Path::new(file_path);
+    if !path.exists() {
+        return Err("File does not exist".into());
+    }
+
+    let mut reader = Reader::from_path(path)?;
+    let mut records = Vec::new();
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.value < 0.0 {
+            return Err(format!("Invalid value for record ID {}: {}", record.id, record.value).into());
+        }
+        
+        records.push(record);
+    }
+
+    if records.is_empty() {
+        return Err("No valid records found in CSV file".into());
+    }
+
+    Ok(records)
+}
+
+pub fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
+    let count = records.len() as f64;
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let mean = sum / count;
+    
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (sum, mean, std_dev)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_valid_csv_processing() {
+        let csv_data = "id,name,value,active\n1,Test1,10.5,true\n2,Test2,20.0,false\n";
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "{}", csv_data).unwrap();
+        
+        let result = process_csv_file(temp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_invalid_negative_value() {
+        let csv_data = "id,name,value,active\n1,Test1,-5.0,true\n";
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "{}", csv_data).unwrap();
+        
+        let result = process_csv_file(temp_file.path().to_str().unwrap());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let records = vec![
+            Record { id: 1, name: "A".to_string(), value: 10.0, active: true },
+            Record { id: 2, name: "B".to_string(), value: 20.0, active: false },
+            Record { id: 3, name: "C".to_string(), value: 30.0, active: true },
+        ];
+        
+        let (sum, mean, std_dev) = calculate_statistics(&records);
+        assert_eq!(sum, 60.0);
+        assert_eq!(mean, 20.0);
+        assert!((std_dev - 8.164965).abs() < 0.0001);
+    }
 }
