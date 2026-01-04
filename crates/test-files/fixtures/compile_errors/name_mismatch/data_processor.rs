@@ -1,105 +1,93 @@
+
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-#[derive(Debug)]
-pub struct DataRecord {
-    id: u32,
-    value: f64,
-    category: String,
+pub struct DataSet {
+    values: Vec<f64>,
 }
 
-impl DataRecord {
-    pub fn new(id: u32, value: f64, category: String) -> Result<Self, String> {
-        if value < 0.0 {
-            return Err("Value cannot be negative".to_string());
-        }
-        if category.trim().is_empty() {
-            return Err("Category cannot be empty".to_string());
-        }
-        Ok(Self {
-            id,
-            value,
-            category: category.trim().to_string(),
-        })
-    }
-
-    pub fn calculate_tax(&self, rate: f64) -> f64 {
-        self.value * rate
-    }
-}
-
-pub struct DataProcessor {
-    records: Vec<DataRecord>,
-}
-
-impl DataProcessor {
+impl DataSet {
     pub fn new() -> Self {
-        Self {
-            records: Vec::new(),
-        }
+        DataSet { values: Vec::new() }
     }
 
-    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+    pub fn from_csv<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
         let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let mut count = 0;
+        let mut rdr = csv::Reader::from_reader(file);
+        let mut values = Vec::new();
 
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line?;
-            if line_num == 0 {
-                continue;
+        for result in rdr.records() {
+            let record = result?;
+            for field in record.iter() {
+                if let Ok(num) = field.parse::<f64>() {
+                    values.push(num);
+                }
             }
-
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() != 3 {
-                continue;
-            }
-
-            let id = match parts[0].parse::<u32>() {
-                Ok(val) => val,
-                Err(_) => continue,
-            };
-
-            let value = match parts[1].parse::<f64>() {
-                Ok(val) => val,
-                Err(_) => continue,
-            };
-
-            let record = match DataRecord::new(id, value, parts[2].to_string()) {
-                Ok(rec) => rec,
-                Err(_) => continue,
-            };
-
-            self.records.push(record);
-            count += 1;
         }
 
-        Ok(count)
+        Ok(DataSet { values })
     }
 
-    pub fn total_value(&self) -> f64 {
-        self.records.iter().map(|r| r.value).sum()
+    pub fn add_value(&mut self, value: f64) {
+        self.values.push(value);
     }
 
-    pub fn average_value(&self) -> Option<f64> {
-        if self.records.is_empty() {
-            None
-        } else {
-            Some(self.total_value() / self.records.len() as f64)
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.values.is_empty() {
+            return None;
         }
+        let sum: f64 = self.values.iter().sum();
+        Some(sum / self.values.len() as f64)
     }
 
-    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
-        self.records
+    pub fn calculate_variance(&self) -> Option<f64> {
+        if self.values.len() < 2 {
+            return None;
+        }
+        let mean = self.calculate_mean()?;
+        let sum_sq_diff: f64 = self.values
             .iter()
-            .filter(|r| r.category == category)
-            .collect()
+            .map(|&x| (x - mean).powi(2))
+            .sum();
+        Some(sum_sq_diff / (self.values.len() - 1) as f64)
     }
 
-    pub fn record_count(&self) -> usize {
-        self.records.len()
+    pub fn calculate_standard_deviation(&self) -> Option<f64> {
+        self.calculate_variance().map(|v| v.sqrt())
+    }
+
+    pub fn get_summary(&self) -> Summary {
+        Summary {
+            count: self.values.len(),
+            mean: self.calculate_mean(),
+            variance: self.calculate_variance(),
+            std_dev: self.calculate_standard_deviation(),
+        }
+    }
+}
+
+pub struct Summary {
+    pub count: usize,
+    pub mean: Option<f64>,
+    pub variance: Option<f64>,
+    pub std_dev: Option<f64>,
+}
+
+impl std::fmt::Display for Summary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Data Summary:")?;
+        writeln!(f, "  Count: {}", self.count)?;
+        if let Some(mean) = self.mean {
+            writeln!(f, "  Mean: {:.4}", mean)?;
+        }
+        if let Some(variance) = self.variance {
+            writeln!(f, "  Variance: {:.4}", variance)?;
+        }
+        if let Some(std_dev) = self.std_dev {
+            writeln!(f, "  Standard Deviation: {:.4}", std_dev)?;
+        }
+        Ok(())
     }
 }
 
@@ -110,135 +98,48 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_data_record_creation() {
-        let record = DataRecord::new(1, 100.5, "Test".to_string()).unwrap();
-        assert_eq!(record.id, 1);
-        assert_eq!(record.value, 100.5);
-        assert_eq!(record.category, "Test");
+    fn test_empty_dataset() {
+        let dataset = DataSet::new();
+        assert_eq!(dataset.calculate_mean(), None);
+        assert_eq!(dataset.calculate_variance(), None);
+        assert_eq!(dataset.calculate_standard_deviation(), None);
     }
 
     #[test]
-    fn test_invalid_data_record() {
-        let result = DataRecord::new(1, -10.0, "Test".to_string());
-        assert!(result.is_err());
+    fn test_basic_statistics() {
+        let mut dataset = DataSet::new();
+        dataset.add_value(1.0);
+        dataset.add_value(2.0);
+        dataset.add_value(3.0);
+        dataset.add_value(4.0);
+        dataset.add_value(5.0);
+
+        assert_eq!(dataset.calculate_mean(), Some(3.0));
+        assert_eq!(dataset.calculate_variance(), Some(2.5));
+        assert_eq!(dataset.calculate_standard_deviation(), Some(2.5_f64.sqrt()));
     }
 
     #[test]
-    fn test_calculate_tax() {
-        let record = DataRecord::new(1, 100.0, "Test".to_string()).unwrap();
-        assert_eq!(record.calculate_tax(0.1), 10.0);
-    }
-
-    #[test]
-    fn test_data_processor() {
-        let mut processor = DataProcessor::new();
-        assert_eq!(processor.record_count(), 0);
-        assert_eq!(processor.total_value(), 0.0);
-        assert!(processor.average_value().is_none());
-    }
-
-    #[test]
-    fn test_load_csv() {
+    fn test_csv_parsing() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,value,category").unwrap();
-        writeln!(temp_file, "1,100.5,CategoryA").unwrap();
-        writeln!(temp_file, "2,200.0,CategoryB").unwrap();
-        writeln!(temp_file, "invalid,data,row").unwrap();
-
-        let mut processor = DataProcessor::new();
-        let result = processor.load_from_csv(temp_file.path());
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 2);
-        assert_eq!(processor.record_count(), 2);
-        assert_eq!(processor.total_value(), 300.5);
-        assert_eq!(processor.average_value(), Some(150.25));
+        writeln!(temp_file, "1.5,2.5,3.5\n4.5,5.5,6.5").unwrap();
+        
+        let dataset = DataSet::from_csv(temp_file.path()).unwrap();
+        assert_eq!(dataset.values.len(), 6);
+        assert_eq!(dataset.values[0], 1.5);
+        assert_eq!(dataset.values[5], 6.5);
     }
 
     #[test]
-    fn test_filter_by_category() {
-        let mut processor = DataProcessor::new();
-        processor.records.push(
-            DataRecord::new(1, 100.0, "CategoryA".to_string()).unwrap()
-        );
-        processor.records.push(
-            DataRecord::new(2, 200.0, "CategoryB".to_string()).unwrap()
-        );
-        processor.records.push(
-            DataRecord::new(3, 150.0, "CategoryA".to_string()).unwrap()
-        );
-
-        let filtered = processor.filter_by_category("CategoryA");
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].id, 1);
-        assert_eq!(filtered[1].id, 3);
-    }
-}
-use csv::{Reader, Writer};
-use serde::{Deserialize, Serialize};
-use std::error::Error;
-use std::fs::File;
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    active: bool,
-}
-
-impl Record {
-    fn is_valid(&self) -> bool {
-        !self.name.is_empty() && self.value >= 0.0
-    }
-}
-
-pub fn process_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
-    let input_file = File::open(input_path)?;
-    let mut reader = Reader::from_reader(input_file);
-    
-    let output_file = File::create(output_path)?;
-    let mut writer = Writer::from_writer(output_file);
-    
-    let mut valid_count = 0;
-    let mut invalid_count = 0;
-    
-    for result in reader.deserialize() {
-        let record: Record = result?;
+    fn test_summary_display() {
+        let mut dataset = DataSet::new();
+        dataset.add_value(10.0);
+        dataset.add_value(20.0);
         
-        if record.is_valid() {
-            writer.serialize(&record)?;
-            valid_count += 1;
-        } else {
-            invalid_count += 1;
-        }
+        let summary = dataset.get_summary();
+        let display_output = format!("{}", summary);
+        assert!(display_output.contains("Data Summary:"));
+        assert!(display_output.contains("Count: 2"));
+        assert!(display_output.contains("Mean: 15.0000"));
     }
-    
-    writer.flush()?;
-    
-    println!("Processing complete:");
-    println!("  Valid records: {}", valid_count);
-    println!("  Invalid records: {}", invalid_count);
-    
-    Ok(())
-}
-
-pub fn generate_sample_data() -> Result<(), Box<dyn Error>> {
-    let records = vec![
-        Record { id: 1, name: String::from("Item A"), value: 100.5, active: true },
-        Record { id: 2, name: String::from("Item B"), value: 250.75, active: false },
-        Record { id: 3, name: String::from(""), value: -50.0, active: true },
-        Record { id: 4, name: String::from("Item D"), value: 300.0, active: true },
-    ];
-    
-    let file = File::create("sample_data.csv")?;
-    let mut writer = Writer::from_writer(file);
-    
-    for record in records {
-        writer.serialize(&record)?;
-    }
-    
-    writer.flush()?;
-    println!("Sample data generated: sample_data.csv");
-    
-    Ok(())
 }
