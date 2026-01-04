@@ -175,3 +175,120 @@ mod tests {
         assert_eq!(original_content.to_vec(), decrypted_content);
     }
 }
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+pub fn xor_encrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> io::Result<()> {
+    let input_data = fs::read(input_path)?;
+    let encrypted_data = xor_encrypt(&input_data, key);
+    fs::write(output_path, encrypted_data)?;
+    Ok(())
+}
+
+pub fn xor_decrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> io::Result<()> {
+    let input_data = fs::read(input_path)?;
+    let decrypted_data = xor_decrypt(&input_data, key);
+    fs::write(output_path, decrypted_data)?;
+    Ok(())
+}
+
+fn xor_encrypt(data: &[u8], key: &[u8]) -> Vec<u8> {
+    data.iter()
+        .enumerate()
+        .map(|(i, &byte)| byte ^ key[i % key.len()])
+        .collect()
+}
+
+fn xor_decrypt(data: &[u8], key: &[u8]) -> Vec<u8> {
+    xor_encrypt(data, key)
+}
+
+pub fn process_file_interactive() -> io::Result<()> {
+    println!("Enter input file path:");
+    let mut input_path = String::new();
+    io::stdin().read_line(&mut input_path)?;
+    let input_path = input_path.trim();
+
+    println!("Enter output file path:");
+    let mut output_path = String::new();
+    io::stdin().read_line(&mut output_path)?;
+    let output_path = output_path.trim();
+
+    println!("Enter operation (encrypt/decrypt):");
+    let mut operation = String::new();
+    io::stdin().read_line(&mut operation)?;
+    let operation = operation.trim().to_lowercase();
+
+    println!("Enter encryption key:");
+    let mut key = String::new();
+    io::stdin().read_line(&mut key)?;
+    let key = key.trim().as_bytes();
+
+    if !Path::new(input_path).exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Input file does not exist",
+        ));
+    }
+
+    match operation.as_str() {
+        "encrypt" => xor_encrypt_file(input_path, output_path, key),
+        "decrypt" => xor_decrypt_file(input_path, output_path, key),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid operation. Use 'encrypt' or 'decrypt'",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_xor_encryption() {
+        let data = b"Hello, World!";
+        let key = b"secret";
+        
+        let encrypted = xor_encrypt(data, key);
+        let decrypted = xor_decrypt(&encrypted, key);
+        
+        assert_eq!(data.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn test_file_encryption() -> io::Result<()> {
+        let mut input_file = NamedTempFile::new()?;
+        let output_file = NamedTempFile::new()?;
+        
+        let test_data = b"Test file content for encryption";
+        input_file.write_all(test_data)?;
+        
+        let key = b"testkey123";
+        
+        xor_encrypt_file(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap(),
+            key,
+        )?;
+        
+        let encrypted_data = fs::read(output_file.path())?;
+        assert_ne!(test_data, encrypted_data.as_slice());
+        
+        let mut decrypt_file = NamedTempFile::new()?;
+        xor_decrypt_file(
+            output_file.path().to_str().unwrap(),
+            decrypt_file.path().to_str().unwrap(),
+            key,
+        )?;
+        
+        let decrypted_data = fs::read(decrypt_file.path())?;
+        assert_eq!(test_data, decrypted_data.as_slice());
+        
+        Ok(())
+    }
+}
