@@ -85,4 +85,139 @@ mod tests {
         assert_eq!(stats.get("warnings"), Some(&1));
         assert_eq!(stats.get("info_messages"), Some(&2));
     }
+}use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use regex::Regex;
+
+#[derive(Debug)]
+pub struct LogEntry {
+    timestamp: String,
+    level: String,
+    message: String,
+    source: String,
+}
+
+#[derive(Debug)]
+pub struct LogSummary {
+    total_entries: usize,
+    error_count: usize,
+    warning_count: usize,
+    info_count: usize,
+    source_distribution: HashMap<String, usize>,
+    recent_errors: Vec<LogEntry>,
+}
+
+pub struct LogAnalyzer {
+    log_entries: Vec<LogEntry>,
+}
+
+impl LogAnalyzer {
+    pub fn new() -> Self {
+        LogAnalyzer {
+            log_entries: Vec::new(),
+        }
+    }
+
+    pub fn load_from_file(&mut self, file_path: &str) -> Result<(), std::io::Error> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let log_pattern = Regex::new(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[(\w+)\] (\w+): (.+)$").unwrap();
+
+        for line in reader.lines() {
+            let line = line?;
+            if let Some(captures) = log_pattern.captures(&line) {
+                let entry = LogEntry {
+                    timestamp: captures[1].to_string(),
+                    level: captures[2].to_string(),
+                    source: captures[3].to_string(),
+                    message: captures[4].to_string(),
+                };
+                self.log_entries.push(entry);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn generate_summary(&self) -> LogSummary {
+        let mut error_count = 0;
+        let mut warning_count = 0;
+        let mut info_count = 0;
+        let mut source_distribution = HashMap::new();
+        let mut recent_errors = Vec::new();
+
+        for entry in &self.log_entries {
+            match entry.level.as_str() {
+                "ERROR" => {
+                    error_count += 1;
+                    if recent_errors.len() < 10 {
+                        recent_errors.push(LogEntry {
+                            timestamp: entry.timestamp.clone(),
+                            level: entry.level.clone(),
+                            message: entry.message.clone(),
+                            source: entry.source.clone(),
+                        });
+                    }
+                }
+                "WARNING" => warning_count += 1,
+                "INFO" => info_count += 1,
+                _ => {}
+            }
+
+            *source_distribution.entry(entry.source.clone()).or_insert(0) += 1;
+        }
+
+        LogSummary {
+            total_entries: self.log_entries.len(),
+            error_count,
+            warning_count,
+            info_count,
+            source_distribution,
+            recent_errors,
+        }
+    }
+
+    pub fn filter_by_level(&self, level: &str) -> Vec<&LogEntry> {
+        self.log_entries
+            .iter()
+            .filter(|entry| entry.level == level)
+            .collect()
+    }
+
+    pub fn filter_by_source(&self, source: &str) -> Vec<&LogEntry> {
+        self.log_entries
+            .iter()
+            .filter(|entry| entry.source == source)
+            .collect()
+    }
+
+    pub fn search_messages(&self, keyword: &str) -> Vec<&LogEntry> {
+        self.log_entries
+            .iter()
+            .filter(|entry| entry.message.contains(keyword))
+            .collect()
+    }
+}
+
+impl LogSummary {
+    pub fn print_summary(&self) {
+        println!("Log Analysis Summary");
+        println!("====================");
+        println!("Total entries: {}", self.total_entries);
+        println!("Errors: {}", self.error_count);
+        println!("Warnings: {}", self.warning_count);
+        println!("Info messages: {}", self.info_count);
+        println!("\nSource distribution:");
+        for (source, count) in &self.source_distribution {
+            println!("  {}: {}", source, count);
+        }
+        
+        if !self.recent_errors.is_empty() {
+            println!("\nRecent errors:");
+            for error in &self.recent_errors {
+                println!("  [{}] {}: {}", error.timestamp, error.source, error.message);
+            }
+        }
+    }
 }
