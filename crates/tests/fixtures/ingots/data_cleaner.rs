@@ -32,4 +32,28 @@ mod tests {
         let result = clean_data(input);
         assert!(result.is_empty());
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
+
+pub fn clean_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(Path::new(input_path))?;
+    let reader = BufReader::new(input_file);
+    let mut output_file = File::create(Path::new(output_path))?;
+
+    for (index, line) in reader.lines().enumerate() {
+        let line = line?;
+        if index == 0 {
+            writeln!(output_file, "{}", line)?;
+            continue;
+        }
+
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() >= 3 && !fields[1].is_empty() && fields[2].parse::<f64>().is_ok() {
+            writeln!(output_file, "{}", line)?;
+        }
+    }
+
+    Ok(())
 }
