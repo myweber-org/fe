@@ -1,116 +1,123 @@
 
-use std::collections::HashMap;
+use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
+}
 
 pub struct DataProcessor {
-    data: HashMap<String, Vec<f64>>,
+    records: Vec<Record>,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
         DataProcessor {
-            data: HashMap::new(),
+            records: Vec::new(),
         }
     }
 
-    pub fn add_dataset(&mut self, key: &str, values: Vec<f64>) -> Result<(), String> {
-        if values.is_empty() {
-            return Err("Dataset cannot be empty".to_string());
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let mut rdr = Reader::from_reader(file);
+
+        for result in rdr.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
         }
 
-        if values.iter().any(|&x| x.is_nan() || x.is_infinite()) {
-            return Err("Dataset contains invalid numeric values".to_string());
-        }
-
-        self.data.insert(key.to_string(), values);
         Ok(())
     }
 
-    pub fn calculate_statistics(&self, key: &str) -> Option<Statistics> {
-        self.data.get(key).map(|values| {
-            let count = values.len();
-            let sum: f64 = values.iter().sum();
-            let mean = sum / count as f64;
-            
-            let variance: f64 = values.iter()
-                .map(|&x| (x - mean).powi(2))
-                .sum::<f64>() / count as f64;
-            
-            let std_dev = variance.sqrt();
-            
-            Statistics {
-                count,
-                mean,
-                variance,
-                std_dev,
+    pub fn validate_data(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        for (index, record) in self.records.iter().enumerate() {
+            if record.name.is_empty() {
+                errors.push(format!("Record {}: Name cannot be empty", index));
             }
-        })
-    }
 
-    pub fn normalize_data(&self, key: &str) -> Option<Vec<f64>> {
-        self.data.get(key).map(|values| {
-            let stats = self.calculate_statistics(key).unwrap();
-            values.iter()
-                .map(|&x| (x - stats.mean) / stats.std_dev)
-                .collect()
-        })
-    }
+            if record.value < 0.0 {
+                errors.push(format!("Record {}: Value cannot be negative", index));
+            }
 
-    pub fn merge_datasets(&self, keys: &[&str]) -> Option<Vec<f64>> {
-        let mut merged = Vec::new();
-        
-        for key in keys {
-            if let Some(values) = self.data.get(*key) {
-                merged.extend(values);
-            } else {
-                return None;
+            if !["A", "B", "C"].contains(&record.category.as_str()) {
+                errors.push(format!("Record {}: Invalid category '{}'", index, record.category));
             }
         }
-        
-        Some(merged)
-    }
-}
 
-pub struct Statistics {
-    pub count: usize,
-    pub mean: f64,
-    pub variance: f64,
-    pub std_dev: f64,
+        errors
+    }
+
+    pub fn calculate_statistics(&self) -> (f64, f64, f64) {
+        let values: Vec<f64> = self.records.iter().map(|r| r.value).collect();
+        
+        if values.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+
+        let sum: f64 = values.iter().sum();
+        let count = values.len() as f64;
+        let mean = sum / count;
+
+        let variance: f64 = values.iter()
+            .map(|value| {
+                let diff = mean - value;
+                diff * diff
+            })
+            .sum::<f64>() / count;
+
+        let std_dev = variance.sqrt();
+
+        (mean, variance, std_dev)
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|record| record.category == category)
+            .collect()
+    }
+
+    pub fn get_record_count(&self) -> usize {
+        self.records.len()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_add_valid_dataset() {
+    fn test_data_processing() {
         let mut processor = DataProcessor::new();
-        let result = processor.add_dataset("test", vec![1.0, 2.0, 3.0]);
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,name,value,category").unwrap();
+        writeln!(temp_file, "1,Item1,10.5,A").unwrap();
+        writeln!(temp_file, "2,Item2,20.0,B").unwrap();
+        writeln!(temp_file, "3,Item3,15.75,C").unwrap();
+
+        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
         assert!(result.is_ok());
-    }
+        assert_eq!(processor.get_record_count(), 3);
 
-    #[test]
-    fn test_add_invalid_dataset() {
-        let mut processor = DataProcessor::new();
-        let result = processor.add_dataset("test", vec![]);
-        assert!(result.is_err());
-    }
+        let errors = processor.validate_data();
+        assert!(errors.is_empty());
 
-    #[test]
-    fn test_calculate_statistics() {
-        let mut processor = DataProcessor::new();
-        processor.add_dataset("numbers", vec![1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
-        
-        let stats = processor.calculate_statistics("numbers").unwrap();
-        assert_eq!(stats.count, 5);
-        assert_eq!(stats.mean, 3.0);
-    }
+        let stats = processor.calculate_statistics();
+        assert!((stats.0 - 15.416666666666666).abs() < 0.0001);
 
-    #[test]
-    fn test_normalize_data() {
-        let mut processor = DataProcessor::new();
-        processor.add_dataset("values", vec![1.0, 2.0, 3.0]).unwrap();
-        
-        let normalized = processor.normalize_data("values").unwrap();
-        assert_eq!(normalized.len(), 3);
+        let filtered = processor.filter_by_category("A");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "Item1");
     }
 }
