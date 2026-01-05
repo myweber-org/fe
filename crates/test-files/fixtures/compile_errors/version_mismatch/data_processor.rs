@@ -1,123 +1,101 @@
 
-use csv::Reader;
-use serde::Deserialize;
-use std::error::Error;
-use std::fs::File;
-
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
-}
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    records: Vec<Record>,
+    cache: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+pub struct ValidationRule {
+    field_name: String,
+    min_value: f64,
+    max_value: f64,
+    required: bool,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
         DataProcessor {
-            records: Vec::new(),
+            cache: HashMap::new(),
+            validation_rules: Vec::new(),
         }
     }
 
-    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let mut rdr = Reader::from_reader(file);
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
 
-        for result in rdr.deserialize() {
-            let record: Record = result?;
-            self.records.push(record);
+    pub fn process_dataset(&mut self, dataset_name: &str, data: &[f64]) -> Result<Vec<f64>, String> {
+        if data.is_empty() {
+            return Err("Dataset cannot be empty".to_string());
         }
 
+        self.validate_data(data)?;
+        
+        let processed_data = self.transform_data(data);
+        self.cache.insert(dataset_name.to_string(), processed_data.clone());
+        
+        Ok(processed_data)
+    }
+
+    fn validate_data(&self, data: &[f64]) -> Result<(), String> {
+        for value in data {
+            if value.is_nan() || value.is_infinite() {
+                return Err("Invalid numeric value detected".to_string());
+            }
+        }
         Ok(())
     }
 
-    pub fn validate_data(&self) -> Vec<String> {
-        let mut errors = Vec::new();
-
-        for (index, record) in self.records.iter().enumerate() {
-            if record.name.is_empty() {
-                errors.push(format!("Record {}: Name cannot be empty", index));
-            }
-
-            if record.value < 0.0 {
-                errors.push(format!("Record {}: Value cannot be negative", index));
-            }
-
-            if !["A", "B", "C"].contains(&record.category.as_str()) {
-                errors.push(format!("Record {}: Invalid category '{}'", index, record.category));
-            }
-        }
-
-        errors
-    }
-
-    pub fn calculate_statistics(&self) -> (f64, f64, f64) {
-        let values: Vec<f64> = self.records.iter().map(|r| r.value).collect();
-        
-        if values.is_empty() {
-            return (0.0, 0.0, 0.0);
-        }
-
-        let sum: f64 = values.iter().sum();
-        let count = values.len() as f64;
-        let mean = sum / count;
-
-        let variance: f64 = values.iter()
-            .map(|value| {
-                let diff = mean - value;
-                diff * diff
-            })
-            .sum::<f64>() / count;
-
-        let std_dev = variance.sqrt();
-
-        (mean, variance, std_dev)
-    }
-
-    pub fn filter_by_category(&self, category: &str) -> Vec<&Record> {
-        self.records
-            .iter()
-            .filter(|record| record.category == category)
+    fn transform_data(&self, data: &[f64]) -> Vec<f64> {
+        let mean = data.iter().sum::<f64>() / data.len() as f64;
+        data.iter()
+            .map(|&x| (x - mean).abs())
             .collect()
     }
 
-    pub fn get_record_count(&self) -> usize {
-        self.records.len()
+    pub fn get_cached_result(&self, dataset_name: &str) -> Option<&Vec<f64>> {
+        self.cache.get(dataset_name)
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+}
+
+impl ValidationRule {
+    pub fn new(field_name: &str, min_value: f64, max_value: f64, required: bool) -> Self {
+        ValidationRule {
+            field_name: field_name.to_string(),
+            min_value,
+            max_value,
+            required,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
     fn test_data_processing() {
         let mut processor = DataProcessor::new();
+        let test_data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,name,value,category").unwrap();
-        writeln!(temp_file, "1,Item1,10.5,A").unwrap();
-        writeln!(temp_file, "2,Item2,20.0,B").unwrap();
-        writeln!(temp_file, "3,Item3,15.75,C").unwrap();
-
-        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
+        let result = processor.process_dataset("test", &test_data);
         assert!(result.is_ok());
-        assert_eq!(processor.get_record_count(), 3);
+        
+        let processed = result.unwrap();
+        assert_eq!(processed.len(), 5);
+    }
 
-        let errors = processor.validate_data();
-        assert!(errors.is_empty());
-
-        let stats = processor.calculate_statistics();
-        assert!((stats.0 - 15.416666666666666).abs() < 0.0001);
-
-        let filtered = processor.filter_by_category("A");
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].name, "Item1");
+    #[test]
+    fn test_validation_error() {
+        let mut processor = DataProcessor::new();
+        let invalid_data = vec![1.0, f64::NAN, 3.0];
+        
+        let result = processor.process_dataset("invalid", &invalid_data);
+        assert!(result.is_err());
     }
 }
