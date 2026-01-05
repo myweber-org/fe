@@ -1,35 +1,59 @@
 
 use std::fs;
-use std::io::{Read, Write};
-use std::env;
+use std::io::{self, Read, Write};
+use std::path::Path;
 
-fn xor_encrypt_decrypt(data: &[u8], key: &[u8]) -> Vec<u8> {
-    data.iter()
-        .enumerate()
-        .map(|(i, &byte)| byte ^ key[i % key.len()])
-        .collect()
-}
+pub fn xor_encrypt_file(input_path: &Path, output_path: &Path, key: &[u8]) -> io::Result<()> {
+    let mut input_file = fs::File::open(input_path)?;
+    let mut output_file = fs::File::create(output_path)?;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 4 {
-        eprintln!("Usage: {} <input_file> <output_file> <key>", args[0]);
-        std::process::exit(1);
+    let mut buffer = [0u8; 1024];
+    let key_len = key.len();
+    let mut key_index = 0;
+
+    loop {
+        let bytes_read = input_file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        for byte in buffer.iter_mut().take(bytes_read) {
+            *byte ^= key[key_index];
+            key_index = (key_index + 1) % key_len;
+        }
+
+        output_file.write_all(&buffer[..bytes_read])?;
     }
 
-    let input_path = &args[1];
-    let output_path = &args[2];
-    let key = args[3].as_bytes();
-
-    let mut file = fs::File::open(input_path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-
-    let processed_data = xor_encrypt_decrypt(&buffer, key);
-
-    let mut output_file = fs::File::create(output_path)?;
-    output_file.write_all(&processed_data)?;
-
-    println!("Operation completed successfully. Output written to {}", output_path);
+    output_file.flush()?;
     Ok(())
+}
+
+pub fn xor_decrypt_file(input_path: &Path, output_path: &Path, key: &[u8]) -> io::Result<()> {
+    xor_encrypt_file(input_path, output_path, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_xor_encryption_decryption() {
+        let key = b"secret_key";
+        let original_data = b"Hello, this is a test message for XOR encryption!";
+
+        let mut input_file = NamedTempFile::new().unwrap();
+        input_file.write_all(original_data).unwrap();
+
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+
+        xor_encrypt_file(input_file.path(), encrypted_file.path(), key).unwrap();
+        xor_decrypt_file(encrypted_file.path(), decrypted_file.path(), key).unwrap();
+
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(original_data.as_slice(), decrypted_data.as_slice());
+    }
 }
