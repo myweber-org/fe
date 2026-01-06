@@ -1,98 +1,100 @@
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fmt;
 
-use std::collections::HashMap;
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidValue,
+    InvalidCategory,
+    TimestampError,
+    SerializationError(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidValue => write!(f, "Invalid numeric value"),
+            ProcessingError::InvalidCategory => write!(f, "Invalid category string"),
+            ProcessingError::TimestampError => write!(f, "Invalid timestamp"),
+            ProcessingError::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
 
 pub struct DataProcessor {
-    data: HashMap<String, Vec<f64>>,
+    validation_threshold: f64,
+    allowed_categories: Vec<String>,
 }
 
 impl DataProcessor {
-    pub fn new() -> Self {
+    pub fn new(threshold: f64, categories: Vec<String>) -> Self {
         DataProcessor {
-            data: HashMap::new(),
+            validation_threshold: threshold,
+            allowed_categories: categories,
         }
     }
 
-    pub fn add_dataset(&mut self, key: &str, values: Vec<f64>) -> Result<(), String> {
-        if values.is_empty() {
-            return Err("Dataset cannot be empty".to_string());
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.value.abs() > self.validation_threshold {
+            return Err(ProcessingError::InvalidValue);
         }
 
-        if values.iter().any(|&x| x.is_nan() || x.is_infinite()) {
-            return Err("Dataset contains invalid numeric values".to_string());
+        if !self.allowed_categories.contains(&record.category) {
+            return Err(ProcessingError::InvalidCategory);
         }
 
-        self.data.insert(key.to_string(), values);
+        if record.timestamp < 0 {
+            return Err(ProcessingError::TimestampError);
+        }
+
         Ok(())
     }
 
-    pub fn calculate_statistics(&self, key: &str) -> Option<Statistics> {
-        self.data.get(key).map(|values| {
-            let count = values.len();
-            let sum: f64 = values.iter().sum();
-            let mean = sum / count as f64;
-            
-            let variance: f64 = values.iter()
-                .map(|&x| (x - mean).powi(2))
-                .sum::<f64>() / count as f64;
-            
-            let std_dev = variance.sqrt();
-            
-            let mut sorted_values = values.clone();
-            sorted_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            
-            let median = if count % 2 == 0 {
-                (sorted_values[count / 2 - 1] + sorted_values[count / 2]) / 2.0
-            } else {
-                sorted_values[count / 2]
-            };
+    pub fn transform_record(&self, record: &DataRecord) -> DataRecord {
+        let normalized_value = if record.value < 0.0 {
+            record.value.abs()
+        } else {
+            record.value
+        };
 
-            Statistics {
-                count,
-                mean,
-                median,
-                std_dev,
-                min: *sorted_values.first().unwrap(),
-                max: *sorted_values.last().unwrap(),
-            }
-        })
+        let processed_category = record.category.to_uppercase();
+
+        DataRecord {
+            id: record.id,
+            value: normalized_value,
+            category: processed_category,
+            timestamp: record.timestamp,
+        }
     }
 
-    pub fn normalize_data(&self, key: &str) -> Option<Vec<f64>> {
-        self.data.get(key).map(|values| {
-            let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-            let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-            
-            if (max - min).abs() < f64::EPSILON {
-                vec![0.0; values.len()]
-            } else {
-                values.iter()
-                    .map(|&x| (x - min) / (max - min))
-                    .collect()
-            }
-        })
+    pub fn process_batch(&self, records: Vec<DataRecord>) -> Vec<Result<DataRecord, ProcessingError>> {
+        records
+            .into_iter()
+            .map(|record| {
+                self.validate_record(&record)
+                    .map(|_| self.transform_record(&record))
+            })
+            .collect()
     }
 
-    pub fn get_keys(&self) -> Vec<String> {
-        self.data.keys().cloned().collect()
+    pub fn serialize_to_json(&self, record: &DataRecord) -> Result<String, ProcessingError> {
+        serde_json::to_string(record)
+            .map_err(|e| ProcessingError::SerializationError(e.to_string()))
     }
-}
 
-pub struct Statistics {
-    pub count: usize,
-    pub mean: f64,
-    pub median: f64,
-    pub std_dev: f64,
-    pub min: f64,
-    pub max: f64,
-}
-
-impl std::fmt::Display for Statistics {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Statistics: count={}, mean={:.4}, median={:.4}, std_dev={:.4}, min={:.4}, max={:.4}",
-            self.count, self.mean, self.median, self.std_dev, self.min, self.max
-        )
+    pub fn deserialize_from_json(json_str: &str) -> Result<DataRecord, ProcessingError> {
+        serde_json::from_str(json_str)
+            .map_err(|e| ProcessingError::SerializationError(e.to_string()))
     }
 }
 
@@ -101,37 +103,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_add_valid_dataset() {
-        let mut processor = DataProcessor::new();
-        let result = processor.add_dataset("test", vec![1.0, 2.0, 3.0]);
-        assert!(result.is_ok());
-        assert_eq!(processor.get_keys(), vec!["test"]);
-    }
-
-    #[test]
-    fn test_add_empty_dataset() {
-        let mut processor = DataProcessor::new();
-        let result = processor.add_dataset("empty", vec![]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_calculate_statistics() {
-        let mut processor = DataProcessor::new();
-        processor.add_dataset("numbers", vec![1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+    fn test_validation_success() {
+        let processor = DataProcessor::new(
+            1000.0,
+            vec!["A".to_string(), "B".to_string(), "C".to_string()]
+        );
         
-        let stats = processor.calculate_statistics("numbers").unwrap();
-        assert_eq!(stats.count, 5);
-        assert_eq!(stats.mean, 3.0);
-        assert_eq!(stats.median, 3.0);
+        let record = DataRecord {
+            id: 1,
+            value: 500.0,
+            category: "A".to_string(),
+            timestamp: 1234567890,
+        };
+
+        assert!(processor.validate_record(&record).is_ok());
     }
 
     #[test]
-    fn test_normalize_data() {
-        let mut processor = DataProcessor::new();
-        processor.add_dataset("values", vec![10.0, 20.0, 30.0]).unwrap();
+    fn test_validation_failure() {
+        let processor = DataProcessor::new(
+            100.0,
+            vec!["VALID".to_string()]
+        );
         
-        let normalized = processor.normalize_data("values").unwrap();
-        assert_eq!(normalized, vec![0.0, 0.5, 1.0]);
+        let record = DataRecord {
+            id: 1,
+            value: 150.0,
+            category: "INVALID".to_string(),
+            timestamp: 1234567890,
+        };
+
+        assert!(processor.validate_record(&record).is_err());
+    }
+
+    #[test]
+    fn test_transform_record() {
+        let processor = DataProcessor::new(1000.0, vec![]);
+        
+        let record = DataRecord {
+            id: 1,
+            value: -50.5,
+            category: "test".to_string(),
+            timestamp: 1234567890,
+        };
+
+        let transformed = processor.transform_record(&record);
+        
+        assert_eq!(transformed.value, 50.5);
+        assert_eq!(transformed.category, "TEST");
+        assert_eq!(transformed.id, 1);
+    }
+
+    #[test]
+    fn test_serialization_roundtrip() {
+        let processor = DataProcessor::new(1000.0, vec![]);
+        
+        let original = DataRecord {
+            id: 42,
+            value: 3.14,
+            category: "PI".to_string(),
+            timestamp: 1609459200,
+        };
+
+        let json = processor.serialize_to_json(&original).unwrap();
+        let deserialized = DataProcessor::deserialize_from_json(&json).unwrap();
+
+        assert_eq!(original.id, deserialized.id);
+        assert_eq!(original.value, deserialized.value);
+        assert_eq!(original.category, deserialized.category);
+        assert_eq!(original.timestamp, deserialized.timestamp);
     }
 }
