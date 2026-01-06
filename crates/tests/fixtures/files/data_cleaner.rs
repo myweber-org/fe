@@ -80,3 +80,69 @@ mod tests {
         assert_eq!(cleaner.get_records()[0], "multiple spaces");
     }
 }
+use std::collections::HashMap;
+
+pub struct DataCleaner {
+    pub null_values: Vec<String>,
+    pub normalization_map: HashMap<String, String>,
+}
+
+impl DataCleaner {
+    pub fn new() -> Self {
+        let mut normalization_map = HashMap::new();
+        normalization_map.insert("USA".to_string(), "United States".to_string());
+        normalization_map.insert("UK".to_string(), "United Kingdom".to_string());
+        normalization_map.insert("UAE".to_string(), "United Arab Emirates".to_string());
+
+        DataCleaner {
+            null_values: vec!["null".to_string(), "NULL".to_string(), "".to_string(), "N/A".to_string()],
+            normalization_map,
+        }
+    }
+
+    pub fn clean_string(&self, input: &str) -> Option<String> {
+        if self.null_values.contains(&input.to_string()) {
+            return None;
+        }
+
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        match self.normalization_map.get(trimmed) {
+            Some(normalized) => Some(normalized.clone()),
+            None => Some(trimmed.to_string()),
+        }
+    }
+
+    pub fn clean_vector(&self, data: Vec<&str>) -> Vec<String> {
+        data.iter()
+            .filter_map(|&item| self.clean_string(item))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_string() {
+        let cleaner = DataCleaner::new();
+        
+        assert_eq!(cleaner.clean_string("USA"), Some("United States".to_string()));
+        assert_eq!(cleaner.clean_string("null"), None);
+        assert_eq!(cleaner.clean_string("   "), None);
+        assert_eq!(cleaner.clean_string("valid data"), Some("valid data".to_string()));
+    }
+
+    #[test]
+    fn test_clean_vector() {
+        let cleaner = DataCleaner::new();
+        let data = vec!["USA", "null", "valid", "", "UK"];
+        let cleaned = cleaner.clean_vector(data);
+        
+        assert_eq!(cleaned, vec!["United States", "valid", "United Kingdom"]);
+    }
+}
