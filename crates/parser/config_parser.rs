@@ -136,4 +136,160 @@ mod tests {
         assert_eq!(config.server.port, 3000);
         assert_eq!(config.logging.level, "debug");
     }
+}use std::collections::HashMap;
+use std::fs;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("Failed to read config file: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("Failed to parse config: {0}")]
+    ParseError(#[from] toml::de::Error),
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+    #[error("Invalid value for {0}: {1}")]
+    InvalidValue(String, String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DatabaseConfig {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default = "default_pool_size")]
+    pub connection_pool_size: u32,
+}
+
+fn default_pool_size() -> u32 {
+    10
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServerConfig {
+    pub bind_address: String,
+    pub port: u16,
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+    #[serde(default)]
+    pub enable_compression: bool,
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppConfig {
+    pub database: DatabaseConfig,
+    pub server: ServerConfig,
+    #[serde(default)]
+    pub features: HashMap<String, bool>,
+    #[serde(default)]
+    pub custom_settings: HashMap<String, String>,
+}
+
+impl AppConfig {
+    pub fn from_file(path: &str) -> Result<Self, ConfigError> {
+        let content = fs::read_to_string(path)?;
+        let config: AppConfig = toml::from_str(&content)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.database.host.is_empty() {
+            return Err(ConfigError::MissingField("database.host".to_string()));
+        }
+
+        if self.database.port == 0 {
+            return Err(ConfigError::InvalidValue(
+                "database.port".to_string(),
+                "Port must be greater than 0".to_string(),
+            ));
+        }
+
+        if self.server.port == 0 {
+            return Err(ConfigError::InvalidValue(
+                "server.port".to_string(),
+                "Port must be greater than 0".to_string(),
+            ));
+        }
+
+        let valid_log_levels = ["trace", "debug", "info", "warn", "error"];
+        if !valid_log_levels.contains(&self.server.log_level.as_str()) {
+            return Err(ConfigError::InvalidValue(
+                "server.log_level".to_string(),
+                format!(
+                    "Must be one of: {}",
+                    valid_log_levels.join(", ")
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub fn with_defaults() -> Self {
+        AppConfig {
+            database: DatabaseConfig {
+                host: "localhost".to_string(),
+                port: 5432,
+                username: "postgres".to_string(),
+                password: None,
+                connection_pool_size: default_pool_size(),
+            },
+            server: ServerConfig {
+                bind_address: "127.0.0.1".to_string(),
+                port: 8080,
+                log_level: default_log_level(),
+                enable_compression: false,
+            },
+            features: HashMap::new(),
+            custom_settings: HashMap::new(),
+        }
+    }
+
+    pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
+        toml::to_string_pretty(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = AppConfig::with_defaults();
+        assert_eq!(config.database.host, "localhost");
+        assert_eq!(config.database.port, 5432);
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.server.log_level, "info");
+    }
+
+    #[test]
+    fn test_validation() {
+        let mut config = AppConfig::with_defaults();
+        config.database.host = String::new();
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::with_defaults();
+        config.database.port = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = AppConfig::with_defaults();
+        config.server.log_level = "invalid".to_string();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_serialization() {
+        let config = AppConfig::with_defaults();
+        let toml_str = config.to_toml();
+        assert!(toml_str.is_ok());
+    }
 }
