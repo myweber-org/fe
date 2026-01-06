@@ -1,44 +1,5 @@
-
+use std::collections::HashMap;
 use serde_json::{Value, Map};
-use std::fs;
-use std::path::Path;
-
-pub fn merge_json_files<P: AsRef<Path>>(paths: &[P]) -> Result<Value, Box<dyn std::error::Error>> {
-    let mut merged_map = Map::new();
-
-    for path in paths {
-        let content = fs::read_to_string(path)?;
-        let json_value: Value = serde_json::from_str(&content)?;
-
-        if let Value::Object(map) = json_value {
-            for (key, value) in map {
-                merge_value(&mut merged_map, key, value);
-            }
-        }
-    }
-
-    Ok(Value::Object(merged_map))
-}
-
-fn merge_value(map: &mut Map<String, Value>, key: String, new_value: Value) {
-    match map.get_mut(&key) {
-        Some(existing_value) => {
-            if let (Value::Object(existing_obj), Value::Object(new_obj)) = (existing_value, &new_value) {
-                let mut existing_obj = existing_obj.clone();
-                for (nested_key, nested_value) in new_obj {
-                    merge_value(&mut existing_obj, nested_key.clone(), nested_value.clone());
-                }
-                map.insert(key, Value::Object(existing_obj));
-            } else if existing_value != &new_value {
-                let merged_array = Value::Array(vec![existing_value.clone(), new_value]);
-                map.insert(key, merged_array);
-            }
-        }
-        None => {
-            map.insert(key, new_value);
-        }
-    }
-}use serde_json::{Map, Value};
 
 pub fn merge_json(base: &mut Value, update: &Value) {
     match (base, update) {
@@ -57,13 +18,28 @@ pub fn merge_json(base: &mut Value, update: &Value) {
     }
 }
 
-pub fn merge_json_arrays(base: &mut Value, update: &Value) -> Result<(), String> {
-    if let (Value::Array(base_arr), Value::Array(update_arr)) = (base, update) {
-        base_arr.extend(update_arr.clone());
-        Ok(())
-    } else {
-        Err("Both values must be arrays".to_string())
+pub fn merge_json_with_strategy(
+    base: &mut Value,
+    update: &Value,
+    strategy: MergeStrategy,
+) -> Result<(), String> {
+    match strategy {
+        MergeStrategy::Deep => {
+            merge_json(base, update);
+            Ok(())
+        }
+        MergeStrategy::Shallow => {
+            *base = update.clone();
+            Ok(())
+        }
+        MergeStrategy::Custom(merge_fn) => merge_fn(base, update),
     }
+}
+
+pub enum MergeStrategy {
+    Deep,
+    Shallow,
+    Custom(fn(&mut Value, &Value) -> Result<(), String>),
 }
 
 #[cfg(test)]
@@ -72,25 +48,44 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_merge_objects() {
-        let mut base = json!({"a": 1, "b": {"c": 2}});
-        let update = json!({"b": {"d": 3}, "e": 4});
-        
+    fn test_deep_merge() {
+        let mut base = json!({
+            "name": "Alice",
+            "address": {
+                "city": "Wonderland",
+                "zip": "12345"
+            }
+        });
+
+        let update = json!({
+            "age": 30,
+            "address": {
+                "zip": "54321",
+                "country": "Fantasy"
+            }
+        });
+
         merge_json(&mut base, &update);
-        
-        assert_eq!(base["a"], 1);
-        assert_eq!(base["b"]["c"], 2);
-        assert_eq!(base["b"]["d"], 3);
-        assert_eq!(base["e"], 4);
+
+        assert_eq!(base["name"], "Alice");
+        assert_eq!(base["age"], 30);
+        assert_eq!(base["address"]["city"], "Wonderland");
+        assert_eq!(base["address"]["zip"], "54321");
+        assert_eq!(base["address"]["country"], "Fantasy");
     }
 
     #[test]
-    fn test_merge_arrays() {
-        let mut base = json!([1, 2, 3]);
-        let update = json!([4, 5]);
-        
-        merge_json_arrays(&mut base, &update).unwrap();
-        
-        assert_eq!(base, json!([1, 2, 3, 4, 5]));
+    fn test_shallow_merge() {
+        let mut base = json!({"data": {"inner": "value"}});
+        let update = json!({"data": {"new": "content"}});
+
+        merge_json_with_strategy(
+            &mut base,
+            &update,
+            MergeStrategy::Shallow,
+        ).unwrap();
+
+        assert_eq!(base["data"]["new"], "content");
+        assert!(base["data"].get("inner").is_none());
     }
 }
