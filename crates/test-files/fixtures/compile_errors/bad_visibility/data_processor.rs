@@ -1,114 +1,128 @@
 
+use std::collections::HashMap;
 use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::fmt;
 
 #[derive(Debug, Clone)]
 pub struct DataRecord {
     pub id: u32,
-    pub value: f64,
-    pub category: String,
-    pub timestamp: String,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
 }
 
-impl DataRecord {
-    pub fn new(id: u32, value: f64, category: String, timestamp: String) -> Self {
-        DataRecord {
-            id,
-            value,
-            category,
-            timestamp,
+#[derive(Debug)]
+pub enum DataError {
+    InvalidId,
+    EmptyValues,
+    ValueOutOfRange(f64),
+    MissingMetadata(String),
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataError::InvalidId => write!(f, "Invalid record ID"),
+            DataError::EmptyValues => write!(f, "Record values cannot be empty"),
+            DataError::ValueOutOfRange(val) => write!(f, "Value {} is out of valid range", val),
+            DataError::MissingMetadata(key) => write!(f, "Missing metadata key: {}", key),
         }
     }
-
-    pub fn is_valid(&self) -> bool {
-        self.id > 0 && self.value.is_finite() && !self.category.is_empty()
-    }
 }
+
+impl Error for DataError {}
 
 pub struct DataProcessor {
     records: Vec<DataRecord>,
+    validation_enabled: bool,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
         DataProcessor {
             records: Vec::new(),
+            validation_enabled: true,
         }
     }
 
-    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let mut count = 0;
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), DataError> {
+        if self.validation_enabled {
+            self.validate_record(&record)?;
+        }
+        self.records.push(record);
+        Ok(())
+    }
 
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line?;
-            
-            if line_num == 0 {
-                continue;
-            }
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), DataError> {
+        if record.id == 0 {
+            return Err(DataError::InvalidId);
+        }
 
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() != 4 {
-                continue;
-            }
+        if record.values.is_empty() {
+            return Err(DataError::EmptyValues);
+        }
 
-            let id = match parts[0].parse::<u32>() {
-                Ok(val) => val,
-                Err(_) => continue,
-            };
-
-            let value = match parts[1].parse::<f64>() {
-                Ok(val) => val,
-                Err(_) => continue,
-            };
-
-            let category = parts[2].to_string();
-            let timestamp = parts[3].to_string();
-
-            let record = DataRecord::new(id, value, category, timestamp);
-            if record.is_valid() {
-                self.records.push(record);
-                count += 1;
+        for &value in &record.values {
+            if !value.is_finite() || value < 0.0 || value > 1000.0 {
+                return Err(DataError::ValueOutOfRange(value));
             }
         }
 
-        Ok(count)
+        if !record.metadata.contains_key("source") {
+            return Err(DataError::MissingMetadata("source".to_string()));
+        }
+
+        Ok(())
     }
 
-    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
-        self.records
+    pub fn calculate_statistics(&self) -> HashMap<String, f64> {
+        let mut stats = HashMap::new();
+        
+        if self.records.is_empty() {
+            return stats;
+        }
+
+        let total_values: Vec<f64> = self.records
             .iter()
-            .filter(|record| record.category == category)
-            .collect()
-    }
+            .flat_map(|r| r.values.clone())
+            .collect();
 
-    pub fn calculate_average(&self) -> Option<f64> {
-        if self.records.is_empty() {
-            return None;
+        if !total_values.is_empty() {
+            let sum: f64 = total_values.iter().sum();
+            let count = total_values.len() as f64;
+            let mean = sum / count;
+            
+            let variance: f64 = total_values
+                .iter()
+                .map(|&v| (v - mean).powi(2))
+                .sum::<f64>() / count;
+            
+            stats.insert("mean".to_string(), mean);
+            stats.insert("variance".to_string(), variance);
+            stats.insert("total_records".to_string(), self.records.len() as f64);
+            stats.insert("total_values".to_string(), count);
         }
 
-        let sum: f64 = self.records.iter().map(|r| r.value).sum();
-        Some(sum / self.records.len() as f64)
+        stats
     }
 
-    pub fn get_statistics(&self) -> (f64, f64, f64) {
-        if self.records.is_empty() {
-            return (0.0, 0.0, 0.0);
+    pub fn transform_values<F>(&mut self, transform_fn: F) 
+    where
+        F: Fn(f64) -> f64,
+    {
+        for record in &mut self.records {
+            record.values = record.values
+                .iter()
+                .map(|&v| transform_fn(v))
+                .collect();
         }
-
-        let values: Vec<f64> = self.records.iter().map(|r| r.value).collect();
-        let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-        let avg = self.calculate_average().unwrap_or(0.0);
-
-        (min, max, avg)
     }
 
-    pub fn count_records(&self) -> usize {
+    pub fn get_record_count(&self) -> usize {
         self.records.len()
+    }
+
+    pub fn enable_validation(&mut self, enabled: bool) {
+        self.validation_enabled = enabled;
     }
 
     pub fn clear(&mut self) {
@@ -116,48 +130,72 @@ impl DataProcessor {
     }
 }
 
+impl Default for DataProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_data_record_validation() {
-        let valid_record = DataRecord::new(1, 42.5, "test".to_string(), "2024-01-01".to_string());
-        assert!(valid_record.is_valid());
+    fn test_valid_record() {
+        let mut processor = DataProcessor::new();
+        let mut metadata = HashMap::new();
+        metadata.insert("source".to_string(), "test".to_string());
+        
+        let record = DataRecord {
+            id: 1,
+            values: vec![10.5, 20.3, 30.7],
+            metadata,
+        };
 
-        let invalid_record = DataRecord::new(0, 42.5, "test".to_string(), "2024-01-01".to_string());
-        assert!(!invalid_record.is_valid());
+        assert!(processor.add_record(record).is_ok());
+        assert_eq!(processor.get_record_count(), 1);
     }
 
     #[test]
-    fn test_data_processor() {
+    fn test_invalid_id() {
+        let processor = DataProcessor::new();
+        let mut metadata = HashMap::new();
+        metadata.insert("source".to_string(), "test".to_string());
+        
+        let record = DataRecord {
+            id: 0,
+            values: vec![10.5],
+            metadata,
+        };
+
+        assert!(processor.validate_record(&record).is_err());
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
         let mut processor = DataProcessor::new();
-        assert_eq!(processor.count_records(), 0);
+        let mut metadata = HashMap::new();
+        metadata.insert("source".to_string(), "test".to_string());
+        
+        let records = vec![
+            DataRecord {
+                id: 1,
+                values: vec![10.0, 20.0],
+                metadata: metadata.clone(),
+            },
+            DataRecord {
+                id: 2,
+                values: vec![30.0, 40.0],
+                metadata,
+            },
+        ];
 
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,value,category,timestamp").unwrap();
-        writeln!(temp_file, "1,10.5,category_a,2024-01-01").unwrap();
-        writeln!(temp_file, "2,20.5,category_b,2024-01-02").unwrap();
-        writeln!(temp_file, "3,30.5,category_a,2024-01-03").unwrap();
+        for record in records {
+            processor.add_record(record).unwrap();
+        }
 
-        let count = processor.load_from_csv(temp_file.path()).unwrap();
-        assert_eq!(count, 3);
-        assert_eq!(processor.count_records(), 3);
-
-        let filtered = processor.filter_by_category("category_a");
-        assert_eq!(filtered.len(), 2);
-
-        let avg = processor.calculate_average().unwrap();
-        assert!((avg - 20.5).abs() < 0.001);
-
-        let (min, max, avg_stat) = processor.get_statistics();
-        assert!((min - 10.5).abs() < 0.001);
-        assert!((max - 30.5).abs() < 0.001);
-        assert!((avg_stat - 20.5).abs() < 0.001);
-
-        processor.clear();
-        assert_eq!(processor.count_records(), 0);
+        let stats = processor.calculate_statistics();
+        assert_eq!(stats.get("mean").unwrap(), &25.0);
+        assert_eq!(stats.get("total_records").unwrap(), &2.0);
     }
 }
