@@ -1,133 +1,150 @@
-use csv::Reader;
-use serde::Deserialize;
-use std::error::Error;
-use std::fs::File;
 
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
-}
-
-pub fn process_data_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
-    let file = File::open(file_path)?;
-    let mut rdr = Reader::from_reader(file);
-    let mut records = Vec::new();
-
-    for result in rdr.deserialize() {
-        let record: Record = result?;
-        if record.value < 0.0 {
-            return Err(format!("Invalid value {} for record {}", record.value, record.id).into());
-        }
-        records.push(record);
-    }
-
-    Ok(records)
-}
-
-pub fn calculate_statistics(records: &[Record]) -> (f64, f64, usize) {
-    let total: f64 = records.iter().map(|r| r.value).sum();
-    let average = total / records.len() as f64;
-    let max_value = records.iter().map(|r| r.value).fold(0.0, f64::max);
-    let category_count = records.iter().map(|r| &r.category).collect::<std::collections::HashSet<_>>().len();
-
-    (average, max_value, category_count)
-}use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
+    data: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+pub struct ValidationRule {
+    field_name: String,
+    min_value: f64,
+    max_value: f64,
+    required: bool,
 }
 
 impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
+    pub fn new() -> Self {
         DataProcessor {
-            delimiter,
-            has_header,
+            data: HashMap::new(),
+            validation_rules: Vec::new(),
         }
     }
 
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        let mut lines = reader.lines();
-
-        if self.has_header {
-            lines.next();
+    pub fn add_dataset(&mut self, name: String, values: Vec<f64>) -> Result<(), String> {
+        if name.is_empty() {
+            return Err("Dataset name cannot be empty".to_string());
+        }
+        
+        if values.is_empty() {
+            return Err("Dataset values cannot be empty".to_string());
         }
 
-        for line_result in lines {
-            let line = line_result?;
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-            
-            if !fields.is_empty() {
-                records.push(fields);
+        self.data.insert(name, values);
+        Ok(())
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn validate_all(&self) -> Vec<ValidationResult> {
+        let mut results = Vec::new();
+        
+        for rule in &self.validation_rules {
+            if let Some(values) = self.data.get(&rule.field_name) {
+                let mut valid = true;
+                let mut issues = Vec::new();
+                
+                if rule.required && values.is_empty() {
+                    valid = false;
+                    issues.push("Required field is empty".to_string());
+                }
+                
+                for (index, &value) in values.iter().enumerate() {
+                    if value < rule.min_value || value > rule.max_value {
+                        valid = false;
+                        issues.push(format!(
+                            "Value {} at index {} is outside range [{}, {}]",
+                            value, index, rule.min_value, rule.max_value
+                        ));
+                    }
+                }
+                
+                results.push(ValidationResult {
+                    field_name: rule.field_name.clone(),
+                    valid,
+                    issues,
+                });
             }
         }
-
-        Ok(records)
+        
+        results
     }
 
-    pub fn validate_record(&self, record: &[String]) -> bool {
-        !record.is_empty() && record.iter().all(|field| !field.is_empty())
+    pub fn normalize_data(&mut self) -> HashMap<String, Vec<f64>> {
+        let mut normalized = HashMap::new();
+        
+        for (name, values) in &self.data {
+            if let Some((min, max)) = Self::calculate_min_max(values) {
+                let normalized_values: Vec<f64> = values
+                    .iter()
+                    .map(|&v| (v - min) / (max - min))
+                    .collect();
+                normalized.insert(name.clone(), normalized_values);
+            }
+        }
+        
+        normalized
     }
 
-    pub fn extract_column(&self, data: &[Vec<String>], column_index: usize) -> Vec<String> {
-        data.iter()
-            .filter_map(|record| record.get(column_index).cloned())
-            .collect()
+    fn calculate_min_max(values: &[f64]) -> Option<(f64, f64)> {
+        if values.is_empty() {
+            return None;
+        }
+        
+        let mut min = values[0];
+        let mut max = values[0];
+        
+        for &value in values.iter().skip(1) {
+            if value < min {
+                min = value;
+            }
+            if value > max {
+                max = value;
+            }
+        }
+        
+        Some((min, max))
+    }
+}
+
+pub struct ValidationResult {
+    field_name: String,
+    valid: bool,
+    issues: Vec<String>,
+}
+
+impl ValidationResult {
+    pub fn is_valid(&self) -> bool {
+        self.valid
+    }
+    
+    pub fn get_issues(&self) -> &Vec<String> {
+        &self.issues
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_csv() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "Alice,30,New York").unwrap();
-        writeln!(temp_file, "Bob,25,London").unwrap();
-
-        let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path()).unwrap();
-        
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["Alice", "30", "New York"]);
-        assert_eq!(result[1], vec!["Bob", "25", "London"]);
+    fn test_add_dataset() {
+        let mut processor = DataProcessor::new();
+        let result = processor.add_dataset("test_data".to_string(), vec![1.0, 2.0, 3.0]);
+        assert!(result.is_ok());
     }
 
     #[test]
-    fn test_validate_record() {
-        let processor = DataProcessor::new(',', false);
-        let valid_record = vec!["data".to_string(), "value".to_string()];
-        let invalid_record = vec!["".to_string(), "value".to_string()];
+    fn test_normalize_data() {
+        let mut processor = DataProcessor::new();
+        processor.add_dataset("values".to_string(), vec![10.0, 20.0, 30.0]).unwrap();
         
-        assert!(processor.validate_record(&valid_record));
-        assert!(!processor.validate_record(&invalid_record));
-    }
-
-    #[test]
-    fn test_extract_column() {
-        let processor = DataProcessor::new(',', false);
-        let data = vec![
-            vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            vec!["d".to_string(), "e".to_string(), "f".to_string()],
-        ];
+        let normalized = processor.normalize_data();
+        let normalized_values = normalized.get("values").unwrap();
         
-        let column = processor.extract_column(&data, 1);
-        assert_eq!(column, vec!["b".to_string(), "e".to_string()]);
+        assert_eq!(normalized_values[0], 0.0);
+        assert_eq!(normalized_values[2], 1.0);
     }
 }
