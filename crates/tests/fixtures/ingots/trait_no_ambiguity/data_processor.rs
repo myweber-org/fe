@@ -316,3 +316,150 @@ mod tests {
         assert_eq!(std_dev, 0.0);
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum DataError {
+    #[error("Invalid data format")]
+    InvalidFormat,
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+    #[error("Value out of range: {0}")]
+    OutOfRange(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub timestamp: i64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+pub struct DataProcessor {
+    validation_rules: Vec<ValidationRule>,
+    transformation_pipeline: Vec<Transformation>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            validation_rules: Vec::new(),
+            transformation_pipeline: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn add_transformation(&mut self, transformation: Transformation) {
+        self.transformation_pipeline.push(transformation);
+    }
+
+    pub fn process(&self, record: &mut DataRecord) -> Result<(), DataError> {
+        for rule in &self.validation_rules {
+            rule.validate(record)?;
+        }
+
+        for transformation in &self.transformation_pipeline {
+            transformation.apply(record);
+        }
+
+        Ok(())
+    }
+
+    pub fn batch_process(&self, records: &mut [DataRecord]) -> Vec<Result<(), DataError>> {
+        records
+            .iter_mut()
+            .map(|record| self.process(record))
+            .collect()
+    }
+}
+
+pub trait ValidationRule {
+    fn validate(&self, record: &DataRecord) -> Result<(), DataError>;
+}
+
+pub trait Transformation {
+    fn apply(&self, record: &mut DataRecord);
+}
+
+pub struct RangeValidation {
+    field_name: String,
+    min: f64,
+    max: f64,
+}
+
+impl RangeValidation {
+    pub fn new(field_name: &str, min: f64, max: f64) -> Self {
+        RangeValidation {
+            field_name: field_name.to_string(),
+            min,
+            max,
+        }
+    }
+}
+
+impl ValidationRule for RangeValidation {
+    fn validate(&self, record: &DataRecord) -> Result<(), DataError> {
+        for (i, &value) in record.values.iter().enumerate() {
+            if value < self.min || value > self.max {
+                return Err(DataError::OutOfRange(format!(
+                    "{}[{}] = {} not in [{}, {}]",
+                    self.field_name, i, value, self.min, self.max
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub struct NormalizeTransformation {
+    factor: f64,
+}
+
+impl NormalizeTransformation {
+    pub fn new(factor: f64) -> Self {
+        NormalizeTransformation { factor }
+    }
+}
+
+impl Transformation for NormalizeTransformation {
+    fn apply(&self, record: &mut DataRecord) {
+        for value in &mut record.values {
+            *value /= self.factor;
+        }
+    }
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> HashMap<String, f64> {
+    let mut stats = HashMap::new();
+    
+    if records.is_empty() {
+        return stats;
+    }
+
+    let value_count = records[0].values.len();
+    let mut sums = vec![0.0; value_count];
+    let mut squares = vec![0.0; value_count];
+
+    for record in records {
+        for (i, &value) in record.values.iter().enumerate() {
+            sums[i] += value;
+            squares[i] += value * value;
+        }
+    }
+
+    let n = records.len() as f64;
+    for i in 0..value_count {
+        let mean = sums[i] / n;
+        let variance = (squares[i] / n) - (mean * mean);
+        stats.insert(format!("mean_{}", i), mean);
+        stats.insert(format!("variance_{}", i), variance);
+    }
+
+    stats
+}
