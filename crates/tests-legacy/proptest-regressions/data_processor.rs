@@ -125,3 +125,153 @@ mod tests {
         assert_eq!(column, vec!["b", "e"]);
     }
 }
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataRecord {
+    pub id: u64,
+    pub value: f64,
+    pub timestamp: i64,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidValue,
+    InvalidTimestamp,
+    ValidationFailed(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidValue => write!(f, "Invalid numeric value"),
+            ProcessingError::InvalidTimestamp => write!(f, "Invalid timestamp"),
+            ProcessingError::ValidationFailed(msg) => write!(f, "Validation failed: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    threshold: f64,
+}
+
+impl DataProcessor {
+    pub fn new(threshold: f64) -> Self {
+        DataProcessor { threshold }
+    }
+
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.value.is_nan() || record.value.is_infinite() {
+            return Err(ProcessingError::InvalidValue);
+        }
+
+        if record.timestamp < 0 {
+            return Err(ProcessingError::InvalidTimestamp);
+        }
+
+        if record.value.abs() > self.threshold {
+            return Err(ProcessingError::ValidationFailed(
+                format!("Value {} exceeds threshold {}", record.value, self.threshold)
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub fn transform_records(&self, records: Vec<DataRecord>) -> Vec<DataRecord> {
+        records
+            .into_iter()
+            .filter_map(|mut record| {
+                if self.validate_record(&record).is_ok() {
+                    record.value = (record.value * 100.0).round() / 100.0;
+                    Some(record)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn calculate_statistics(&self, records: &[DataRecord]) -> Option<(f64, f64, f64)> {
+        if records.is_empty() {
+            return None;
+        }
+
+        let count = records.len() as f64;
+        let sum: f64 = records.iter().map(|r| r.value).sum();
+        let mean = sum / count;
+
+        let variance: f64 = records.iter()
+            .map(|r| (r.value - mean).powi(2))
+            .sum::<f64>() / count;
+
+        let std_dev = variance.sqrt();
+
+        Some((mean, variance, std_dev))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validation_success() {
+        let processor = DataProcessor::new(1000.0);
+        let record = DataRecord {
+            id: 1,
+            value: 500.0,
+            timestamp: 1625097600,
+        };
+        
+        assert!(processor.validate_record(&record).is_ok());
+    }
+
+    #[test]
+    fn test_validation_threshold_exceeded() {
+        let processor = DataProcessor::new(100.0);
+        let record = DataRecord {
+            id: 1,
+            value: 150.0,
+            timestamp: 1625097600,
+        };
+        
+        match processor.validate_record(&record) {
+            Err(ProcessingError::ValidationFailed(_)) => (),
+            _ => panic!("Expected ValidationFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_transform_records() {
+        let processor = DataProcessor::new(1000.0);
+        let records = vec![
+            DataRecord { id: 1, value: 123.456, timestamp: 1625097600 },
+            DataRecord { id: 2, value: 789.012, timestamp: 1625097601 },
+        ];
+        
+        let transformed = processor.transform_records(records);
+        assert_eq!(transformed.len(), 2);
+        assert_eq!(transformed[0].value, 123.46);
+        assert_eq!(transformed[1].value, 789.01);
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let processor = DataProcessor::new(1000.0);
+        let records = vec![
+            DataRecord { id: 1, value: 10.0, timestamp: 1625097600 },
+            DataRecord { id: 2, value: 20.0, timestamp: 1625097601 },
+            DataRecord { id: 3, value: 30.0, timestamp: 1625097602 },
+        ];
+        
+        let stats = processor.calculate_statistics(&records).unwrap();
+        assert_eq!(stats.0, 20.0);
+        assert_eq!(stats.1, 66.66666666666667);
+        assert_eq!(stats.2, 8.16496580927726);
+    }
+}
