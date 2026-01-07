@@ -1,57 +1,63 @@
-use csv::{Reader, Writer};
-use serde::{Deserialize, Serialize};
-use std::error::Error;
-use std::fs::File;
 
-#[derive(Debug, Deserialize, Serialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    active: bool,
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
 }
 
-fn process_data(input_path: &str, output_path: &str, threshold: f64) -> Result<(), Box<dyn Error>> {
-    let input_file = File::open(input_path)?;
-    let mut reader = Reader::from_reader(input_file);
-    
-    let output_file = File::create(output_path)?;
-    let mut writer = Writer::from_writer(output_file);
-
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        
-        if record.value >= threshold && record.active {
-            writer.serialize(&record)?;
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
         }
     }
 
-    writer.flush()?;
-    Ok(())
-}
+    pub fn process_numeric_data(&mut self, key: &str, data: &[f64]) -> Result<Vec<f64>, String> {
+        if data.is_empty() {
+            return Err("Empty data provided".to_string());
+        }
 
-fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
-    let count = records.len() as f64;
-    if count == 0.0 {
-        return (0.0, 0.0, 0.0);
+        if let Some(cached) = self.cache.get(key) {
+            return Ok(cached.clone());
+        }
+
+        let validated_data = Self::validate_data(data)?;
+        let processed_data = Self::transform_data(&validated_data);
+        
+        self.cache.insert(key.to_string(), processed_data.clone());
+        Ok(processed_data)
     }
 
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let mean = sum / count;
-    
-    let variance: f64 = records.iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>() / count;
-    
-    let std_dev = variance.sqrt();
-    
-    (mean, variance, std_dev)
-}
+    fn validate_data(data: &[f64]) -> Result<Vec<f64>, String> {
+        let mut validated = Vec::with_capacity(data.len());
+        
+        for &value in data {
+            if value.is_nan() || value.is_infinite() {
+                return Err("Invalid numeric value detected".to_string());
+            }
+            if value < 0.0 {
+                return Err("Negative values not allowed".to_string());
+            }
+            validated.push(value);
+        }
+        
+        Ok(validated)
+    }
 
-fn filter_records(records: Vec<Record>, predicate: impl Fn(&Record) -> bool) -> Vec<Record> {
-    records.into_iter()
-        .filter(predicate)
-        .collect()
+    fn transform_data(data: &[f64]) -> Vec<f64> {
+        let mean = data.iter().sum::<f64>() / data.len() as f64;
+        data.iter()
+            .map(|&x| (x - mean).abs())
+            .collect()
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn get_cache_size(&self) -> usize {
+        self.cache.len()
+    }
 }
 
 #[cfg(test)]
@@ -59,31 +65,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_statistics_calculation() {
-        let records = vec![
-            Record { id: 1, name: "Test1".to_string(), value: 10.0, active: true },
-            Record { id: 2, name: "Test2".to_string(), value: 20.0, active: true },
-            Record { id: 3, name: "Test3".to_string(), value: 30.0, active: false },
-        ];
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         
-        let (mean, variance, std_dev) = calculate_statistics(&records);
+        let result = processor.process_numeric_data("test", &data);
+        assert!(result.is_ok());
         
-        assert_eq!(mean, 20.0);
-        assert_eq!(variance, 66.66666666666667);
-        assert_eq!(std_dev, 8.16496580927726);
+        let processed = result.unwrap();
+        assert_eq!(processed.len(), 5);
+        assert_eq!(processor.get_cache_size(), 1);
     }
 
     #[test]
-    fn test_filter_function() {
-        let records = vec![
-            Record { id: 1, name: "Alpha".to_string(), value: 15.5, active: true },
-            Record { id: 2, name: "Beta".to_string(), value: 25.0, active: false },
-            Record { id: 3, name: "Gamma".to_string(), value: 18.3, active: true },
-        ];
+    fn test_invalid_data() {
+        let mut processor = DataProcessor::new();
+        let data = vec![1.0, f64::NAN, 3.0];
         
-        let filtered = filter_records(records, |r| r.active && r.value > 16.0);
-        
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].name, "Gamma");
+        let result = processor.process_numeric_data("invalid", &data);
+        assert!(result.is_err());
     }
 }
