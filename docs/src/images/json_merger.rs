@@ -2,62 +2,84 @@
 use serde_json::{Value, Map};
 use std::fs;
 use std::path::Path;
+use std::collections::HashSet;
 
-pub fn merge_json_files<P: AsRef<Path>>(paths: &[P]) -> Result<Value, Box<dyn std::error::Error>> {
-    let mut merged_map = Map::new();
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], output_path: P) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged = Map::new();
+    let mut processed_keys = HashSet::new();
+    let mut conflict_log = Vec::new();
 
     for path in paths {
         let content = fs::read_to_string(path)?;
-        let json_value: Value = serde_json::from_str(&content)?;
-
-        if let Value::Object(map) = json_value {
-            for (key, value) in map {
-                if merged_map.contains_key(&key) {
-                    let existing_value = merged_map.get(&key).unwrap();
-                    if existing_value != &value {
-                        let conflict_key = format!("{}_conflict", key);
-                        merged_map.insert(conflict_key, value);
-                    }
-                } else {
-                    merged_map.insert(key, value);
+        let json: Value = serde_json::from_str(&content)?;
+        
+        if let Value::Object(obj) = json {
+            for (key, value) in obj {
+                if processed_keys.contains(&key) {
+                    conflict_log.push(format!("Conflict detected for key '{}' in file: {:?}", key, path.as_ref()));
+                    continue;
                 }
+                merged.insert(key.clone(), value);
+                processed_keys.insert(key);
             }
         }
     }
 
-    Ok(Value::Object(merged_map))
+    let result = Value::Object(merged);
+    let serialized = serde_json::to_string_pretty(&result)?;
+    fs::write(output_path, serialized)?;
+
+    if !conflict_log.is_empty() {
+        eprintln!("Merged with conflicts:");
+        for log in conflict_log {
+            eprintln!("  {}", log);
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_merge_json_files() {
-        let mut file1 = NamedTempFile::new().unwrap();
-        let mut file2 = NamedTempFile::new().unwrap();
+    fn test_basic_merge() {
+        let file1 = NamedTempFile::new().unwrap();
+        let file2 = NamedTempFile::new().unwrap();
+        let output = NamedTempFile::new().unwrap();
 
-        let json1 = json!({
-            "name": "Alice",
-            "age": 30
-        });
+        fs::write(&file1, r#"{"a": 1, "b": 2}"#).unwrap();
+        fs::write(&file2, r#"{"c": 3, "d": 4}"#).unwrap();
 
-        let json2 = json!({
-            "name": "Bob",
-            "city": "New York"
-        });
-
-        write!(file1, "{}", json1).unwrap();
-        write!(file2, "{}", json2).unwrap();
-
-        let result = merge_json_files(&[file1.path(), file2.path()]).unwrap();
+        merge_json_files(&[&file1, &file2], &output).unwrap();
         
-        assert_eq!(result["name"], "Alice");
-        assert_eq!(result["age"], 30);
-        assert_eq!(result["city"], "New York");
-        assert_eq!(result["name_conflict"], "Bob");
+        let content = fs::read_to_string(output).unwrap();
+        let parsed: Value = serde_json::from_str(&content).unwrap();
+        
+        assert_eq!(parsed["a"], 1);
+        assert_eq!(parsed["b"], 2);
+        assert_eq!(parsed["c"], 3);
+        assert_eq!(parsed["d"], 4);
+    }
+
+    #[test]
+    fn test_conflict_handling() {
+        let file1 = NamedTempFile::new().unwrap();
+        let file2 = NamedTempFile::new().unwrap();
+        let output = NamedTempFile::new().unwrap();
+
+        fs::write(&file1, r#"{"a": 1, "b": 2}"#).unwrap();
+        fs::write(&file2, r#"{"a": 99, "c": 3}"#).unwrap();
+
+        merge_json_files(&[&file1, &file2], &output).unwrap();
+        
+        let content = fs::read_to_string(output).unwrap();
+        let parsed: Value = serde_json::from_str(&content).unwrap();
+        
+        assert_eq!(parsed["a"], 1);
+        assert_eq!(parsed["b"], 2);
+        assert_eq!(parsed["c"], 3);
     }
 }
