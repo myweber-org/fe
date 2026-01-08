@@ -1,75 +1,55 @@
 
 use std::error::Error;
 use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 pub struct DataProcessor {
-    data: Vec<f64>,
+    delimiter: char,
+    has_header: bool,
 }
 
 impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor { data: Vec::new() }
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        DataProcessor {
+            delimiter,
+            has_header,
+        }
     }
 
-    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
-        let file = File::open(path)?;
-        let mut rdr = csv::Reader::from_reader(file);
-        
-        for result in rdr.records() {
-            let record = result?;
-            if let Some(value) = record.get(0) {
-                if let Ok(num) = value.parse::<f64>() {
-                    self.data.push(num);
-                }
+    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut records = Vec::new();
+        let mut lines = reader.lines();
+
+        if self.has_header {
+            lines.next();
+        }
+
+        for line_result in lines {
+            let line = line_result?;
+            let fields: Vec<String> = line
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+            
+            if !fields.is_empty() {
+                records.push(fields);
             }
         }
-        
-        Ok(())
+
+        Ok(records)
     }
 
-    pub fn calculate_mean(&self) -> Option<f64> {
-        if self.data.is_empty() {
-            return None;
-        }
-        
-        let sum: f64 = self.data.iter().sum();
-        Some(sum / self.data.len() as f64)
+    pub fn validate_record(&self, record: &[String]) -> bool {
+        !record.is_empty() && record.iter().all(|field| !field.is_empty())
     }
 
-    pub fn calculate_standard_deviation(&self) -> Option<f64> {
-        if self.data.len() < 2 {
-            return None;
-        }
-        
-        let mean = self.calculate_mean()?;
-        let variance: f64 = self.data
-            .iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / (self.data.len() - 1) as f64;
-        
-        Some(variance.sqrt())
-    }
-
-    pub fn filter_outliers(&self, threshold: f64) -> Vec<f64> {
-        if let (Some(mean), Some(std_dev)) = (self.calculate_mean(), self.calculate_standard_deviation()) {
-            self.data
-                .iter()
-                .filter(|&&x| (x - mean).abs() <= threshold * std_dev)
-                .copied()
-                .collect()
-        } else {
-            self.data.clone()
-        }
-    }
-
-    pub fn get_summary(&self) -> String {
-        format!(
-            "Data points: {}, Mean: {:.2}, Std Dev: {:.2}",
-            self.data.len(),
-            self.calculate_mean().unwrap_or(0.0),
-            self.calculate_standard_deviation().unwrap_or(0.0)
-        )
+    pub fn extract_column(&self, data: &[Vec<String>], column_index: usize) -> Vec<String> {
+        data.iter()
+            .filter_map(|record| record.get(column_index).cloned())
+            .collect()
     }
 }
 
@@ -80,19 +60,39 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_data_processing() {
-        let mut processor = DataProcessor::new();
-        
+    fn test_process_csv() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "value\n10.5\n20.3\n15.7\n25.1\n18.9").unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "Alice,30,New York").unwrap();
+        writeln!(temp_file, "Bob,25,London").unwrap();
+
+        let processor = DataProcessor::new(',', true);
+        let result = processor.process_file(temp_file.path()).unwrap();
         
-        assert!(processor.load_from_csv(temp_file.path()).is_ok());
-        assert_eq!(processor.data.len(), 5);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], vec!["Alice", "30", "New York"]);
+        assert_eq!(result[1], vec!["Bob", "25", "London"]);
+    }
+
+    #[test]
+    fn test_validate_record() {
+        let processor = DataProcessor::new(',', false);
+        let valid_record = vec!["data".to_string(), "value".to_string()];
+        let invalid_record = vec!["".to_string(), "value".to_string()];
         
-        let mean = processor.calculate_mean().unwrap();
-        assert!((mean - 18.1).abs() < 0.1);
+        assert!(processor.validate_record(&valid_record));
+        assert!(!processor.validate_record(&invalid_record));
+    }
+
+    #[test]
+    fn test_extract_column() {
+        let processor = DataProcessor::new(',', false);
+        let data = vec![
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec!["d".to_string(), "e".to_string(), "f".to_string()],
+        ];
         
-        let filtered = processor.filter_outliers(2.0);
-        assert!(filtered.len() <= 5);
+        let column = processor.extract_column(&data, 1);
+        assert_eq!(column, vec!["b".to_string(), "e".to_string()]);
     }
 }
