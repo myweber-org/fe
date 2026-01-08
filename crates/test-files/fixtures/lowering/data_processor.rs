@@ -1,98 +1,117 @@
 
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 
-pub struct DataProcessor {
-    cache: HashMap<String, Vec<f64>>,
-    validation_rules: Vec<ValidationRule>,
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub tags: Vec<String>,
 }
 
-pub struct ValidationRule {
-    field_name: String,
-    min_value: f64,
-    max_value: f64,
-    required: bool,
+#[derive(Debug)]
+pub enum DataError {
+    InvalidId,
+    EmptyName,
+    NegativeValue,
+    DuplicateTag,
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataError::InvalidId => write!(f, "ID must be greater than zero"),
+            DataError::EmptyName => write!(f, "Name cannot be empty"),
+            DataError::NegativeValue => write!(f, "Value must be non-negative"),
+            DataError::DuplicateTag => write!(f, "Tags must be unique"),
+        }
+    }
+}
+
+impl Error for DataError {}
+
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64, tags: Vec<String>) -> Result<Self, DataError> {
+        if id == 0 {
+            return Err(DataError::InvalidId);
+        }
+        if name.trim().is_empty() {
+            return Err(DataError::EmptyName);
+        }
+        if value < 0.0 {
+            return Err(DataError::NegativeValue);
+        }
+        
+        let mut seen_tags = std::collections::HashSet::new();
+        for tag in &tags {
+            if !seen_tags.insert(tag) {
+                return Err(DataError::DuplicateTag);
+            }
+        }
+        
+        Ok(Self {
+            id,
+            name,
+            value,
+            tags,
+        })
+    }
+    
+    pub fn transform_value(&mut self, multiplier: f64) {
+        self.value *= multiplier;
+    }
+    
+    pub fn add_tag(&mut self, tag: String) -> Result<(), DataError> {
+        if self.tags.contains(&tag) {
+            return Err(DataError::DuplicateTag);
+        }
+        self.tags.push(tag);
+        Ok(())
+    }
+}
+
+pub struct DataProcessor {
+    records: HashMap<u32, DataRecord>,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
-        DataProcessor {
-            cache: HashMap::new(),
-            validation_rules: Vec::new(),
+        Self {
+            records: HashMap::new(),
         }
     }
-
-    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
-        self.validation_rules.push(rule);
-    }
-
-    pub fn process_dataset(&mut self, dataset_name: &str, data: Vec<f64>) -> Result<Vec<f64>, String> {
-        if data.is_empty() {
-            return Err("Dataset cannot be empty".to_string());
+    
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), DataError> {
+        if self.records.contains_key(&record.id) {
+            return Err(DataError::InvalidId);
         }
-
-        for rule in &self.validation_rules {
-            if rule.required && data.iter().any(|&x| x.is_nan()) {
-                return Err(format!("Field '{}' contains invalid values", rule.field_name));
-            }
-        }
-
-        let processed_data: Vec<f64> = data
-            .iter()
-            .map(|&value| {
-                let mut result = value;
-                for rule in &self.validation_rules {
-                    if value < rule.min_value || value > rule.max_value {
-                        result = value.clamp(rule.min_value, rule.max_value);
-                    }
-                }
-                result
-            })
-            .collect();
-
-        self.cache.insert(dataset_name.to_string(), processed_data.clone());
-        Ok(processed_data)
+        self.records.insert(record.id, record);
+        Ok(())
     }
-
-    pub fn get_cached_data(&self, dataset_name: &str) -> Option<&Vec<f64>> {
-        self.cache.get(dataset_name)
+    
+    pub fn get_record(&self, id: u32) -> Option<&DataRecord> {
+        self.records.get(&id)
     }
-
-    pub fn calculate_statistics(&self, dataset_name: &str) -> Option<Statistics> {
-        self.cache.get(dataset_name).map(|data| {
-            let sum: f64 = data.iter().sum();
-            let count = data.len() as f64;
-            let mean = sum / count;
-            
-            let variance: f64 = data.iter()
-                .map(|&value| (value - mean).powi(2))
-                .sum::<f64>() / count;
-            
-            Statistics {
-                mean,
-                variance,
-                min: *data.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
-                max: *data.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
-                count: data.len(),
-            }
-        })
+    
+    pub fn calculate_total_value(&self) -> f64 {
+        self.records.values().map(|r| r.value).sum()
     }
-}
-
-pub struct Statistics {
-    pub mean: f64,
-    pub variance: f64,
-    pub min: f64,
-    pub max: f64,
-    pub count: usize,
-}
-
-impl ValidationRule {
-    pub fn new(field_name: &str, min_value: f64, max_value: f64, required: bool) -> Self {
-        ValidationRule {
-            field_name: field_name.to_string(),
-            min_value,
-            max_value,
-            required,
+    
+    pub fn find_by_tag(&self, tag: &str) -> Vec<&DataRecord> {
+        self.records
+            .values()
+            .filter(|r| r.tags.contains(&tag.to_string()))
+            .collect()
+    }
+    
+    pub fn apply_to_all<F>(&mut self, mut transform: F)
+    where
+        F: FnMut(&mut DataRecord),
+    {
+        for record in self.records.values_mut() {
+            transform(record);
         }
     }
 }
@@ -100,33 +119,63 @@ impl ValidationRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    
     #[test]
-    fn test_data_processing() {
-        let mut processor = DataProcessor::new();
-        let rule = ValidationRule::new("temperature", -50.0, 100.0, true);
-        processor.add_validation_rule(rule);
-
-        let data = vec![25.0, 30.0, 150.0, -60.0, 45.0];
-        let result = processor.process_dataset("test_data", data);
-        
-        assert!(result.is_ok());
-        let processed = result.unwrap();
-        assert_eq!(processed.len(), 5);
-        assert_eq!(processed[2], 100.0);
-        assert_eq!(processed[3], -50.0);
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(
+            1,
+            "Test Record".to_string(),
+            42.5,
+            vec!["tag1".to_string(), "tag2".to_string()],
+        );
+        assert!(record.is_ok());
     }
-
+    
     #[test]
-    fn test_statistics_calculation() {
+    fn test_invalid_id() {
+        let record = DataRecord::new(
+            0,
+            "Test".to_string(),
+            10.0,
+            vec![],
+        );
+        assert!(matches!(record, Err(DataError::InvalidId)));
+    }
+    
+    #[test]
+    fn test_duplicate_tags() {
+        let record = DataRecord::new(
+            1,
+            "Test".to_string(),
+            10.0,
+            vec!["tag1".to_string(), "tag1".to_string()],
+        );
+        assert!(matches!(record, Err(DataError::DuplicateTag)));
+    }
+    
+    #[test]
+    fn test_data_processor_operations() {
         let mut processor = DataProcessor::new();
-        let data = vec![10.0, 20.0, 30.0, 40.0, 50.0];
-        processor.process_dataset("stats_test", data).unwrap();
         
-        let stats = processor.calculate_statistics("stats_test").unwrap();
-        assert_eq!(stats.mean, 30.0);
-        assert_eq!(stats.min, 10.0);
-        assert_eq!(stats.max, 50.0);
-        assert_eq!(stats.count, 5);
+        let record1 = DataRecord::new(
+            1,
+            "Record 1".to_string(),
+            100.0,
+            vec!["important".to_string()],
+        ).unwrap();
+        
+        let record2 = DataRecord::new(
+            2,
+            "Record 2".to_string(),
+            200.0,
+            vec!["important".to_string(), "urgent".to_string()],
+        ).unwrap();
+        
+        processor.add_record(record1).unwrap();
+        processor.add_record(record2).unwrap();
+        
+        assert_eq!(processor.calculate_total_value(), 300.0);
+        assert_eq!(processor.find_by_tag("important").len(), 2);
+        assert_eq!(processor.find_by_tag("urgent").len(), 1);
     }
 }
