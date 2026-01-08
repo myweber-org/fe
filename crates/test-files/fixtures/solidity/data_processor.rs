@@ -1,72 +1,51 @@
-
+use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
 }
 
-impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
-        DataProcessor {
-            delimiter,
-            has_header,
+impl Record {
+    fn is_valid(&self) -> bool {
+        !self.name.is_empty() && self.value >= 0.0
+    }
+}
+
+pub fn process_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(Path::new(input_path))?;
+    let mut reader = Reader::from_reader(input_file);
+    
+    let output_file = File::create(Path::new(output_path))?;
+    let mut writer = Writer::from_writer(output_file);
+    
+    let mut valid_count = 0;
+    let mut invalid_count = 0;
+    
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.is_valid() {
+            writer.serialize(&record)?;
+            valid_count += 1;
+        } else {
+            invalid_count += 1;
         }
     }
-
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        let mut lines = reader.lines();
-
-        if self.has_header {
-            lines.next();
-        }
-
-        for line_result in lines {
-            let line = line_result?;
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-            
-            if !fields.is_empty() {
-                records.push(fields);
-            }
-        }
-
-        Ok(records)
-    }
-
-    pub fn validate_record(&self, record: &[String]) -> bool {
-        !record.is_empty() && record.iter().all(|field| !field.is_empty())
-    }
-
-    pub fn calculate_statistics(&self, records: &[Vec<String>], column_index: usize) -> Option<(f64, f64)> {
-        let numeric_values: Vec<f64> = records
-            .iter()
-            .filter_map(|record| record.get(column_index).and_then(|s| s.parse::<f64>().ok()))
-            .collect();
-
-        if numeric_values.is_empty() {
-            return None;
-        }
-
-        let sum: f64 = numeric_values.iter().sum();
-        let count = numeric_values.len() as f64;
-        let mean = sum / count;
-
-        let variance: f64 = numeric_values
-            .iter()
-            .map(|value| (value - mean).powi(2))
-            .sum::<f64>() / count;
-
-        Some((mean, variance.sqrt()))
-    }
+    
+    writer.flush()?;
+    
+    println!("Processing complete:");
+    println!("  Valid records: {}", valid_count);
+    println!("  Invalid records: {}", invalid_count);
+    
+    Ok(())
 }
 
 #[cfg(test)]
@@ -74,26 +53,42 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
-
+    
     #[test]
-    fn test_data_processor() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,salary").unwrap();
-        writeln!(temp_file, "Alice,30,50000.0").unwrap();
-        writeln!(temp_file, "Bob,25,45000.0").unwrap();
-        writeln!(temp_file, "Charlie,35,55000.0").unwrap();
-
-        let processor = DataProcessor::new(',', true);
-        let records = processor.process_file(temp_file.path()).unwrap();
+    fn test_valid_record() {
+        let record = Record {
+            id: 1,
+            name: "Test".to_string(),
+            value: 100.0,
+            active: true,
+        };
+        assert!(record.is_valid());
+    }
+    
+    #[test]
+    fn test_invalid_record_empty_name() {
+        let record = Record {
+            id: 2,
+            name: "".to_string(),
+            value: 50.0,
+            active: false,
+        };
+        assert!(!record.is_valid());
+    }
+    
+    #[test]
+    fn test_process_csv() -> Result<(), Box<dyn Error>> {
+        let mut input_file = NamedTempFile::new()?;
+        writeln!(input_file, "id,name,value,active")?;
+        writeln!(input_file, "1,Alice,100.5,true")?;
+        writeln!(input_file, "2,Bob,-10.0,false")?;
+        writeln!(input_file, "3,,50.0,true")?;
         
-        assert_eq!(records.len(), 3);
-        assert!(processor.validate_record(&records[0]));
+        let output_file = NamedTempFile::new()?;
         
-        let stats = processor.calculate_statistics(&records, 1);
-        assert!(stats.is_some());
+        process_csv(input_file.path().to_str().unwrap(), 
+                   output_file.path().to_str().unwrap())?;
         
-        if let Some((mean, _)) = stats {
-            assert!((mean - 30.0).abs() < 0.001);
-        }
+        Ok(())
     }
 }
