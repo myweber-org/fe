@@ -1,34 +1,52 @@
-use std::collections::HashSet;
+use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
 
-pub fn clean_and_sort_data<T: Ord + Clone + std::hash::Hash>(data: &[T]) -> Vec<T> {
-    let unique_items: HashSet<_> = data.iter().cloned().collect();
-    let mut sorted_unique: Vec<_> = unique_items.into_iter().collect();
-    sorted_unique.sort();
-    sorted_unique
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn clean_data(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let mut reader = ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(input_file);
 
-    #[test]
-    fn test_clean_and_sort() {
-        let input = vec![5, 2, 8, 2, 5, 1, 9];
-        let result = clean_and_sort_data(&input);
-        assert_eq!(result, vec![1, 2, 5, 8, 9]);
+    let output_file = File::create(output_path)?;
+    let mut writer = WriterBuilder::new()
+        .has_headers(true)
+        .from_writer(output_file);
+
+    for result in reader.deserialize() {
+        let mut record: Record = result?;
+        
+        record.name = record.name.trim().to_string();
+        record.category = record.category.to_uppercase();
+        
+        if record.value < 0.0 {
+            record.value = 0.0;
+        }
+        
+        writer.serialize(&record)?;
     }
 
-    #[test]
-    fn test_empty_input() {
-        let input: Vec<i32> = vec![];
-        let result = clean_and_sort_data(&input);
-        assert!(result.is_empty());
-    }
+    writer.flush()?;
+    Ok(())
+}
 
-    #[test]
-    fn test_string_data() {
-        let input = vec!["banana", "apple", "banana", "cherry"];
-        let result = clean_and_sort_data(&input);
-        assert_eq!(result, vec!["apple", "banana", "cherry"]);
+fn main() -> Result<(), Box<dyn Error>> {
+    let input = "raw_data.csv";
+    let output = "cleaned_data.csv";
+    
+    match clean_data(input, output) {
+        Ok(_) => println!("Data cleaning completed successfully"),
+        Err(e) => eprintln!("Error during data cleaning: {}", e),
     }
+    
+    Ok(())
 }
