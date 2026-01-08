@@ -339,4 +339,46 @@ mod tests {
         let result = processor.process(record);
         assert!(result.is_err());
     }
+}use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+pub struct DataProcessor {
+    file_path: String,
+}
+
+impl DataProcessor {
+    pub fn new(file_path: &str) -> Self {
+        DataProcessor {
+            file_path: file_path.to_string(),
+        }
+    }
+
+    pub fn process(&self) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let path = Path::new(&self.file_path);
+        let file = File::open(path)?;
+        let mut rdr = csv::Reader::from_reader(file);
+        
+        let mut records = Vec::new();
+        for result in rdr.records() {
+            let record = result?;
+            let fields: Vec<String> = record.iter().map(|s| s.to_string()).collect();
+            
+            if self.validate_record(&fields) {
+                records.push(fields);
+            }
+        }
+        
+        Ok(records)
+    }
+
+    fn validate_record(&self, fields: &[String]) -> bool {
+        !fields.is_empty() && fields.iter().all(|field| !field.trim().is_empty())
+    }
+}
+
+pub fn calculate_statistics(data: &[Vec<String>]) -> (usize, usize) {
+    let total_records = data.len();
+    let total_fields = data.iter().map(|record| record.len()).sum();
+    (total_records, total_fields)
 }
