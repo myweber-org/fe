@@ -227,4 +227,97 @@ mod tests {
         assert_eq!(config.server.host, loaded_config.server.host);
         assert_eq!(config.server.port, loaded_config.server.port);
     }
+}use std::collections::HashMap;
+use std::env;
+use std::fs;
+
+#[derive(Debug)]
+pub struct Config {
+    pub database_url: String,
+    pub api_key: String,
+    pub debug_mode: bool,
+    pub max_connections: u32,
+}
+
+impl Config {
+    pub fn from_file(path: &str) -> Result<Self, String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+
+        let mut config_map = HashMap::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line.splitn(2, '=').collect();
+            if parts.len() == 2 {
+                config_map.insert(parts[0].trim().to_string(), parts[1].trim().to_string());
+            }
+        }
+
+        Self::from_map(config_map)
+    }
+
+    pub fn from_env() -> Result<Self, String> {
+        let mut config_map = HashMap::new();
+        for (key, value) in env::vars() {
+            if key.starts_with("APP_") {
+                config_map.insert(key.trim_start_matches("APP_").to_string(), value);
+            }
+        }
+
+        Self::from_map(config_map)
+    }
+
+    fn from_map(map: HashMap<String, String>) -> Result<Self, String> {
+        let database_url = map
+            .get("DATABASE_URL")
+            .ok_or("Missing DATABASE_URL")?
+            .to_string();
+
+        let api_key = map
+            .get("API_KEY")
+            .ok_or("Missing API_KEY")?
+            .to_string();
+
+        let debug_mode = map
+            .get("DEBUG_MODE")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        let max_connections = map
+            .get("MAX_CONNECTIONS")
+            .map(|s| s.parse().unwrap_or(10))
+            .unwrap_or(10);
+
+        Ok(Config {
+            database_url,
+            api_key,
+            debug_mode,
+            max_connections,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if self.database_url.is_empty() {
+            errors.push("DATABASE_URL cannot be empty".to_string());
+        }
+
+        if self.api_key.len() < 32 {
+            errors.push("API_KEY must be at least 32 characters".to_string());
+        }
+
+        if self.max_connections == 0 {
+            errors.push("MAX_CONNECTIONS must be greater than 0".to_string());
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
 }
