@@ -1,224 +1,158 @@
+
 use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::fmt;
 
-pub struct DataProcessor {
-    file_path: String,
+#[derive(Debug, Clone)]
+pub struct DataPoint {
+    timestamp: i64,
+    value: f64,
+    category: String,
 }
-
-impl DataProcessor {
-    pub fn new(file_path: &str) -> Self {
-        DataProcessor {
-            file_path: file_path.to_string(),
-        }
-    }
-
-    pub fn process(&self) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(&self.file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-
-        for (index, line) in reader.lines().enumerate() {
-            let line = line?;
-            let fields: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
-            
-            if fields.len() < 2 {
-                return Err(format!("Invalid data at line {}: insufficient columns", index + 1).into());
-            }
-            
-            records.push(fields);
-        }
-
-        if records.is_empty() {
-            return Err("File contains no valid data".into());
-        }
-
-        Ok(records)
-    }
-
-    pub fn calculate_average(&self, column_index: usize) -> Result<f64, Box<dyn Error>> {
-        let records = self.process()?;
-        let mut sum = 0.0;
-        let mut count = 0;
-
-        for record in records.iter().skip(1) {
-            if let Some(value) = record.get(column_index) {
-                if let Ok(num) = value.parse::<f64>() {
-                    sum += num;
-                    count += 1;
-                }
-            }
-        }
-
-        if count == 0 {
-            return Err("No valid numeric data found in specified column".into());
-        }
-
-        Ok(sum / count as f64)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_data_processing() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,salary").unwrap();
-        writeln!(temp_file, "Alice,30,50000.0").unwrap();
-        writeln!(temp_file, "Bob,25,45000.0").unwrap();
-        
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap());
-        let result = processor.process().unwrap();
-        
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["name", "age", "salary"]);
-    }
-
-    #[test]
-    fn test_average_calculation() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,salary").unwrap();
-        writeln!(temp_file, "Alice,50000.0").unwrap();
-        writeln!(temp_file, "Bob,45000.0").unwrap();
-        writeln!(temp_file, "Charlie,55000.0").unwrap();
-        
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap());
-        let average = processor.calculate_average(1).unwrap();
-        
-        assert!((average - 50000.0).abs() < 0.01);
-    }
-}use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
 
 #[derive(Debug)]
-pub struct DataRecord {
-    pub id: u32,
-    pub name: String,
-    pub value: f64,
-    pub timestamp: String,
+pub enum ProcessingError {
+    InvalidTimestamp,
+    InvalidValue,
+    EmptyCategory,
+    TransformationFailed,
 }
 
-impl DataRecord {
-    pub fn new(id: u32, name: String, value: f64, timestamp: String) -> Self {
-        DataRecord {
-            id,
-            name,
-            value,
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidTimestamp => write!(f, "Timestamp must be positive"),
+            ProcessingError::InvalidValue => write!(f, "Value must be finite"),
+            ProcessingError::EmptyCategory => write!(f, "Category cannot be empty"),
+            ProcessingError::TransformationFailed => write!(f, "Data transformation failed"),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+impl DataPoint {
+    pub fn new(timestamp: i64, value: f64, category: String) -> Result<Self, ProcessingError> {
+        if timestamp <= 0 {
+            return Err(ProcessingError::InvalidTimestamp);
+        }
+        
+        if !value.is_finite() {
+            return Err(ProcessingError::InvalidValue);
+        }
+        
+        if category.trim().is_empty() {
+            return Err(ProcessingError::EmptyCategory);
+        }
+        
+        Ok(Self {
             timestamp,
-        }
+            value,
+            category,
+        })
     }
-
-    pub fn is_valid(&self) -> bool {
-        !self.name.is_empty() && self.value >= 0.0 && !self.timestamp.is_empty()
+    
+    pub fn transform(&self, multiplier: f64) -> Result<Self, ProcessingError> {
+        if !multiplier.is_finite() || multiplier == 0.0 {
+            return Err(ProcessingError::TransformationFailed);
+        }
+        
+        let transformed_value = self.value * multiplier;
+        
+        DataPoint::new(
+            self.timestamp,
+            transformed_value,
+            self.category.clone()
+        )
+    }
+    
+    pub fn normalize(&self, max_value: f64) -> Result<Self, ProcessingError> {
+        if max_value <= 0.0 || !max_value.is_finite() {
+            return Err(ProcessingError::TransformationFailed);
+        }
+        
+        let normalized_value = self.value / max_value;
+        
+        DataPoint::new(
+            self.timestamp,
+            normalized_value,
+            self.category.clone()
+        )
     }
 }
 
-pub struct DataProcessor {
-    records: Vec<DataRecord>,
+pub fn process_dataset(
+    data: Vec<DataPoint>,
+    transformation_fn: fn(&DataPoint) -> Result<DataPoint, ProcessingError>
+) -> Result<Vec<DataPoint>, ProcessingError> {
+    let mut results = Vec::with_capacity(data.len());
+    
+    for point in data {
+        let transformed = transformation_fn(&point)?;
+        results.push(transformed);
+    }
+    
+    Ok(results)
 }
 
-impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor {
-            records: Vec::new(),
-        }
+pub fn calculate_statistics(data: &[DataPoint]) -> (f64, f64, f64) {
+    if data.is_empty() {
+        return (0.0, 0.0, 0.0);
     }
-
-    pub fn load_from_csv(&mut self, file_path: &str) -> Result<usize, Box<dyn Error>> {
-        let path = Path::new(file_path);
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-
-        let mut count = 0;
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line?;
-            
-            if line_num == 0 {
-                continue;
-            }
-
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() != 4 {
-                continue;
-            }
-
-            let id = match parts[0].parse::<u32>() {
-                Ok(val) => val,
-                Err(_) => continue,
-            };
-
-            let name = parts[1].to_string();
-            
-            let value = match parts[2].parse::<f64>() {
-                Ok(val) => val,
-                Err(_) => continue,
-            };
-
-            let timestamp = parts[3].to_string();
-
-            let record = DataRecord::new(id, name, value, timestamp);
-            if record.is_valid() {
-                self.records.push(record);
-                count += 1;
-            }
-        }
-
-        Ok(count)
-    }
-
-    pub fn filter_by_value(&self, min_value: f64) -> Vec<&DataRecord> {
-        self.records
-            .iter()
-            .filter(|record| record.value >= min_value)
-            .collect()
-    }
-
-    pub fn calculate_average(&self) -> Option<f64> {
-        if self.records.is_empty() {
-            return None;
-        }
-
-        let sum: f64 = self.records.iter().map(|record| record.value).sum();
-        Some(sum / self.records.len() as f64)
-    }
-
-    pub fn get_records(&self) -> &Vec<DataRecord> {
-        &self.records
-    }
-
-    pub fn clear(&mut self) {
-        self.records.clear();
-    }
+    
+    let sum: f64 = data.iter().map(|p| p.value).sum();
+    let count = data.len() as f64;
+    let mean = sum / count;
+    
+    let variance: f64 = data.iter()
+        .map(|p| (p.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (mean, variance, std_dev)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    
     #[test]
-    fn test_record_validation() {
-        let valid_record = DataRecord::new(1, "test".to_string(), 10.5, "2024-01-01".to_string());
-        assert!(valid_record.is_valid());
-
-        let invalid_record = DataRecord::new(2, "".to_string(), -5.0, "".to_string());
-        assert!(!invalid_record.is_valid());
+    fn test_valid_datapoint() {
+        let point = DataPoint::new(1234567890, 42.5, "temperature".to_string());
+        assert!(point.is_ok());
     }
-
+    
     #[test]
-    fn test_data_processor() {
-        let mut processor = DataProcessor::new();
-        assert_eq!(processor.get_records().len(), 0);
+    fn test_invalid_timestamp() {
+        let point = DataPoint::new(-1, 42.5, "temperature".to_string());
+        assert!(matches!(point, Err(ProcessingError::InvalidTimestamp)));
+    }
+    
+    #[test]
+    fn test_transform() {
+        let point = DataPoint::new(1234567890, 10.0, "pressure".to_string()).unwrap();
+        let transformed = point.transform(2.5).unwrap();
+        assert_eq!(transformed.value, 25.0);
+    }
+    
+    #[test]
+    fn test_normalize() {
+        let point = DataPoint::new(1234567890, 75.0, "humidity".to_string()).unwrap();
+        let normalized = point.normalize(100.0).unwrap();
+        assert_eq!(normalized.value, 0.75);
+    }
+    
+    #[test]
+    fn test_statistics() {
+        let points = vec![
+            DataPoint::new(1, 10.0, "test".to_string()).unwrap(),
+            DataPoint::new(2, 20.0, "test".to_string()).unwrap(),
+            DataPoint::new(3, 30.0, "test".to_string()).unwrap(),
+        ];
         
-        processor.records.push(DataRecord::new(1, "A".to_string(), 10.0, "time".to_string()));
-        processor.records.push(DataRecord::new(2, "B".to_string(), 20.0, "time".to_string()));
-        
-        assert_eq!(processor.filter_by_value(15.0).len(), 1);
-        assert_eq!(processor.calculate_average(), Some(15.0));
+        let (mean, variance, std_dev) = calculate_statistics(&points);
+        assert_eq!(mean, 20.0);
+        assert_eq!(variance, 66.66666666666667);
+        assert_eq!(std_dev, 8.16496580927726);
     }
 }
