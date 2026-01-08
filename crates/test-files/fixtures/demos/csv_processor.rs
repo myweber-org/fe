@@ -174,4 +174,47 @@ mod tests {
         
         assert!(result.is_err());
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
+use csv::{ReaderBuilder, WriterBuilder};
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    age: u8,
+    active: bool,
+}
+
+fn process_csv(input_path: &str, output_path: &str, min_age: u8) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let reader = BufReader::new(input_file);
+    let mut csv_reader = ReaderBuilder::new().has_headers(true).from_reader(reader);
+
+    let output_file = File::create(output_path)?;
+    let writer = BufWriter::new(output_file);
+    let mut csv_writer = WriterBuilder::new().has_headers(true).from_writer(writer);
+
+    for result in csv_reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.age >= min_age && record.active {
+            csv_writer.serialize(&record)?;
+        }
+    }
+
+    csv_writer.flush()?;
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let input_file = "data/input.csv";
+    let output_file = "data/filtered.csv";
+    let minimum_age = 25;
+
+    process_csv(input_file, output_file, minimum_age)?;
+    println!("Filtered CSV saved to {}", output_file);
+    
+    Ok(())
 }
