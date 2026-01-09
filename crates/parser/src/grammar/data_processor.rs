@@ -21,35 +21,47 @@ impl DataProcessor {
         let file = File::open(file_path)?;
         let reader = BufReader::new(file);
         let mut records = Vec::new();
-        let mut lines = reader.lines();
+        let mut lines = reader.lines().enumerate();
 
         if self.has_header {
             lines.next();
         }
 
-        for line_result in lines {
-            let line = line_result?;
-            let fields: Vec<String> = line
+        for (line_number, line) in lines {
+            let line_content = line?;
+            let fields: Vec<String> = line_content
                 .split(self.delimiter)
                 .map(|s| s.trim().to_string())
                 .collect();
-            
-            if !fields.is_empty() {
-                records.push(fields);
+
+            if fields.iter().any(|f| f.is_empty()) {
+                return Err(format!("Empty field detected at line {}", line_number + 1).into());
             }
+
+            records.push(fields);
+        }
+
+        if records.is_empty() {
+            return Err("No valid data records found".into());
         }
 
         Ok(records)
     }
 
-    pub fn validate_record(&self, record: &[String]) -> bool {
-        !record.is_empty() && record.iter().all(|field| !field.is_empty())
-    }
+    pub fn validate_records(&self, records: &[Vec<String>]) -> Result<(), Box<dyn Error>> {
+        if records.is_empty() {
+            return Err("Empty record set".into());
+        }
 
-    pub fn extract_column(&self, data: &[Vec<String>], column_index: usize) -> Vec<String> {
-        data.iter()
-            .filter_map(|record| record.get(column_index).cloned())
-            .collect()
+        let expected_len = records[0].len();
+        for (idx, record) in records.iter().enumerate() {
+            if record.len() != expected_len {
+                return Err(format!("Record {} has {} fields, expected {}", 
+                    idx + 1, record.len(), expected_len).into());
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -60,39 +72,29 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_csv() {
+    fn test_process_valid_csv() {
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "Alice,30,New York").unwrap();
-        writeln!(temp_file, "Bob,25,London").unwrap();
+        writeln!(temp_file, "John,30,New York").unwrap();
+        writeln!(temp_file, "Alice,25,London").unwrap();
 
         let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path()).unwrap();
+        let result = processor.process_file(temp_file.path());
+        assert!(result.is_ok());
         
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["Alice", "30", "New York"]);
-        assert_eq!(result[1], vec!["Bob", "25", "London"]);
+        let records = result.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0], vec!["John", "30", "New York"]);
     }
 
     #[test]
-    fn test_validate_record() {
-        let processor = DataProcessor::new(',', false);
-        let valid_record = vec!["data".to_string(), "value".to_string()];
-        let invalid_record = vec!["".to_string(), "value".to_string()];
-        
-        assert!(processor.validate_record(&valid_record));
-        assert!(!processor.validate_record(&invalid_record));
-    }
+    fn test_empty_field_detection() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "John,,New York").unwrap();
 
-    #[test]
-    fn test_extract_column() {
-        let processor = DataProcessor::new(',', false);
-        let data = vec![
-            vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            vec!["d".to_string(), "e".to_string(), "f".to_string()],
-        ];
-        
-        let column = processor.extract_column(&data, 1);
-        assert_eq!(column, vec!["b".to_string(), "e".to_string()]);
+        let processor = DataProcessor::new(',', true);
+        let result = processor.process_file(temp_file.path());
+        assert!(result.is_err());
     }
 }
