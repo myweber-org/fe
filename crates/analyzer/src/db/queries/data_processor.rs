@@ -12,47 +12,70 @@ impl DataProcessor {
         }
     }
 
-    pub fn process_numeric_data(&mut self, key: &str, values: &[f64]) -> Result<Vec<f64>, String> {
-        if values.is_empty() {
-            return Err("Empty data provided".to_string());
+    pub fn process_dataset(&mut self, key: &str, data: &[f64]) -> Result<Vec<f64>, String> {
+        if data.is_empty() {
+            return Err("Empty dataset provided".to_string());
         }
 
-        if values.iter().any(|&x| !x.is_finite()) {
-            return Err("Invalid numeric values detected".to_string());
+        if let Some(cached) = self.cache.get(key) {
+            return Ok(cached.clone());
         }
 
-        let processed: Vec<f64> = values
-            .iter()
-            .map(|&x| x * 2.0) // Example transformation
-            .collect();
-
+        let processed = Self::normalize_data(data);
         self.cache.insert(key.to_string(), processed.clone());
+        
         Ok(processed)
     }
 
-    pub fn get_cached_data(&self, key: &str) -> Option<&Vec<f64>> {
-        self.cache.get(key)
+    fn normalize_data(data: &[f64]) -> Vec<f64> {
+        let mean = data.iter().sum::<f64>() / data.len() as f64;
+        let variance = data.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / data.len() as f64;
+        let std_dev = variance.sqrt();
+
+        if std_dev.abs() < 1e-10 {
+            return vec![0.0; data.len()];
+        }
+
+        data.iter()
+            .map(|&x| (x - mean) / std_dev)
+            .collect()
     }
 
-    pub fn calculate_statistics(&self, key: &str) -> Option<(f64, f64, f64)> {
-        self.cache.get(key).map(|data| {
-            let sum: f64 = data.iter().sum();
-            let count = data.len() as f64;
-            let mean = sum / count;
-            
-            let variance: f64 = data.iter()
-                .map(|&x| (x - mean).powi(2))
-                .sum::<f64>() / count;
-            
-            let std_dev = variance.sqrt();
-            
-            (mean, variance, std_dev)
-        })
-    }
-}
+    pub fn calculate_statistics(&self, data: &[f64]) -> HashMap<String, f64> {
+        let mut stats = HashMap::new();
+        
+        if data.is_empty() {
+            return stats;
+        }
 
-pub fn validate_input_range(values: &[f64], min: f64, max: f64) -> bool {
-    values.iter().all(|&x| x >= min && x <= max)
+        let sum: f64 = data.iter().sum();
+        let count = data.len() as f64;
+        let mean = sum / count;
+
+        let variance: f64 = data.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / count;
+
+        stats.insert("mean".to_string(), mean);
+        stats.insert("variance".to_string(), variance);
+        stats.insert("std_dev".to_string(), variance.sqrt());
+        stats.insert("min".to_string(), *data.iter().fold(&f64::INFINITY, |a, b| a.min(b)));
+        stats.insert("max".to_string(), *data.iter().fold(&f64::NEG_INFINITY, |a, b| a.max(b)));
+        stats.insert("sum".to_string(), sum);
+        stats.insert("count".to_string(), count);
+
+        stats
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn cache_size(&self) -> usize {
+        self.cache.len()
+    }
 }
 
 #[cfg(test)]
@@ -60,30 +83,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_process_numeric_data() {
-        let mut processor = DataProcessor::new();
-        let data = vec![1.0, 2.0, 3.0];
-        
-        let result = processor.process_numeric_data("test", &data);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), vec![2.0, 4.0, 6.0]);
-    }
-
-    #[test]
-    fn test_empty_data() {
-        let mut processor = DataProcessor::new();
-        let result = processor.process_numeric_data("empty", &[]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_statistics_calculation() {
-        let mut processor = DataProcessor::new();
+    fn test_normalize_data() {
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let normalized = DataProcessor::normalize_data(&data);
         
-        processor.process_numeric_data("stats", &data).unwrap();
-        let stats = processor.calculate_statistics("stats").unwrap();
+        let mean: f64 = normalized.iter().sum::<f64>() / normalized.len() as f64;
+        let variance: f64 = normalized.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / normalized.len() as f64;
+
+        assert!(mean.abs() < 1e-10);
+        assert!((variance - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_empty_dataset() {
+        let mut processor = DataProcessor::new();
+        let result = processor.process_dataset("test", &[]);
         
-        assert!((stats.0 - 6.0).abs() < 0.001); // Mean of doubled values
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Empty dataset provided");
+    }
+
+    #[test]
+    fn test_cache_functionality() {
+        let mut processor = DataProcessor::new();
+        let data = vec![10.0, 20.0, 30.0];
+        
+        let result1 = processor.process_dataset("key1", &data).unwrap();
+        let result2 = processor.process_dataset("key1", &data).unwrap();
+        
+        assert_eq!(result1, result2);
+        assert_eq!(processor.cache_size(), 1);
     }
 }
