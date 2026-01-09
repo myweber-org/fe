@@ -362,3 +362,199 @@ mod tests {
         assert_eq!(groups.get("TypeB").unwrap().len(), 1);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub category: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    InvalidName,
+    InvalidValue,
+    InvalidCategory,
+    InvalidTimestamp,
+    DuplicateRecord,
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "Invalid record ID"),
+            ValidationError::InvalidName => write!(f, "Invalid record name"),
+            ValidationError::InvalidValue => write!(f, "Invalid value"),
+            ValidationError::InvalidCategory => write!(f, "Invalid category"),
+            ValidationError::InvalidTimestamp => write!(f, "Invalid timestamp"),
+            ValidationError::DuplicateRecord => write!(f, "Duplicate record detected"),
+        }
+    }
+}
+
+impl Error for ValidationError {}
+
+pub struct DataProcessor {
+    records: HashMap<u32, DataRecord>,
+    category_stats: HashMap<String, CategoryStats>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CategoryStats {
+    pub count: usize,
+    pub total_value: f64,
+    pub average_value: f64,
+    pub min_value: f64,
+    pub max_value: f64,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: HashMap::new(),
+            category_stats: HashMap::new(),
+        }
+    }
+
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), ValidationError> {
+        self.validate_record(&record)?;
+        
+        if self.records.contains_key(&record.id) {
+            return Err(ValidationError::DuplicateRecord);
+        }
+        
+        self.records.insert(record.id, record.clone());
+        self.update_category_stats(&record);
+        
+        Ok(())
+    }
+
+    fn validate_record(&self, record: &DataRecord) -> Result<(), ValidationError> {
+        if record.id == 0 {
+            return Err(ValidationError::InvalidId);
+        }
+        
+        if record.name.trim().is_empty() || record.name.len() > 100 {
+            return Err(ValidationError::InvalidName);
+        }
+        
+        if record.value < 0.0 || record.value > 10000.0 {
+            return Err(ValidationError::InvalidValue);
+        }
+        
+        if record.category.trim().is_empty() {
+            return Err(ValidationError::InvalidCategory);
+        }
+        
+        if record.timestamp < 0 {
+            return Err(ValidationError::InvalidTimestamp);
+        }
+        
+        Ok(())
+    }
+
+    fn update_category_stats(&mut self, record: &DataRecord) {
+        let stats = self.category_stats
+            .entry(record.category.clone())
+            .or_insert(CategoryStats {
+                count: 0,
+                total_value: 0.0,
+                average_value: 0.0,
+                min_value: f64::MAX,
+                max_value: f64::MIN,
+            });
+        
+        stats.count += 1;
+        stats.total_value += record.value;
+        stats.average_value = stats.total_value / stats.count as f64;
+        stats.min_value = stats.min_value.min(record.value);
+        stats.max_value = stats.max_value.max(record.value);
+    }
+
+    pub fn get_record(&self, id: u32) -> Option<&DataRecord> {
+        self.records.get(&id)
+    }
+
+    pub fn get_category_stats(&self, category: &str) -> Option<&CategoryStats> {
+        self.category_stats.get(category)
+    }
+
+    pub fn get_all_categories(&self) -> Vec<String> {
+        self.category_stats.keys().cloned().collect()
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+        self.records
+            .values()
+            .filter(|record| record.category == category)
+            .collect()
+    }
+
+    pub fn calculate_total_value(&self) -> f64 {
+        self.records.values().map(|record| record.value).sum()
+    }
+
+    pub fn calculate_average_value(&self) -> f64 {
+        let count = self.records.len();
+        if count == 0 {
+            0.0
+        } else {
+            self.calculate_total_value() / count as f64
+        }
+    }
+
+    pub fn remove_record(&mut self, id: u32) -> Option<DataRecord> {
+        if let Some(record) = self.records.remove(&id) {
+            self.recalculate_category_stats();
+            Some(record)
+        } else {
+            None
+        }
+    }
+
+    fn recalculate_category_stats(&mut self) {
+        self.category_stats.clear();
+        
+        for record in self.records.values() {
+            self.update_category_stats(record);
+        }
+    }
+
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+}
+
+impl Default for DataProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn transform_record(record: &DataRecord, multiplier: f64) -> DataRecord {
+    DataRecord {
+        id: record.id,
+        name: record.name.clone(),
+        value: record.value * multiplier,
+        category: record.category.clone(),
+        timestamp: record.timestamp,
+    }
+}
+
+pub fn normalize_value(value: f64, min: f64, max: f64) -> f64 {
+    if max == min {
+        0.0
+    } else {
+        (value - min) / (max - min)
+    }
+}
