@@ -1,100 +1,92 @@
-use csv::{ReaderBuilder, WriterBuilder};
-use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::File;
-use std::path::Path;
+use std::io::{BufRead, BufReader, Write};
 
-#[derive(Debug, Deserialize, Serialize)]
-struct Record {
-    id: u32,
-    name: String,
-    age: u32,
-    email: String,
+pub struct DataCleaner {
+    input_path: String,
+    output_path: String,
 }
 
-fn validate_record(record: &Record) -> Result<(), String> {
-    if record.name.trim().is_empty() {
-        return Err("Name cannot be empty".to_string());
-    }
-    if record.age > 120 {
-        return Err("Age must be less than 120".to_string());
-    }
-    if !record.email.contains('@') {
-        return Err("Invalid email format".to_string());
-    }
-    Ok(())
-}
-
-fn clean_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
-    let input_file = File::open(Path::new(input_path))?;
-    let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(input_file);
-    
-    let output_file = File::create(Path::new(output_path))?;
-    let mut wtr = WriterBuilder::new().has_headers(true).from_writer(output_file);
-    
-    let mut valid_count = 0;
-    let mut invalid_count = 0;
-    
-    for result in rdr.deserialize() {
-        let record: Record = result?;
-        
-        match validate_record(&record) {
-            Ok(_) => {
-                wtr.serialize(&record)?;
-                valid_count += 1;
-            }
-            Err(err) => {
-                eprintln!("Invalid record ID {}: {}", record.id, err);
-                invalid_count += 1;
-            }
-        }
-    }
-    
-    wtr.flush()?;
-    println!("Processing complete: {} valid, {} invalid records", valid_count, invalid_count);
-    
-    Ok(())
-}
-
-fn main() -> Result<(), Box<dyn Error>> {
-    let input = "data/raw_data.csv";
-    let output = "data/cleaned_data.csv";
-    
-    clean_csv(input, output)?;
-    
-    Ok(())
-}
-use std::collections::HashMap;
-
-pub fn filter_numeric_data(data: &HashMap<String, String>) -> HashMap<String, f64> {
-    let mut numeric_map = HashMap::new();
-
-    for (key, value) in data {
-        if let Ok(parsed_value) = value.parse::<f64>() {
-            numeric_map.insert(key.clone(), parsed_value);
+impl DataCleaner {
+    pub fn new(input_path: &str, output_path: &str) -> Self {
+        DataCleaner {
+            input_path: input_path.to_string(),
+            output_path: output_path.to_string(),
         }
     }
 
-    numeric_map
+    pub fn clean_csv(&self) -> Result<(), Box<dyn Error>> {
+        let input_file = File::open(&self.input_path)?;
+        let reader = BufReader::new(input_file);
+        let mut output_file = File::create(&self.output_path)?;
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if line_num == 0 {
+                writeln!(output_file, "{}", line)?;
+                continue;
+            }
+
+            let cleaned_line = self.process_line(&line);
+            if !cleaned_line.is_empty() {
+                writeln!(output_file, "{}", cleaned_line)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn process_line(&self, line: &str) -> String {
+        let parts: Vec<&str> = line.split(',').collect();
+        let mut cleaned_parts = Vec::new();
+
+        for part in parts {
+            let trimmed = part.trim();
+            if !trimmed.is_empty() && trimmed != "null" && trimmed != "NULL" {
+                cleaned_parts.push(trimmed);
+            } else {
+                cleaned_parts.push("");
+            }
+        }
+
+        cleaned_parts.join(",")
+    }
+
+    pub fn count_records(&self) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(&self.input_path)?;
+        let reader = BufReader::new(file);
+        let count = reader.lines().count();
+        Ok(count.saturating_sub(1))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     #[test]
-    fn test_filter_numeric_data() {
-        let mut test_data = HashMap::new();
-        test_data.insert("age".to_string(), "25".to_string());
-        test_data.insert("name".to_string(), "Alice".to_string());
-        test_data.insert("height".to_string(), "1.75".to_string());
-        test_data.insert("city".to_string(), "London".to_string());
+    fn test_data_cleaner() {
+        let test_input = "name,age,city\nJohn,25,New York\nJane,,London\nBob,30,NULL";
+        let input_path = "test_input.csv";
+        let output_path = "test_output.csv";
 
-        let result = filter_numeric_data(&test_data);
+        let mut input_file = File::create(input_path).unwrap();
+        input_file.write_all(test_input.as_bytes()).unwrap();
 
-        assert_eq!(result.len(), 2);
-        assert_eq!(result.get("age"), Some(&25.0));
-        assert_eq!(result.get("height"), Some(&1.75));
-        assert_eq!(result.get("name"), None);
+        let cleaner = DataCleaner::new(input_path, output_path);
+        cleaner.clean_csv().unwrap();
+
+        let mut output_file = File::open(output_path).unwrap();
+        let mut content = String::new();
+        output_file.read_to_string(&mut content).unwrap();
+
+        assert!(content.contains("John,25,New York"));
+        assert!(content.contains("Jane,,London"));
+        assert!(content.contains("Bob,30,"));
+
+        std::fs::remove_file(input_path).unwrap();
+        std::fs::remove_file(output_path).unwrap();
     }
 }
