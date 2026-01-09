@@ -377,3 +377,82 @@ mod tests {
         Ok(())
     }
 }
+use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+pub struct DataProcessor {
+    records: Vec<Record>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let mut rdr = Reader::from_reader(file);
+
+        for result in rdr.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_records(&self) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|r| r.value > 0.0 && !r.name.is_empty())
+            .collect()
+    }
+
+    pub fn calculate_total(&self) -> f64 {
+        self.records.iter().map(|r| r.value).sum()
+    }
+
+    pub fn get_active_records(&self) -> Vec<&Record> {
+        self.records.iter().filter(|r| r.active).collect()
+    }
+
+    pub fn count_records(&self) -> usize {
+        self.records.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+
+    #[test]
+    fn test_data_processor() {
+        let csv_data = "id,name,value,active\n1,Test1,10.5,true\n2,Test2,0.0,false\n3,,15.3,true\n";
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "{}", csv_data).unwrap();
+        
+        let mut processor = DataProcessor::new();
+        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
+        
+        assert!(result.is_ok());
+        assert_eq!(processor.count_records(), 3);
+        assert_eq!(processor.validate_records().len(), 2);
+        assert_eq!(processor.calculate_total(), 25.8);
+        assert_eq!(processor.get_active_records().len(), 2);
+    }
+}
