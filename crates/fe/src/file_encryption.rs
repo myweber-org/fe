@@ -204,4 +204,84 @@ mod tests {
 
         Ok(())
     }
+}use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use hex::{decode, encode};
+use rand::RngCore;
+use std::fs;
+use std::io::{Read, Write};
+
+type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+
+const KEY_LENGTH: usize = 32;
+const IV_LENGTH: usize = 16;
+
+pub fn generate_key() -> Vec<u8> {
+    let mut key = vec![0u8; KEY_LENGTH];
+    rand::thread_rng().fill_bytes(&mut key);
+    key
+}
+
+pub fn encrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> Result<(), String> {
+    if key.len() != KEY_LENGTH {
+        return Err(format!("Key must be {} bytes", KEY_LENGTH));
+    }
+
+    let mut file = fs::File::open(input_path)
+        .map_err(|e| format!("Failed to open input file: {}", e))?;
+    let mut plaintext = Vec::new();
+    file.read_to_end(&mut plaintext)
+        .map_err(|e| format!("Failed to read input file: {}", e))?;
+
+    let mut iv = [0u8; IV_LENGTH];
+    rand::thread_rng().fill_bytes(&mut iv);
+
+    let ciphertext = Aes256CbcEnc::new(key.into(), &iv.into())
+        .encrypt_padded_vec_mut::<Pkcs7>(&plaintext);
+
+    let mut output = fs::File::create(output_path)
+        .map_err(|e| format!("Failed to create output file: {}", e))?;
+
+    output.write_all(&iv).map_err(|e| format!("Failed to write IV: {}", e))?;
+    output.write_all(&ciphertext).map_err(|e| format!("Failed to write ciphertext: {}", e))?;
+
+    Ok(())
+}
+
+pub fn decrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> Result<(), String> {
+    if key.len() != KEY_LENGTH {
+        return Err(format!("Key must be {} bytes", KEY_LENGTH));
+    }
+
+    let mut file = fs::File::open(input_path)
+        .map_err(|e| format!("Failed to open input file: {}", e))?;
+    let mut encrypted_data = Vec::new();
+    file.read_to_end(&mut encrypted_data)
+        .map_err(|e| format!("Failed to read input file: {}", e))?;
+
+    if encrypted_data.len() < IV_LENGTH {
+        return Err("File too short to contain IV".to_string());
+    }
+
+    let (iv, ciphertext) = encrypted_data.split_at(IV_LENGTH);
+    let iv_array: [u8; IV_LENGTH] = iv.try_into().unwrap();
+
+    let plaintext = Aes256CbcDec::new(key.into(), &iv_array.into())
+        .decrypt_padded_vec_mut::<Pkcs7>(ciphertext)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+
+    let mut output = fs::File::create(output_path)
+        .map_err(|e| format!("Failed to create output file: {}", e))?;
+    output.write_all(&plaintext)
+        .map_err(|e| format!("Failed to write plaintext: {}", e))?;
+
+    Ok(())
+}
+
+pub fn key_to_hex(key: &[u8]) -> String {
+    encode(key)
+}
+
+pub fn hex_to_key(hex_str: &str) -> Result<Vec<u8>, String> {
+    decode(hex_str).map_err(|e| format!("Invalid hex string: {}", e))
 }
