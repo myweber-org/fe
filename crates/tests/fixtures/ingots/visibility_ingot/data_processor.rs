@@ -239,3 +239,134 @@ mod tests {
         assert!(result.is_err());
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum ProcessingError {
+    #[error("Invalid data format")]
+    InvalidFormat,
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+    #[error("Value out of range: {0}")]
+    OutOfRange(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+impl DataRecord {
+    pub fn validate(&self) -> Result<(), ProcessingError> {
+        if self.id == 0 {
+            return Err(ProcessingError::InvalidFormat);
+        }
+        
+        if self.timestamp < 0 {
+            return Err(ProcessingError::OutOfRange("timestamp".to_string()));
+        }
+        
+        if self.values.is_empty() {
+            return Err(ProcessingError::MissingField("values".to_string()));
+        }
+        
+        Ok(())
+    }
+    
+    pub fn transform(&mut self, multiplier: f64) {
+        self.values = self.values
+            .iter()
+            .map(|&v| v * multiplier)
+            .collect();
+    }
+    
+    pub fn calculate_statistics(&self) -> (f64, f64, f64) {
+        let count = self.values.len() as f64;
+        let sum: f64 = self.values.iter().sum();
+        let mean = sum / count;
+        
+        let variance: f64 = self.values
+            .iter()
+            .map(|&value| {
+                let diff = mean - value;
+                diff * diff
+            })
+            .sum::<f64>() / count;
+        
+        let std_dev = variance.sqrt();
+        
+        (mean, variance, std_dev)
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord], multiplier: f64) -> Result<Vec<DataRecord>, ProcessingError> {
+    let mut processed = Vec::with_capacity(records.len());
+    
+    for record in records.iter_mut() {
+        record.validate()?;
+        record.transform(multiplier);
+        processed.push(record.clone());
+    }
+    
+    Ok(processed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_record_validation() {
+        let valid_record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0],
+            metadata: HashMap::new(),
+        };
+        
+        assert!(valid_record.validate().is_ok());
+        
+        let invalid_record = DataRecord {
+            id: 0,
+            timestamp: -1,
+            values: vec![],
+            metadata: HashMap::new(),
+        };
+        
+        assert!(invalid_record.validate().is_err());
+    }
+    
+    #[test]
+    fn test_record_transformation() {
+        let mut record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0],
+            metadata: HashMap::new(),
+        };
+        
+        record.transform(2.0);
+        assert_eq!(record.values, vec![2.0, 4.0, 6.0]);
+    }
+    
+    #[test]
+    fn test_statistics_calculation() {
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            metadata: HashMap::new(),
+        };
+        
+        let (mean, variance, std_dev) = record.calculate_statistics();
+        
+        assert_eq!(mean, 3.0);
+        assert_eq!(variance, 2.0);
+        assert_eq!(std_dev, 2.0_f64.sqrt());
+    }
+}
