@@ -266,4 +266,197 @@ mod tests {
         
         assert_eq!(column, vec!["b".to_string(), "e".to_string()]);
     }
+}use std::collections::HashMap;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+impl DataRecord {
+    pub fn new(id: u64, values: Vec<f64>) -> Self {
+        Self {
+            id,
+            values,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        !self.values.is_empty() && self.id > 0
+    }
+
+    pub fn calculate_statistics(&self) -> Option<DataStats> {
+        if self.values.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.values.iter().sum();
+        let count = self.values.len() as f64;
+        let mean = sum / count;
+
+        let variance: f64 = self.values
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / count;
+
+        Some(DataStats {
+            mean,
+            variance,
+            count: self.values.len(),
+            min: *self.values.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
+            max: *self.values.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
+        })
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+
+    pub fn transform_values<F>(&mut self, transformer: F)
+    where
+        F: Fn(f64) -> f64,
+    {
+        self.values = self.values.iter().map(|&x| transformer(x)).collect();
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DataStats {
+    pub mean: f64,
+    pub variance: f64,
+    pub count: usize,
+    pub min: f64,
+    pub max: f64,
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        Self { records: Vec::new() }
+    }
+
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), String> {
+        if !record.is_valid() {
+            return Err("Invalid record data".to_string());
+        }
+
+        if self.records.iter().any(|r| r.id == record.id) {
+            return Err("Duplicate record ID".to_string());
+        }
+
+        self.records.push(record);
+        Ok(())
+    }
+
+    pub fn process_all(&mut self) -> ProcessingResult {
+        let valid_count = self.records.iter().filter(|r| r.is_valid()).count();
+        let invalid_count = self.records.len() - valid_count;
+
+        let stats: Vec<DataStats> = self.records
+            .iter()
+            .filter_map(|r| r.calculate_statistics())
+            .collect();
+
+        let overall_mean = if !stats.is_empty() {
+            stats.iter().map(|s| s.mean).sum::<f64>() / stats.len() as f64
+        } else {
+            0.0
+        };
+
+        ProcessingResult {
+            total_records: self.records.len(),
+            valid_records: valid_count,
+            invalid_records: invalid_count,
+            overall_mean,
+            individual_stats: stats,
+        }
+    }
+
+    pub fn filter_records<F>(&self, predicate: F) -> Vec<DataRecord>
+    where
+        F: Fn(&DataRecord) -> bool,
+    {
+        self.records
+            .iter()
+            .filter(|r| predicate(r))
+            .cloned()
+            .collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
+}
+
+#[derive(Debug)]
+pub struct ProcessingResult {
+    pub total_records: usize,
+    pub valid_records: usize,
+    pub invalid_records: usize,
+    pub overall_mean: f64,
+    pub individual_stats: Vec<DataStats>,
+}
+
+impl ProcessingResult {
+    pub fn is_successful(&self) -> bool {
+        self.invalid_records == 0 && self.total_records > 0
+    }
+
+    pub fn summary(&self) -> String {
+        format!(
+            "Processed {} records ({} valid, {} invalid). Overall mean: {:.4}",
+            self.total_records,
+            self.valid_records,
+            self.invalid_records,
+            self.overall_mean
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = DataRecord::new(1, vec![1.0, 2.0, 3.0]);
+        assert!(valid_record.is_valid());
+
+        let invalid_record = DataRecord::new(0, vec![]);
+        assert!(!invalid_record.is_valid());
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let record = DataRecord::new(1, vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        let stats = record.calculate_statistics().unwrap();
+
+        assert_eq!(stats.mean, 3.0);
+        assert_eq!(stats.variance, 2.0);
+        assert_eq!(stats.min, 1.0);
+        assert_eq!(stats.max, 5.0);
+        assert_eq!(stats.count, 5);
+    }
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+
+        let record1 = DataRecord::new(1, vec![1.0, 2.0, 3.0]);
+        let record2 = DataRecord::new(2, vec![4.0, 5.0, 6.0]);
+
+        assert!(processor.add_record(record1).is_ok());
+        assert!(processor.add_record(record2).is_ok());
+
+        let result = processor.process_all();
+        assert_eq!(result.total_records, 2);
+        assert_eq!(result.valid_records, 2);
+        assert_eq!(result.invalid_records, 0);
+    }
 }
