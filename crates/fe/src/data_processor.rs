@@ -109,3 +109,125 @@ mod tests {
         assert_eq!(names, vec!["Alice", "Bob"]);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    id: u32,
+    name: String,
+    value: f64,
+    metadata: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidData(String),
+    TransformationError(String),
+    ValidationError(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
+            ProcessingError::TransformationError(msg) => write!(f, "Transformation error: {}", msg),
+            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64) -> Self {
+        Self {
+            id,
+            name,
+            value,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ProcessingError> {
+        if self.id == 0 {
+            return Err(ProcessingError::ValidationError("ID cannot be zero".to_string()));
+        }
+        
+        if self.name.is_empty() {
+            return Err(ProcessingError::ValidationError("Name cannot be empty".to_string()));
+        }
+        
+        if self.value.is_nan() || self.value.is_infinite() {
+            return Err(ProcessingError::ValidationError("Value must be a finite number".to_string()));
+        }
+        
+        Ok(())
+    }
+
+    pub fn transform(&mut self, multiplier: f64) -> Result<(), ProcessingError> {
+        if multiplier <= 0.0 {
+            return Err(ProcessingError::TransformationError(
+                "Multiplier must be positive".to_string()
+            ));
+        }
+        
+        self.value *= multiplier;
+        self.metadata.insert(
+            "transformation_applied".to_string(),
+            format!("multiplied by {}", multiplier)
+        );
+        
+        Ok(())
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+
+    pub fn get_metadata(&self, key: &str) -> Option<&String> {
+        self.metadata.get(key)
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord]) -> Result<Vec<DataRecord>, ProcessingError> {
+    let mut processed = Vec::with_capacity(records.len());
+    
+    for record in records {
+        record.validate()?;
+        
+        let mut processed_record = record.clone();
+        processed_record.transform(2.0)?;
+        processed_record.add_metadata(
+            "processing_timestamp".to_string(),
+            chrono::Utc::now().to_rfc3339()
+        );
+        
+        processed.push(processed_record);
+    }
+    
+    Ok(processed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = DataRecord::new(1, "test".to_string(), 10.5);
+        assert!(valid_record.validate().is_ok());
+
+        let invalid_record = DataRecord::new(0, "".to_string(), f64::NAN);
+        assert!(invalid_record.validate().is_err());
+    }
+
+    #[test]
+    fn test_record_transformation() {
+        let mut record = DataRecord::new(1, "test".to_string(), 10.0);
+        assert!(record.transform(2.0).is_ok());
+        assert_eq!(record.value, 20.0);
+        assert!(record.get_metadata("transformation_applied").is_some());
+    }
+}
