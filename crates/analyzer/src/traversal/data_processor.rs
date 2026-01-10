@@ -131,4 +131,95 @@ mod tests {
         processor.clear();
         assert_eq!(processor.get_record_count(), 0);
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub struct DataRecord {
+    id: u32,
+    value: f64,
+    category: String,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Result<Self, &'static str> {
+        if value < 0.0 {
+            return Err("Value cannot be negative");
+        }
+        if category.is_empty() {
+            return Err("Category cannot be empty");
+        }
+        Ok(Self { id, value, category })
+    }
+
+    pub fn calculate_adjusted_value(&self, multiplier: f64) -> f64 {
+        self.value * multiplier
+    }
+}
+
+pub fn process_csv_file(file_path: &str) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+
+    for (line_num, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 3 {
+            return Err(format!("Invalid format at line {}", line_num + 1).into());
+        }
+
+        let id = parts[0].parse::<u32>()?;
+        let value = parts[1].parse::<f64>()?;
+        let category = parts[2].to_string();
+
+        match DataRecord::new(id, value, category) {
+            Ok(record) => records.push(record),
+            Err(e) => eprintln!("Warning: Skipping line {}: {}", line_num + 1, e),
+        }
+    }
+
+    Ok(records)
+}
+
+pub fn filter_records_by_category(records: &[DataRecord], category_filter: &str) -> Vec<&DataRecord> {
+    records
+        .iter()
+        .filter(|record| record.category == category_filter)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_record_creation() {
+        let record = DataRecord::new(1, 42.5, "test".to_string());
+        assert!(record.is_ok());
+        
+        let invalid_record = DataRecord::new(2, -10.0, "test".to_string());
+        assert!(invalid_record.is_err());
+    }
+
+    #[test]
+    fn test_csv_processing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1,100.5,category_a").unwrap();
+        writeln!(temp_file, "2,75.3,category_b").unwrap();
+        writeln!(temp_file, "# This is a comment").unwrap();
+        writeln!(temp_file, "3,200.0,category_a").unwrap();
+
+        let records = process_csv_file(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(records.len(), 3);
+        
+        let filtered = filter_records_by_category(&records, "category_a");
+        assert_eq!(filtered.len(), 2);
+    }
 }
