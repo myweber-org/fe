@@ -161,3 +161,83 @@ mod tests {
         assert_eq!(valid[0], "valid");
     }
 }
+use std::collections::HashSet;
+
+pub struct DataCleaner {
+    dedupe_set: HashSet<String>,
+}
+
+impl DataCleaner {
+    pub fn new() -> Self {
+        DataCleaner {
+            dedupe_set: HashSet::new(),
+        }
+    }
+
+    pub fn normalize_text(&self, text: &str) -> String {
+        text.trim()
+            .to_lowercase()
+            .replace(|c: char| !c.is_alphanumeric() && c != ' ', "")
+            .split_whitespace()
+            .collect::<Vec<&str>>()
+            .join(" ")
+    }
+
+    pub fn deduplicate(&mut self, item: &str) -> bool {
+        let normalized = self.normalize_text(item);
+        if self.dedupe_set.contains(&normalized) {
+            false
+        } else {
+            self.dedupe_set.insert(normalized);
+            true
+        }
+    }
+
+    pub fn batch_process(&mut self, items: Vec<String>) -> Vec<String> {
+        items
+            .into_iter()
+            .filter(|item| self.deduplicate(item))
+            .collect()
+    }
+
+    pub fn get_unique_count(&self) -> usize {
+        self.dedupe_set.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.dedupe_set.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalization() {
+        let cleaner = DataCleaner::new();
+        let result = cleaner.normalize_text("  Hello, World!  ");
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_deduplication() {
+        let mut cleaner = DataCleaner::new();
+        assert!(cleaner.deduplicate("Hello World"));
+        assert!(!cleaner.deduplicate("hello world"));
+        assert!(cleaner.deduplicate("Another Item"));
+    }
+
+    #[test]
+    fn test_batch_processing() {
+        let mut cleaner = DataCleaner::new();
+        let items = vec![
+            "Item One".to_string(),
+            "item one".to_string(),
+            "ITEM TWO".to_string(),
+        ];
+        let result = cleaner.batch_process(items);
+        assert_eq!(result.len(), 2);
+        assert_eq!(cleaner.get_unique_count(), 2);
+    }
+}
