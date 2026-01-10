@@ -1,57 +1,26 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufReader, Read};
+use std::fs;
 use std::path::Path;
 
-type JsonValue = serde_json::Value;
-
-pub fn merge_json_files(file_paths: &[impl AsRef<Path>]) -> Result<JsonValue, Box<dyn std::error::Error>> {
+pub fn merge_json_files(file_paths: &[&str]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let mut merged_map = HashMap::new();
 
-    for path in file_paths {
-        let file = File::open(path.as_ref())?;
-        let mut reader = BufReader::new(file);
-        let mut contents = String::new();
-        reader.read_to_string(&mut contents)?;
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            continue;
+        }
 
-        let json_value: JsonValue = serde_json::from_str(&contents)?;
+        let content = fs::read_to_string(path)?;
+        let json_value: serde_json::Value = serde_json::from_str(&content)?;
 
-        if let JsonValue::Object(obj) = json_value {
+        if let serde_json::Value::Object(obj) = json_value {
             for (key, value) in obj {
                 merged_map.insert(key, value);
             }
-        } else {
-            return Err("Each JSON file must contain a JSON object".into());
         }
     }
 
-    let merged_json = JsonValue::Object(
-        merged_map
-            .into_iter()
-            .map(|(k, v)| (k, v))
-            .collect()
-    );
-
-    Ok(merged_json)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_merge_json_files() {
-        let mut file1 = NamedTempFile::new().unwrap();
-        let mut file2 = NamedTempFile::new().unwrap();
-
-        writeln!(file1, r#"{"a": 1, "b": "test"}"#).unwrap();
-        writeln!(file2, r#"{"c": true, "d": [1,2,3]}"#).unwrap();
-
-        let result = merge_json_files(&[file1.path(), file2.path()]).unwrap();
-        let expected: JsonValue = serde_json::from_str(r#"{"a":1,"b":"test","c":true,"d":[1,2,3]}"#).unwrap();
-
-        assert_eq!(result, expected);
-    }
+    let merged_value = serde_json::to_value(merged_map)?;
+    Ok(merged_value)
 }
