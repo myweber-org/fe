@@ -1,77 +1,65 @@
-use serde_json::{Value, Error};
-use std::collections::HashSet;
+use serde_json::Value;
+use jsonschema::JSONSchema;
 
-pub struct JsonValidator {
-    required_fields: HashSet<String>,
-    allowed_types: HashSet<&'static str>,
-}
-
-impl JsonValidator {
-    pub fn new() -> Self {
-        JsonValidator {
-            required_fields: HashSet::new(),
-            allowed_types: HashSet::from(["string", "number", "boolean", "object", "array"]),
-        }
-    }
-
-    pub fn add_required_field(&mut self, field: &str) {
-        self.required_fields.insert(field.to_string());
-    }
-
-    pub fn validate(&self, json_str: &str) -> Result<Value, ValidationError> {
-        let parsed: Value = serde_json::from_str(json_str)
-            .map_err(|e| ValidationError::ParseError(e.to_string()))?;
-
-        self.validate_structure(&parsed)?;
-        self.validate_required_fields(&parsed)?;
-
-        Ok(parsed)
-    }
-
-    fn validate_structure(&self, value: &Value) -> Result<(), ValidationError> {
-        match value {
-            Value::Object(map) => {
-                for (_, v) in map {
-                    self.validate_structure(v)?;
-                }
-            }
-            Value::Array(arr) => {
-                for item in arr {
-                    self.validate_structure(item)?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn validate_required_fields(&self, value: &Value) -> Result<(), ValidationError> {
-        if let Value::Object(map) = value {
-            for field in &self.required_fields {
-                if !map.contains_key(field) {
-                    return Err(ValidationError::MissingField(field.clone()));
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub enum ValidationError {
-    ParseError(String),
-    MissingField(String),
-    InvalidType(String),
-}
-
-impl std::fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ValidationError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            ValidationError::MissingField(field) => write!(f, "Missing required field: {}", field),
-            ValidationError::InvalidType(msg) => write!(f, "Invalid type: {}", msg),
+pub fn validate_json(schema: &str, data: &str) -> Result<(), Vec<String>> {
+    let schema_value: Value = serde_json::from_str(schema)
+        .map_err(|e| vec![format!("Invalid schema: {}", e)])?;
+    
+    let data_value: Value = serde_json::from_str(data)
+        .map_err(|e| vec![format!("Invalid JSON data: {}", e)])?;
+    
+    let compiled_schema = JSONSchema::compile(&schema_value)
+        .map_err(|e| vec![format!("Schema compilation failed: {}", e)])?;
+    
+    let validation_result = compiled_schema.validate(&data_value);
+    
+    match validation_result {
+        Ok(_) => Ok(()),
+        Err(errors) => {
+            let error_messages: Vec<String> = errors
+                .map(|error| format!("Validation error: {}", error))
+                .collect();
+            Err(error_messages)
         }
     }
 }
 
-impl std::error::Error for ValidationError {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_json() {
+        let schema = r#"
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "age": {"type": "number"}
+            },
+            "required": ["name"]
+        }
+        "#;
+
+        let data = r#"{"name": "Alice", "age": 30}"#;
+        
+        assert!(validate_json(schema, data).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_json() {
+        let schema = r#"
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            },
+            "required": ["name"]
+        }
+        "#;
+
+        let data = r#"{"age": 30}"#;
+        
+        assert!(validate_json(schema, data).is_err());
+    }
+}
