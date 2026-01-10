@@ -121,3 +121,108 @@ mod tests {
         assert_eq!(stats["total_values"], 4.0);
     }
 }
+use std::collections::HashMap;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+impl DataRecord {
+    pub fn new(id: u64, values: Vec<f64>) -> Self {
+        Self {
+            id,
+            values,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.id == 0 {
+            return Err("Invalid record ID".to_string());
+        }
+
+        if self.values.is_empty() {
+            return Err("Empty values array".to_string());
+        }
+
+        for value in &self.values {
+            if value.is_nan() || value.is_infinite() {
+                return Err("Invalid numeric value detected".to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+
+    pub fn get_metadata(&self, key: &str) -> Option<&String> {
+        self.metadata.get(key)
+    }
+}
+
+pub fn normalize_values(values: &[f64]) -> Vec<f64> {
+    if values.is_empty() {
+        return Vec::new();
+    }
+
+    let max_value = values
+        .iter()
+        .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+    if max_value <= 0.0 {
+        return values.to_vec();
+    }
+
+    values
+        .iter()
+        .map(|&v| v / max_value)
+        .collect()
+}
+
+pub fn process_records(records: &[DataRecord]) -> Vec<DataRecord> {
+    records
+        .iter()
+        .filter(|record| record.validate().is_ok())
+        .map(|record| {
+            let mut processed = record.clone();
+            processed.values = normalize_values(&record.values);
+            processed
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = DataRecord::new(1, vec![1.0, 2.0, 3.0]);
+        assert!(valid_record.validate().is_ok());
+
+        let invalid_record = DataRecord::new(0, vec![1.0, 2.0]);
+        assert!(invalid_record.validate().is_err());
+    }
+
+    #[test]
+    fn test_normalize_values() {
+        let values = vec![1.0, 2.0, 3.0, 4.0];
+        let normalized = normalize_values(&values);
+        assert_eq!(normalized, vec![0.25, 0.5, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn test_metadata_operations() {
+        let mut record = DataRecord::new(1, vec![1.0]);
+        record.add_metadata("source".to_string(), "test".to_string());
+        
+        assert_eq!(record.get_metadata("source"), Some(&"test".to_string()));
+        assert_eq!(record.get_metadata("nonexistent"), None);
+    }
+}
