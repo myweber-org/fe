@@ -1,151 +1,130 @@
 
-use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+pub struct ValidationError {
+    details: String,
+}
+
+impl ValidationError {
+    fn new(msg: &str) -> ValidationError {
+        ValidationError {
+            details: msg.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.details)
+    }
+}
+
+impl Error for ValidationError {
+    fn description(&self) -> &str {
+        &self.details
+    }
+}
+
 pub struct DataRecord {
     pub id: u32,
-    pub name: String,
     pub value: f64,
-    pub tags: Vec<String>,
+    pub timestamp: i64,
 }
-
-#[derive(Debug)]
-pub enum DataError {
-    InvalidId,
-    EmptyName,
-    NegativeValue,
-    DuplicateTag,
-}
-
-impl fmt::Display for DataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DataError::InvalidId => write!(f, "ID must be greater than zero"),
-            DataError::EmptyName => write!(f, "Name cannot be empty"),
-            DataError::NegativeValue => write!(f, "Value cannot be negative"),
-            DataError::DuplicateTag => write!(f, "Duplicate tags are not allowed"),
-        }
-    }
-}
-
-impl Error for DataError {}
 
 impl DataRecord {
-    pub fn new(id: u32, name: String, value: f64, tags: Vec<String>) -> Result<Self, DataError> {
+    pub fn new(id: u32, value: f64, timestamp: i64) -> Result<DataRecord, ValidationError> {
         if id == 0 {
-            return Err(DataError::InvalidId);
+            return Err(ValidationError::new("ID cannot be zero"));
         }
-        if name.trim().is_empty() {
-            return Err(DataError::EmptyName);
+        if value < 0.0 || value > 1000.0 {
+            return Err(ValidationError::new("Value must be between 0 and 1000"));
         }
-        if value < 0.0 {
-            return Err(DataError::NegativeValue);
+        if timestamp < 0 {
+            return Err(ValidationError::new("Timestamp cannot be negative"));
         }
-        
-        let mut seen_tags = HashMap::new();
-        for tag in &tags {
-            if seen_tags.contains_key(tag) {
-                return Err(DataError::DuplicateTag);
-            }
-            seen_tags.insert(tag.clone(), true);
-        }
-        
-        Ok(Self {
+
+        Ok(DataRecord {
             id,
-            name,
             value,
-            tags,
+            timestamp,
         })
     }
-    
-    pub fn transform(&self, multiplier: f64) -> Self {
-        Self {
-            id: self.id,
-            name: self.name.clone(),
-            value: self.value * multiplier,
-            tags: self.tags.clone(),
+
+    pub fn transform(&self, multiplier: f64) -> Result<f64, ValidationError> {
+        if multiplier <= 0.0 {
+            return Err(ValidationError::new("Multiplier must be positive"));
         }
-    }
-    
-    pub fn add_tag(&mut self, tag: String) -> Result<(), DataError> {
-        if self.tags.contains(&tag) {
-            return Err(DataError::DuplicateTag);
+
+        let transformed = self.value * multiplier;
+        if transformed > 5000.0 {
+            return Err(ValidationError::new("Transformed value exceeds maximum limit"));
         }
-        self.tags.push(tag);
-        Ok(())
-    }
-    
-    pub fn calculate_score(&self) -> f64 {
-        let tag_bonus = self.tags.len() as f64 * 0.5;
-        self.value + tag_bonus
+
+        Ok(transformed)
     }
 }
 
-pub fn process_records(records: Vec<DataRecord>) -> Vec<DataRecord> {
+pub fn process_records(records: &[DataRecord]) -> Vec<Result<f64, ValidationError>> {
     records
-        .into_iter()
-        .filter(|r| r.value > 10.0)
-        .map(|r| r.transform(1.1))
+        .iter()
+        .map(|record| record.transform(2.5))
         .collect()
 }
 
-pub fn find_best_record(records: &[DataRecord]) -> Option<&DataRecord> {
-    records.iter().max_by(|a, b| {
-        a.calculate_score()
-            .partial_cmp(&b.calculate_score())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    })
+pub fn filter_valid_results(
+    results: &[Result<f64, ValidationError>],
+) -> (Vec<f64>, Vec<ValidationError>) {
+    let mut valid_values = Vec::new();
+    let mut errors = Vec::new();
+
+    for result in results {
+        match result {
+            Ok(value) => valid_values.push(*value),
+            Err(e) => errors.push(ValidationError::new(&e.details)),
+        }
+    }
+
+    (valid_values, errors)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_valid_record_creation() {
-        let record = DataRecord::new(
-            1,
-            "Test Record".to_string(),
-            15.5,
-            vec!["tag1".to_string(), "tag2".to_string()],
-        ).unwrap();
-        
+        let record = DataRecord::new(1, 100.0, 1625097600);
+        assert!(record.is_ok());
+        let record = record.unwrap();
         assert_eq!(record.id, 1);
-        assert_eq!(record.name, "Test Record");
-        assert_eq!(record.value, 15.5);
-        assert_eq!(record.tags.len(), 2);
+        assert_eq!(record.value, 100.0);
+        assert_eq!(record.timestamp, 1625097600);
     }
-    
+
     #[test]
-    fn test_invalid_id() {
-        let result = DataRecord::new(
-            0,
-            "Test".to_string(),
-            10.0,
-            vec![],
+    fn test_invalid_record_id() {
+        let record = DataRecord::new(0, 100.0, 1625097600);
+        assert!(record.is_err());
+        assert_eq!(
+            record.unwrap_err().to_string(),
+            "ID cannot be zero"
         );
-        assert!(matches!(result, Err(DataError::InvalidId)));
     }
-    
+
     #[test]
-    fn test_transform() {
-        let record = DataRecord::new(1, "Test".to_string(), 10.0, vec![]).unwrap();
-        let transformed = record.transform(2.0);
-        assert_eq!(transformed.value, 20.0);
+    fn test_record_transformation() {
+        let record = DataRecord::new(1, 100.0, 1625097600).unwrap();
+        let result = record.transform(2.0);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 200.0);
     }
-    
+
     #[test]
-    fn test_calculate_score() {
-        let record = DataRecord::new(
-            1,
-            "Test".to_string(),
-            10.0,
-            vec!["a".to_string(), "b".to_string(), "c".to_string()],
-        ).unwrap();
-        
-        let score = record.calculate_score();
-        assert_eq!(score, 11.5); // 10.0 + (3 * 0.5)
+    fn test_invalid_transformation() {
+        let record = DataRecord::new(1, 3000.0, 1625097600).unwrap();
+        let result = record.transform(2.0);
+        assert!(result.is_err());
     }
 }
