@@ -386,3 +386,124 @@ mod tests {
         assert!((average - 85.333).abs() < 0.001);
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
+        }
+    }
+
+    pub fn process_numeric_data(&mut self, key: &str, values: &[f64]) -> Result<Vec<f64>, String> {
+        if values.is_empty() {
+            return Err("Empty data array provided".to_string());
+        }
+
+        if let Some(cached) = self.cache.get(key) {
+            return Ok(cached.clone());
+        }
+
+        let validated = self.validate_data(values)?;
+        let normalized = self.normalize_data(&validated);
+        let transformed = self.apply_transformations(&normalized);
+
+        self.cache.insert(key.to_string(), transformed.clone());
+        Ok(transformed)
+    }
+
+    fn validate_data(&self, values: &[f64]) -> Result<Vec<f64>, String> {
+        let mut valid_values = Vec::new();
+        
+        for &value in values {
+            if value.is_finite() {
+                valid_values.push(value);
+            } else {
+                return Err(format!("Invalid numeric value detected: {}", value));
+            }
+        }
+
+        if valid_values.len() < 2 {
+            return Err("Insufficient valid data points".to_string());
+        }
+
+        Ok(valid_values)
+    }
+
+    fn normalize_data(&self, values: &[f64]) -> Vec<f64> {
+        let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        
+        if (max - min).abs() < f64::EPSILON {
+            return vec![0.5; values.len()];
+        }
+
+        values.iter()
+            .map(|&v| (v - min) / (max - min))
+            .collect()
+    }
+
+    fn apply_transformations(&self, values: &[f64]) -> Vec<f64> {
+        let mean = values.iter().sum::<f64>() / values.len() as f64;
+        let variance = values.iter()
+            .map(|&v| (v - mean).powi(2))
+            .sum::<f64>() / values.len() as f64;
+        
+        let std_dev = variance.sqrt();
+        
+        if std_dev.abs() < f64::EPSILON {
+            return values.to_vec();
+        }
+
+        values.iter()
+            .map(|&v| (v - mean) / std_dev)
+            .collect()
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn get_cache_stats(&self) -> (usize, usize) {
+        let total_entries = self.cache.len();
+        let total_values = self.cache.values()
+            .map(|v| v.len())
+            .sum();
+        
+        (total_entries, total_values)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        let test_data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        
+        let result = processor.process_numeric_data("test", &test_data);
+        assert!(result.is_ok());
+        
+        let processed = result.unwrap();
+        assert_eq!(processed.len(), test_data.len());
+        
+        let stats = processor.get_cache_stats();
+        assert_eq!(stats.0, 1);
+        assert_eq!(stats.1, 5);
+    }
+
+    #[test]
+    fn test_invalid_data() {
+        let mut processor = DataProcessor::new();
+        let invalid_data = vec![1.0, f64::NAN, 3.0];
+        
+        let result = processor.process_numeric_data("invalid", &invalid_data);
+        assert!(result.is_err());
+    }
+}
