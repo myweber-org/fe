@@ -1,65 +1,53 @@
-use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, Key, Nonce,
-};
-use std::fs::{self, File};
-use std::io::{Read, Write};
 
-const NONCE_SIZE: usize = 12;
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
 
-pub fn encrypt_file(input_path: &str, output_path: &str, password: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file = File::open(input_path)?;
-    let mut plaintext = Vec::new();
-    file.read_to_end(&mut plaintext)?;
+const DEFAULT_KEY: u8 = 0x55;
 
-    let key = derive_key(password);
-    let cipher = Aes256Gcm::new(&key);
-    let nonce = Nonce::from_slice(&generate_nonce());
+fn xor_cipher(data: &mut [u8], key: u8) {
+    for byte in data.iter_mut() {
+        *byte ^= key;
+    }
+}
 
-    let ciphertext = cipher.encrypt(nonce, plaintext.as_ref())
-        .map_err(|e| format!("Encryption failed: {}", e))?;
-
-    let mut output = File::create(output_path)?;
-    output.write_all(nonce)?;
-    output.write_all(&ciphertext)?;
-
+fn process_file(input_path: &Path, output_path: &Path, key: u8) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    
+    xor_cipher(&mut buffer, key);
+    
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&buffer)?;
+    
     Ok(())
 }
 
-pub fn decrypt_file(input_path: &str, output_path: &str, password: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file = File::open(input_path)?;
-    let mut data = Vec::new();
-    file.read_to_end(&mut data)?;
-
-    if data.len() < NONCE_SIZE {
-        return Err("File too short to contain nonce".into());
+fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    
+    if args.len() != 3 {
+        eprintln!("Usage: {} <input_file> <output_file>", args[0]);
+        std::process::exit(1);
     }
-
-    let (nonce_slice, ciphertext) = data.split_at(NONCE_SIZE);
-    let nonce = Nonce::from_slice(nonce_slice);
-    let key = derive_key(password);
-    let cipher = Aes256Gcm::new(&key);
-
-    let plaintext = cipher.decrypt(nonce, ciphertext)
-        .map_err(|e| format!("Decryption failed: {}", e))?;
-
-    let mut output = File::create(output_path)?;
-    output.write_all(&plaintext)?;
-
-    Ok(())
-}
-
-fn derive_key(password: &str) -> Key<Aes256Gcm> {
-    let mut key = [0u8; 32];
-    let bytes = password.as_bytes();
-    for (i, &byte) in bytes.iter().cycle().take(32).enumerate() {
-        key[i] = byte;
+    
+    let input_path = Path::new(&args[1]);
+    let output_path = Path::new(&args[2]);
+    
+    if !input_path.exists() {
+        eprintln!("Error: Input file does not exist");
+        std::process::exit(1);
     }
-    *Key::<Aes256Gcm>::from_slice(&key)
-}
-
-fn generate_nonce() -> [u8; NONCE_SIZE] {
-    let mut nonce = [0u8; NONCE_SIZE];
-    OsRng.fill_bytes(&mut nonce);
-    nonce
+    
+    match process_file(input_path, output_path, DEFAULT_KEY) {
+        Ok(_) => {
+            println!("File processed successfully");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Error processing file: {}", e);
+            Err(e)
+        }
+    }
 }
