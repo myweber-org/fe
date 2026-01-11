@@ -1,46 +1,37 @@
 use std::collections::HashSet;
+use std::hash::Hash;
 
-pub struct DataCleaner {
-    dedupe_set: HashSet<String>,
-    normalize_case: bool,
+pub fn deduplicate<T: Eq + Hash + Clone>(items: Vec<T>) -> Vec<T> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    
+    for item in items {
+        if seen.insert(item.clone()) {
+            result.push(item);
+        }
+    }
+    
+    result
 }
 
-impl DataCleaner {
-    pub fn new(normalize_case: bool) -> Self {
-        DataCleaner {
-            dedupe_set: HashSet::new(),
-            normalize_case,
-        }
-    }
+pub fn normalize_strings(strings: Vec<String>) -> Vec<String> {
+    strings
+        .into_iter()
+        .map(|s| s.trim().to_lowercase())
+        .collect()
+}
 
-    pub fn process(&mut self, input: &str) -> Option<String> {
-        let processed = if self.normalize_case {
-            input.to_lowercase()
-        } else {
-            input.to_string()
-        };
+pub fn remove_empty_strings(strings: Vec<String>) -> Vec<String> {
+    strings
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect()
+}
 
-        let trimmed = processed.trim().to_string();
-
-        if trimmed.is_empty() {
-            return None;
-        }
-
-        if self.dedupe_set.contains(&trimmed) {
-            return None;
-        }
-
-        self.dedupe_set.insert(trimmed.clone());
-        Some(trimmed)
-    }
-
-    pub fn reset(&mut self) {
-        self.dedupe_set.clear();
-    }
-
-    pub fn processed_count(&self) -> usize {
-        self.dedupe_set.len()
-    }
+pub fn clean_string_data(strings: Vec<String>) -> Vec<String> {
+    let normalized = normalize_strings(strings);
+    let non_empty = remove_empty_strings(normalized);
+    deduplicate(non_empty)
 }
 
 #[cfg(test)]
@@ -48,33 +39,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_deduplication() {
-        let mut cleaner = DataCleaner::new(false);
-        assert_eq!(cleaner.process("hello"), Some("hello".to_string()));
-        assert_eq!(cleaner.process("hello"), None);
-        assert_eq!(cleaner.process("world"), Some("world".to_string()));
-        assert_eq!(cleaner.processed_count(), 2);
+    fn test_deduplicate() {
+        let input = vec![1, 2, 2, 3, 1, 4];
+        let result = deduplicate(input);
+        assert_eq!(result, vec![1, 2, 3, 4]);
     }
 
     #[test]
-    fn test_case_normalization() {
-        let mut cleaner = DataCleaner::new(true);
-        assert_eq!(cleaner.process("HELLO"), Some("hello".to_string()));
-        assert_eq!(cleaner.process("Hello"), None);
-        assert_eq!(cleaner.process("WORLD"), Some("world".to_string()));
+    fn test_normalize_strings() {
+        let input = vec!["  HELLO  ".to_string(), "World".to_string()];
+        let result = normalize_strings(input);
+        assert_eq!(result, vec!["hello", "world"]);
     }
 
     #[test]
-    fn test_whitespace_trimming() {
-        let mut cleaner = DataCleaner::new(false);
-        assert_eq!(cleaner.process("  test  "), Some("test".to_string()));
-        assert_eq!(cleaner.process("test"), None);
-    }
-
-    #[test]
-    fn test_empty_input() {
-        let mut cleaner = DataCleaner::new(false);
-        assert_eq!(cleaner.process(""), None);
-        assert_eq!(cleaner.process("   "), None);
+    fn test_clean_string_data() {
+        let input = vec![
+            "  Apple  ".to_string(),
+            "apple".to_string(),
+            "".to_string(),
+            "Banana".to_string(),
+            "  banana  ".to_string(),
+        ];
+        let result = clean_string_data(input);
+        assert_eq!(result, vec!["apple", "banana"]);
     }
 }
