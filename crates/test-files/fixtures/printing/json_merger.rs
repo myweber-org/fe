@@ -108,4 +108,69 @@ pub fn write_merged_json(output_path: &str, json_value: &JsonValue) -> Result<()
     let json_string = serde_json::to_string_pretty(json_value)?;
     fs::write(output_path, json_string)?;
     Ok(())
+}use serde_json::{Value, Map};
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files(input_paths: &[&str], output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged_array = Vec::new();
+    let mut seen_ids = HashSet::new();
+
+    for input_path in input_paths {
+        let content = fs::read_to_string(input_path)?;
+        let json_data: Value = serde_json::from_str(&content)?;
+
+        if let Value::Array(items) = json_data {
+            for item in items {
+                if let Some(obj) = item.as_object() {
+                    if let Some(id_value) = obj.get("id") {
+                        if let Some(id_str) = id_value.as_str() {
+                            if !seen_ids.contains(id_str) {
+                                seen_ids.insert(id_str.to_string());
+                                merged_array.push(item);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let output_value = Value::Array(merged_array);
+    let output_json = serde_json::to_string_pretty(&output_value)?;
+    fs::write(output_path, output_json)?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_json_files() {
+        let json1 = r#"[{"id": "1", "name": "Alice"}, {"id": "2", "name": "Bob"}]"#;
+        let json2 = r#"[{"id": "2", "name": "Bob"}, {"id": "3", "name": "Charlie"}]"#;
+
+        let file1 = NamedTempFile::new().unwrap();
+        let file2 = NamedTempFile::new().unwrap();
+        let output_file = NamedTempFile::new().unwrap();
+
+        fs::write(file1.path(), json1).unwrap();
+        fs::write(file2.path(), json2).unwrap();
+
+        let paths = [file1.path().to_str().unwrap(), file2.path().to_str().unwrap()];
+        merge_json_files(&paths, output_file.path().to_str().unwrap()).unwrap();
+
+        let content = fs::read_to_string(output_file.path()).unwrap();
+        let parsed: Value = serde_json::from_str(&content).unwrap();
+
+        if let Value::Array(arr) = parsed {
+            assert_eq!(arr.len(), 3);
+        } else {
+            panic!("Expected JSON array");
+        }
+    }
 }
