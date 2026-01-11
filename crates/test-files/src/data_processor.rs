@@ -343,3 +343,160 @@ mod tests {
         assert_eq!(processor.count_records(), 0);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+    pub valid: bool,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: &str) -> Self {
+        let valid = value >= 0.0 && value <= 1000.0;
+        DataRecord {
+            id,
+            value,
+            category: category.to_string(),
+            valid,
+        }
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() || line.starts_with('#') {
+                continue;
+            }
+            
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 3 {
+                eprintln!("Warning: Invalid format at line {}", line_num + 1);
+                continue;
+            }
+            
+            let id = match parts[0].parse::<u32>() {
+                Ok(id) => id,
+                Err(_) => {
+                    eprintln!("Warning: Invalid ID at line {}", line_num + 1);
+                    continue;
+                }
+            };
+            
+            let value = match parts[1].parse::<f64>() {
+                Ok(value) => value,
+                Err(_) => {
+                    eprintln!("Warning: Invalid value at line {}", line_num + 1);
+                    continue;
+                }
+            };
+            
+            let category = parts[2].trim().to_string();
+            
+            self.records.push(DataRecord::new(id, value, &category));
+        }
+        
+        Ok(self.records.len())
+    }
+
+    pub fn filter_valid(&self) -> Vec<&DataRecord> {
+        self.records.iter().filter(|r| r.valid).collect()
+    }
+
+    pub fn calculate_average(&self) -> Option<f64> {
+        let valid_records: Vec<&DataRecord> = self.filter_valid();
+        if valid_records.is_empty() {
+            return None;
+        }
+        
+        let sum: f64 = valid_records.iter().map(|r| r.value).sum();
+        Some(sum / valid_records.len() as f64)
+    }
+
+    pub fn group_by_category(&self) -> std::collections::HashMap<String, Vec<&DataRecord>> {
+        let mut groups = std::collections::HashMap::new();
+        
+        for record in &self.records {
+            groups
+                .entry(record.category.clone())
+                .or_insert_with(Vec::new)
+                .push(record);
+        }
+        
+        groups
+    }
+
+    pub fn count_records(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn get_records(&self) -> &[DataRecord] {
+        &self.records
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_record_creation() {
+        let record = DataRecord::new(1, 42.5, "test");
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 42.5);
+        assert_eq!(record.category, "test");
+        assert!(record.valid);
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        let record = DataRecord::new(2, -10.0, "test");
+        assert!(!record.valid);
+    }
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        assert_eq!(processor.count_records(), 0);
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1,100.0,category_a").unwrap();
+        writeln!(temp_file, "2,200.0,category_b").unwrap();
+        writeln!(temp_file, "3,300.0,category_a").unwrap();
+        
+        let result = processor.load_from_file(temp_file.path());
+        assert!(result.is_ok());
+        assert_eq!(processor.count_records(), 3);
+        
+        let average = processor.calculate_average();
+        assert!(average.is_some());
+        assert_eq!(average.unwrap(), 200.0);
+        
+        let groups = processor.group_by_category();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups.get("category_a").unwrap().len(), 2);
+        assert_eq!(groups.get("category_b").unwrap().len(), 1);
+    }
+}
