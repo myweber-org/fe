@@ -104,4 +104,120 @@ mod tests {
         assert_eq!(config.get("UNSET_VAR"), Some(&"${NONEXISTENT}".to_string()));
         assert_eq!(config.get("MIXED"), Some(&"prefix_production_suffix".to_string()));
     }
+}use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub max_connections: usize,
+    pub enable_tls: bool,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig {
+            host: String::from("127.0.0.1"),
+            port: 8080,
+            max_connections: 100,
+            enable_tls: false,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ConfigError {
+    FileNotFound(String),
+    ParseError(String),
+    ValidationError(String),
+}
+
+pub fn load_config<P: AsRef<Path>>(path: P) -> Result<ServerConfig, ConfigError> {
+    let path_ref = path.as_ref();
+    
+    if !path_ref.exists() {
+        return Err(ConfigError::FileNotFound(
+            path_ref.to_string_lossy().to_string()
+        ));
+    }
+
+    let content = fs::read_to_string(path_ref)
+        .map_err(|e| ConfigError::ParseError(e.to_string()))?;
+
+    let mut config: ServerConfig = serde_yaml::from_str(&content)
+        .map_err(|e| ConfigError::ParseError(e.to_string()))?;
+
+    validate_config(&mut config)?;
+    
+    Ok(config)
+}
+
+fn validate_config(config: &mut ServerConfig) -> Result<(), ConfigError> {
+    if config.port == 0 {
+        return Err(ConfigError::ValidationError(
+            "Port cannot be 0".to_string()
+        ));
+    }
+
+    if config.max_connections == 0 {
+        config.max_connections = ServerConfig::default().max_connections;
+    }
+
+    if config.host.trim().is_empty() {
+        config.host = ServerConfig::default().host;
+    }
+
+    Ok(())
+}
+
+pub fn save_config<P: AsRef<Path>>(config: &ServerConfig, path: P) -> Result<(), ConfigError> {
+    let yaml = serde_yaml::to_string(config)
+        .map_err(|e| ConfigError::ParseError(e.to_string()))?;
+
+    fs::write(path, yaml)
+        .map_err(|e| ConfigError::ParseError(e.to_string()))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_default_config() {
+        let config = ServerConfig::default();
+        assert_eq!(config.host, "127.0.0.1");
+        assert_eq!(config.port, 8080);
+        assert_eq!(config.max_connections, 100);
+        assert!(!config.enable_tls);
+    }
+
+    #[test]
+    fn test_save_and_load_config() {
+        let mut config = ServerConfig::default();
+        config.port = 9000;
+        config.enable_tls = true;
+
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        save_config(&config, path).unwrap();
+        let loaded_config = load_config(path).unwrap();
+
+        assert_eq!(loaded_config.port, 9000);
+        assert!(loaded_config.enable_tls);
+    }
+
+    #[test]
+    fn test_validation() {
+        let mut config = ServerConfig::default();
+        config.port = 0;
+        
+        let result = validate_config(&mut config);
+        assert!(matches!(result, Err(ConfigError::ValidationError(_))));
+    }
 }
