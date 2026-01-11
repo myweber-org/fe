@@ -454,3 +454,158 @@ mod tests {
         assert_eq!(processor.calculate_average(), 0.0);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidId,
+    InvalidValue,
+    EmptyName,
+    DuplicateTag,
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidId => write!(f, "ID must be greater than zero"),
+            ProcessingError::InvalidValue => write!(f, "Value must be between 0.0 and 1000.0"),
+            ProcessingError::EmptyName => write!(f, "Name cannot be empty"),
+            ProcessingError::DuplicateTag => write!(f, "Duplicate tags are not allowed"),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64, tags: Vec<String>) -> Result<Self, ProcessingError> {
+        if id == 0 {
+            return Err(ProcessingError::InvalidId);
+        }
+        
+        if name.trim().is_empty() {
+            return Err(ProcessingError::EmptyName);
+        }
+        
+        if value < 0.0 || value > 1000.0 {
+            return Err(ProcessingError::InvalidValue);
+        }
+        
+        let mut seen_tags = HashMap::new();
+        for tag in &tags {
+            if seen_tags.contains_key(tag) {
+                return Err(ProcessingError::DuplicateTag);
+            }
+            seen_tags.insert(tag.clone(), true);
+        }
+        
+        Ok(DataRecord {
+            id,
+            name,
+            value,
+            tags,
+        })
+    }
+    
+    pub fn normalize_value(&mut self) {
+        self.value = (self.value * 100.0).round() / 100.0;
+    }
+    
+    pub fn add_tag(&mut self, tag: String) -> Result<(), ProcessingError> {
+        if self.tags.contains(&tag) {
+            return Err(ProcessingError::DuplicateTag);
+        }
+        self.tags.push(tag);
+        Ok(())
+    }
+    
+    pub fn calculate_score(&self) -> f64 {
+        let base_score = self.value / 10.0;
+        let tag_bonus = self.tags.len() as f64 * 0.5;
+        base_score + tag_bonus
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord]) -> Vec<Result<f64, ProcessingError>> {
+    records.iter_mut().map(|record| {
+        record.normalize_value();
+        if record.value > 900.0 {
+            Err(ProcessingError::InvalidValue)
+        } else {
+            Ok(record.calculate_score())
+        }
+    }).collect()
+}
+
+pub fn filter_records_by_threshold(records: &[DataRecord], threshold: f64) -> Vec<&DataRecord> {
+    records.iter()
+        .filter(|record| record.value >= threshold)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(
+            1,
+            "Test Record".to_string(),
+            500.0,
+            vec!["tag1".to_string(), "tag2".to_string()]
+        ).unwrap();
+        
+        assert_eq!(record.id, 1);
+        assert_eq!(record.name, "Test Record");
+        assert_eq!(record.value, 500.0);
+        assert_eq!(record.tags.len(), 2);
+    }
+    
+    #[test]
+    fn test_invalid_id() {
+        let result = DataRecord::new(
+            0,
+            "Test".to_string(),
+            100.0,
+            vec![]
+        );
+        
+        assert!(matches!(result, Err(ProcessingError::InvalidId)));
+    }
+    
+    #[test]
+    fn test_duplicate_tags() {
+        let result = DataRecord::new(
+            1,
+            "Test".to_string(),
+            100.0,
+            vec!["tag1".to_string(), "tag1".to_string()]
+        );
+        
+        assert!(matches!(result, Err(ProcessingError::DuplicateTag)));
+    }
+    
+    #[test]
+    fn test_calculate_score() {
+        let record = DataRecord::new(
+            1,
+            "Test".to_string(),
+            500.0,
+            vec!["tag1".to_string(), "tag2".to_string(), "tag3".to_string()]
+        ).unwrap();
+        
+        let score = record.calculate_score();
+        assert_eq!(score, 50.0 + 1.5);
+    }
+}
