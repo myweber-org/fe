@@ -1,45 +1,44 @@
-
 use std::collections::HashSet;
 
 pub struct DataCleaner {
-    pub remove_duplicates: bool,
-    pub normalize_whitespace: bool,
-    pub trim_strings: bool,
+    dedupe_set: HashSet<String>,
 }
 
 impl DataCleaner {
     pub fn new() -> Self {
         DataCleaner {
-            remove_duplicates: true,
-            normalize_whitespace: true,
-            trim_strings: true,
+            dedupe_set: HashSet::new(),
         }
     }
 
-    pub fn clean_data(&self, data: Vec<String>) -> Vec<String> {
-        let mut processed_data = data;
+    pub fn normalize_string(&self, input: &str) -> String {
+        input.trim().to_lowercase()
+    }
 
-        if self.trim_strings {
-            processed_data = processed_data
-                .into_iter()
-                .map(|s| s.trim().to_string())
-                .collect();
+    pub fn deduplicate(&mut self, item: &str) -> bool {
+        let normalized = self.normalize_string(item);
+        if self.dedupe_set.contains(&normalized) {
+            false
+        } else {
+            self.dedupe_set.insert(normalized);
+            true
         }
+    }
 
-        if self.normalize_whitespace {
-            processed_data = processed_data
-                .into_iter()
-                .map(|s| s.split_whitespace().collect::<Vec<&str>>().join(" "))
-                .collect();
-        }
+    pub fn clean_list(&mut self, items: Vec<&str>) -> Vec<String> {
+        items
+            .iter()
+            .filter(|&&item| self.deduplicate(item))
+            .map(|&item| self.normalize_string(item))
+            .collect()
+    }
 
-        if self.remove_duplicates {
-            let unique_set: HashSet<String> = processed_data.into_iter().collect();
-            processed_data = unique_set.into_iter().collect();
-        }
+    pub fn reset(&mut self) {
+        self.dedupe_set.clear();
+    }
 
-        processed_data.sort();
-        processed_data
+    pub fn get_unique_count(&self) -> usize {
+        self.dedupe_set.len()
     }
 }
 
@@ -48,30 +47,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_clean_data() {
+    fn test_normalization() {
         let cleaner = DataCleaner::new();
-        let input = vec![
-            "  hello  world  ".to_string(),
-            "hello world".to_string(),
-            "foo   bar".to_string(),
-            "foo bar".to_string(),
-        ];
-
-        let result = cleaner.clean_data(input);
-        assert_eq!(result, vec!["foo bar", "hello world"]);
+        assert_eq!(cleaner.normalize_string("  HELLO World  "), "hello world");
     }
 
     #[test]
-    fn test_without_duplicate_removal() {
+    fn test_deduplication() {
         let mut cleaner = DataCleaner::new();
-        cleaner.remove_duplicates = false;
-        
-        let input = vec![
-            "hello".to_string(),
-            "hello".to_string(),
-        ];
+        assert!(cleaner.deduplicate("apple"));
+        assert!(!cleaner.deduplicate("APPLE"));
+        assert!(cleaner.deduplicate("banana"));
+        assert_eq!(cleaner.get_unique_count(), 2);
+    }
 
-        let result = cleaner.clean_data(input);
-        assert_eq!(result, vec!["hello", "hello"]);
+    #[test]
+    fn test_clean_list() {
+        let mut cleaner = DataCleaner::new();
+        let items = vec!["cat", "DOG", "  Cat  ", "dog", "fish"];
+        let cleaned = cleaner.clean_list(items);
+        assert_eq!(cleaned, vec!["cat", "dog", "fish"]);
+        assert_eq!(cleaner.get_unique_count(), 3);
     }
 }
