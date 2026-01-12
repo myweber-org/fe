@@ -321,4 +321,107 @@ mod tests {
         let filtered = processor.filter_outliers(1.5);
         assert_eq!(filtered.len(), 5);
     }
+}use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+pub struct DataProcessor {
+    records: Vec<Record>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let mut rdr = Reader::from_reader(file);
+        
+        for result in rdr.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
+        }
+        
+        Ok(())
+    }
+
+    pub fn filter_by_value(&self, threshold: f64) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|record| record.value >= threshold)
+            .collect()
+    }
+
+    pub fn get_active_records(&self) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|record| record.active)
+            .collect()
+    }
+
+    pub fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+        
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    pub fn save_filtered_to_csv(&self, file_path: &str, threshold: f64) -> Result<(), Box<dyn Error>> {
+        let filtered = self.filter_by_value(threshold);
+        let file = File::create(file_path)?;
+        let mut wtr = Writer::from_writer(file);
+
+        for record in filtered {
+            wtr.serialize(record)?;
+        }
+
+        wtr.flush()?;
+        Ok(())
+    }
+
+    pub fn count_records(&self) -> usize {
+        self.records.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        assert_eq!(processor.count_records(), 0);
+        
+        let temp_file = NamedTempFile::new().unwrap();
+        let test_data = "id,name,value,active\n1,test1,10.5,true\n2,test2,5.0,false\n";
+        std::fs::write(temp_file.path(), test_data).unwrap();
+        
+        processor.load_from_csv(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(processor.count_records(), 2);
+        
+        let filtered = processor.filter_by_value(8.0);
+        assert_eq!(filtered.len(), 1);
+        
+        let active = processor.get_active_records();
+        assert_eq!(active.len(), 1);
+        
+        let avg = processor.calculate_average();
+        assert_eq!(avg, Some(7.75));
+    }
 }
