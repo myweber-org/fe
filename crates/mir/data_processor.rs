@@ -1,133 +1,113 @@
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use thiserror::Error;
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataRecord {
-    pub id: u64,
-    pub timestamp: i64,
-    pub values: Vec<f64>,
-    pub metadata: HashMap<String, String>,
+    id: u32,
+    value: f64,
+    timestamp: String,
 }
 
-#[derive(Debug, Error)]
-pub enum ProcessingError {
-    #[error("Invalid data format")]
-    InvalidFormat,
-    #[error("Data validation failed: {0}")]
-    ValidationFailed(String),
-    #[error("Transformation error: {0}")]
-    TransformationError(String),
+impl DataRecord {
+    pub fn new(id: u32, value: f64, timestamp: &str) -> Result<Self, String> {
+        if value < 0.0 {
+            return Err("Value cannot be negative".to_string());
+        }
+        if timestamp.is_empty() {
+            return Err("Timestamp cannot be empty".to_string());
+        }
+        Ok(Self {
+            id,
+            value,
+            timestamp: timestamp.to_string(),
+        })
+    }
+
+    pub fn calculate_adjusted_value(&self, multiplier: f64) -> f64 {
+        self.value * multiplier
+    }
 }
 
-pub struct DataProcessor {
-    validation_threshold: f64,
-    transformation_factor: f64,
+pub fn load_records_from_csv(file_path: &Path) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let mut rdr = csv::Reader::from_reader(file);
+    let mut records = Vec::new();
+
+    for result in rdr.deserialize() {
+        let raw_record: (u32, f64, String) = result?;
+        match DataRecord::new(raw_record.0, raw_record.1, &raw_record.2) {
+            Ok(record) => records.push(record),
+            Err(e) => eprintln!("Skipping invalid record: {}", e),
+        }
+    }
+
+    Ok(records)
 }
 
-impl DataProcessor {
-    pub fn new(validation_threshold: f64, transformation_factor: f64) -> Self {
-        DataProcessor {
-            validation_threshold,
-            transformation_factor,
-        }
+pub fn process_records(records: &[DataRecord]) -> (f64, f64, usize) {
+    let count = records.len();
+    if count == 0 {
+        return (0.0, 0.0, 0);
     }
 
-    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
-        if record.values.is_empty() {
-            return Err(ProcessingError::ValidationFailed(
-                "Empty values array".to_string(),
-            ));
-        }
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let avg = sum / count as f64;
+    let max = records
+        .iter()
+        .map(|r| r.value)
+        .fold(f64::NEG_INFINITY, f64::max);
 
-        for value in &record.values {
-            if value.is_nan() || value.is_infinite() {
-                return Err(ProcessingError::ValidationFailed(
-                    "Invalid numeric value".to_string(),
-                ));
-            }
-
-            if value.abs() > self.validation_threshold {
-                return Err(ProcessingError::ValidationFailed(format!(
-                    "Value {} exceeds threshold {}",
-                    value, self.validation_threshold
-                )));
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn transform_record(&self, record: &mut DataRecord) -> Result<(), ProcessingError> {
-        for value in &mut record.values {
-            *value *= self.transformation_factor;
-
-            if value.is_nan() || value.is_infinite() {
-                return Err(ProcessingError::TransformationError(
-                    "Resulted in invalid value after transformation".to_string(),
-                ));
-            }
-        }
-
-        record.metadata.insert(
-            "processed".to_string(),
-            chrono::Utc::now().to_rfc3339(),
-        );
-        record.metadata.insert(
-            "transformation_factor".to_string(),
-            self.transformation_factor.to_string(),
-        );
-
-        Ok(())
-    }
-
-    pub fn process_records(
-        &self,
-        records: &mut [DataRecord],
-    ) -> Result<Vec<DataRecord>, ProcessingError> {
-        let mut processed_records = Vec::with_capacity(records.len());
-
-        for record in records.iter_mut() {
-            self.validate_record(record)?;
-            self.transform_record(record)?;
-            processed_records.push(record.clone());
-        }
-
-        Ok(processed_records)
-    }
+    (avg, max, count)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_valid_record_processing() {
-        let processor = DataProcessor::new(1000.0, 2.0);
-        let mut record = DataRecord {
-            id: 1,
-            timestamp: 1234567890,
-            values: vec![10.0, 20.0, 30.0],
-            metadata: HashMap::new(),
-        };
-
-        assert!(processor.validate_record(&record).is_ok());
-        assert!(processor.transform_record(&mut record).is_ok());
-        assert_eq!(record.values, vec![20.0, 40.0, 60.0]);
-        assert!(record.metadata.contains_key("processed"));
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(1, 42.5, "2024-01-15T10:30:00Z");
+        assert!(record.is_ok());
+        let record = record.unwrap();
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 42.5);
+        assert_eq!(record.timestamp, "2024-01-15T10:30:00Z");
     }
 
     #[test]
-    fn test_invalid_record_validation() {
-        let processor = DataProcessor::new(100.0, 1.0);
-        let record = DataRecord {
-            id: 1,
-            timestamp: 1234567890,
-            values: vec![150.0],
-            metadata: HashMap::new(),
-        };
+    fn test_invalid_record_creation() {
+        let record = DataRecord::new(1, -5.0, "2024-01-15T10:30:00Z");
+        assert!(record.is_err());
+        
+        let record = DataRecord::new(1, 5.0, "");
+        assert!(record.is_err());
+    }
 
-        assert!(processor.validate_record(&record).is_err());
+    #[test]
+    fn test_calculate_adjusted_value() {
+        let record = DataRecord::new(1, 10.0, "2024-01-15T10:30:00Z").unwrap();
+        assert_eq!(record.calculate_adjusted_value(2.5), 25.0);
+    }
+
+    #[test]
+    fn test_load_and_process_records() -> Result<(), Box<dyn Error>> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "id,value,timestamp")?;
+        writeln!(temp_file, "1,10.5,2024-01-15T10:30:00Z")?;
+        writeln!(temp_file, "2,20.0,2024-01-15T11:30:00Z")?;
+        writeln!(temp_file, "3,15.5,2024-01-15T12:30:00Z")?;
+
+        let records = load_records_from_csv(temp_file.path())?;
+        assert_eq!(records.len(), 3);
+
+        let (avg, max, count) = process_records(&records);
+        assert_eq!(count, 3);
+        assert!((avg - 15.333333333333334).abs() < 0.0001);
+        assert_eq!(max, 20.0);
+
+        Ok(())
     }
 }
