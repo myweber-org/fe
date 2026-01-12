@@ -89,4 +89,116 @@ mod tests {
         
         assert!(result.is_err());
     }
+}use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::Path;
+
+pub struct XorCipher {
+    key: Vec<u8>,
+}
+
+impl XorCipher {
+    pub fn new(key: &str) -> Self {
+        XorCipher {
+            key: key.as_bytes().to_vec(),
+        }
+    }
+
+    pub fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), String> {
+        self.process_file(input_path, output_path, true)
+    }
+
+    pub fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), String> {
+        self.process_file(input_path, output_path, false)
+    }
+
+    fn process_file(&self, input_path: &Path, output_path: &Path, _is_encrypt: bool) -> Result<(), String> {
+        if self.key.is_empty() {
+            return Err("Encryption key cannot be empty".to_string());
+        }
+
+        let mut input_file = File::open(input_path)
+            .map_err(|e| format!("Failed to open input file: {}", e))?;
+
+        let mut buffer = Vec::new();
+        input_file.read_to_end(&mut buffer)
+            .map_err(|e| format!("Failed to read input file: {}", e))?;
+
+        let processed_data: Vec<u8> = buffer
+            .iter()
+            .enumerate()
+            .map(|(i, &byte)| byte ^ self.key[i % self.key.len()])
+            .collect();
+
+        let mut output_file = File::create(output_path)
+            .map_err(|e| format!("Failed to create output file: {}", e))?;
+
+        output_file.write_all(&processed_data)
+            .map_err(|e| format!("Failed to write output file: {}", e))?;
+
+        Ok(())
+    }
+
+    pub fn encrypt_string(&self, text: &str) -> Vec<u8> {
+        text.as_bytes()
+            .iter()
+            .enumerate()
+            .map(|(i, &byte)| byte ^ self.key[i % self.key.len()])
+            .collect()
+    }
+
+    pub fn decrypt_string(&self, data: &[u8]) -> String {
+        let decrypted: Vec<u8> = data
+            .iter()
+            .enumerate()
+            .map(|(i, &byte)| byte ^ self.key[i % self.key.len()])
+            .collect();
+
+        String::from_utf8_lossy(&decrypted).to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_string_encryption_decryption() {
+        let cipher = XorCipher::new("secret_key");
+        let original_text = "Hello, World!";
+        
+        let encrypted = cipher.encrypt_string(original_text);
+        let decrypted = cipher.decrypt_string(&encrypted);
+        
+        assert_eq!(original_text, decrypted);
+    }
+
+    #[test]
+    fn test_file_encryption_decryption() {
+        let cipher = XorCipher::new("test_key_123");
+        let original_content = b"Sample file content for encryption testing.";
+        
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+        
+        fs::write(input_file.path(), original_content).unwrap();
+        
+        cipher.encrypt_file(input_file.path(), encrypted_file.path()).unwrap();
+        cipher.decrypt_file(encrypted_file.path(), decrypted_file.path()).unwrap();
+        
+        let decrypted_content = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(original_content.to_vec(), decrypted_content);
+    }
+
+    #[test]
+    fn test_empty_key() {
+        let cipher = XorCipher::new("");
+        let temp_file = NamedTempFile::new().unwrap();
+        
+        let result = cipher.encrypt_file(temp_file.path(), temp_file.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cannot be empty"));
+    }
 }
