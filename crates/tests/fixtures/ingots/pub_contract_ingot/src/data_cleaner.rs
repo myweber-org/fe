@@ -83,3 +83,46 @@ mod tests {
         assert_eq!(cleaned, vec!["ID123", "john doe", "usa"]);
     }
 }
+use regex::Regex;
+
+pub fn normalize_string(input: &str) -> String {
+    let trimmed = input.trim();
+    
+    let re_multispace = Regex::new(r"\s+").unwrap();
+    let single_spaced = re_multispace.replace_all(trimmed, " ");
+    
+    let re_non_alphanumeric = Regex::new(r"[^a-zA-Z0-9\s\-\.]").unwrap();
+    let cleaned = re_non_alphanumeric.replace_all(&single_spaced, "");
+    
+    cleaned.to_lowercase()
+}
+
+pub fn extract_numeric(input: &str) -> Option<f64> {
+    let re = Regex::new(r"-?\d+(\.\d+)?").unwrap();
+    re.find(input)
+        .and_then(|m| m.as_str().parse::<f64>().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_string() {
+        assert_eq!(
+            normalize_string("  Hello   World!!  TEST-123  "),
+            "hello world test-123"
+        );
+        assert_eq!(
+            normalize_string("Data@#$%Science   Project"),
+            "data science project"
+        );
+    }
+
+    #[test]
+    fn test_extract_numeric() {
+        assert_eq!(extract_numeric("Price: 29.99 USD"), Some(29.99));
+        assert_eq!(extract_numeric("Temperature: -5.5°C"), Some(-5.5));
+        assert_eq!(extract_numeric("No numbers here"), None);
+    }
+}
