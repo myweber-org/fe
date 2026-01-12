@@ -382,3 +382,144 @@ pub fn calculate_statistics(data: &[Vec<String>]) -> (usize, usize) {
     let total_fields = data.iter().map(|record| record.len()).sum();
     (total_records, total_fields)
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Error)]
+pub enum ProcessingError {
+    #[error("Invalid data format")]
+    InvalidFormat,
+    #[error("Data validation failed: {0}")]
+    ValidationFailed(String),
+    #[error("Transformation error: {0}")]
+    TransformationError(String),
+}
+
+pub struct DataProcessor {
+    validation_threshold: f64,
+    normalization_factor: f64,
+}
+
+impl DataProcessor {
+    pub fn new(validation_threshold: f64, normalization_factor: f64) -> Self {
+        DataProcessor {
+            validation_threshold,
+            normalization_factor,
+        }
+    }
+
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.values.is_empty() {
+            return Err(ProcessingError::ValidationFailed(
+                "Empty values array".to_string(),
+            ));
+        }
+
+        for value in &record.values {
+            if value.is_nan() || value.is_infinite() {
+                return Err(ProcessingError::ValidationFailed(
+                    "Invalid numeric value".to_string(),
+                ));
+            }
+
+            if value.abs() > self.validation_threshold {
+                return Err(ProcessingError::ValidationFailed(format!(
+                    "Value {} exceeds threshold {}",
+                    value, self.validation_threshold
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn transform_record(&self, mut record: DataRecord) -> Result<DataRecord, ProcessingError> {
+        self.validate_record(&record)?;
+
+        for value in &mut record.values {
+            *value = (*value * self.normalization_factor).round() / self.normalization_factor;
+        }
+
+        record.metadata.insert(
+            "processed_timestamp".to_string(),
+            chrono::Utc::now().timestamp().to_string(),
+        );
+
+        record
+        .metadata
+        .insert("normalization_factor".to_string(), self.normalization_factor.to_string());
+
+        Ok(record)
+    }
+
+    pub fn batch_process(
+        &self,
+        records: Vec<DataRecord>,
+    ) -> Result<Vec<DataRecord>, ProcessingError> {
+        let mut processed_records = Vec::with_capacity(records.len());
+
+        for record in records {
+            match self.transform_record(record) {
+                Ok(processed) => processed_records.push(processed),
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(processed_records)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validation_success() {
+        let processor = DataProcessor::new(1000.0, 100.0);
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![10.5, 20.3, 30.7],
+            metadata: HashMap::new(),
+        };
+
+        assert!(processor.validate_record(&record).is_ok());
+    }
+
+    #[test]
+    fn test_validation_failure() {
+        let processor = DataProcessor::new(10.0, 100.0);
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![10.5, 20.3, 30.7],
+            metadata: HashMap::new(),
+        };
+
+        assert!(processor.validate_record(&record).is_err());
+    }
+
+    #[test]
+    fn test_transform_record() {
+        let processor = DataProcessor::new(1000.0, 10.0);
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![10.567, 20.345, 30.789],
+            metadata: HashMap::new(),
+        };
+
+        let result = processor.transform_record(record).unwrap();
+        assert_eq!(result.values, vec![10.6, 20.3, 30.8]);
+        assert!(result.metadata.contains_key("processed_timestamp"));
+    }
+}
