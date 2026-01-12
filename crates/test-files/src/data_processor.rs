@@ -500,3 +500,125 @@ mod tests {
         assert_eq!(groups.get("category_b").unwrap().len(), 1);
     }
 }
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct ProcessingError {
+    message: String,
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Processing error: {}", self.message)
+    }
+}
+
+impl Error for ProcessingError {}
+
+impl ProcessingError {
+    pub fn new(msg: &str) -> Self {
+        ProcessingError {
+            message: msg.to_string(),
+        }
+    }
+}
+
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub timestamp: u64,
+}
+
+impl DataRecord {
+    pub fn validate(&self) -> Result<(), ProcessingError> {
+        if self.id == 0 {
+            return Err(ProcessingError::new("Invalid record ID"));
+        }
+        if self.value.is_nan() || self.value.is_infinite() {
+            return Err(ProcessingError::new("Invalid numeric value"));
+        }
+        if self.timestamp == 0 {
+            return Err(ProcessingError::new("Invalid timestamp"));
+        }
+        Ok(())
+    }
+}
+
+pub fn process_records(records: &[DataRecord]) -> Result<Vec<f64>, ProcessingError> {
+    let mut results = Vec::with_capacity(records.len());
+    
+    for record in records {
+        record.validate()?;
+        
+        let processed_value = if record.value < 0.0 {
+            record.value.abs()
+        } else {
+            record.value * 2.0
+        };
+        
+        results.push(processed_value);
+    }
+    
+    Ok(results)
+}
+
+pub fn calculate_statistics(values: &[f64]) -> (f64, f64, f64) {
+    if values.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+    
+    let sum: f64 = values.iter().sum();
+    let mean = sum / values.len() as f64;
+    
+    let variance: f64 = values.iter()
+        .map(|&x| (x - mean).powi(2))
+        .sum::<f64>() / values.len() as f64;
+    
+    let std_dev = variance.sqrt();
+    
+    (mean, variance, std_dev)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = DataRecord {
+            id: 1,
+            value: 42.5,
+            timestamp: 1234567890,
+        };
+        assert!(valid_record.validate().is_ok());
+
+        let invalid_record = DataRecord {
+            id: 0,
+            value: 42.5,
+            timestamp: 1234567890,
+        };
+        assert!(invalid_record.validate().is_err());
+    }
+
+    #[test]
+    fn test_process_records() {
+        let records = vec![
+            DataRecord { id: 1, value: 10.0, timestamp: 1000 },
+            DataRecord { id: 2, value: -5.0, timestamp: 2000 },
+        ];
+        
+        let result = process_records(&records).unwrap();
+        assert_eq!(result, vec![20.0, 5.0]);
+    }
+
+    #[test]
+    fn test_calculate_statistics() {
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let (mean, variance, std_dev) = calculate_statistics(&values);
+        
+        assert_eq!(mean, 3.0);
+        assert_eq!(variance, 2.0);
+        assert_eq!(std_dev, 2.0_f64.sqrt());
+    }
+}
