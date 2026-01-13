@@ -233,3 +233,134 @@ pub fn normalize_values(records: &mut [DataRecord]) {
         }
     }
 }
+use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+pub struct DataProcessor {
+    records: Vec<Record>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
+        let mut reader = ReaderBuilder::new()
+            .has_headers(true)
+            .from_path(path)?;
+
+        for result in reader.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
+        }
+
+        Ok(())
+    }
+
+    pub fn save_to_csv<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn Error>> {
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(path)?;
+
+        for record in &self.records {
+            writer.serialize(record)?;
+        }
+
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub fn filter_active(&self) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|record| record.active)
+            .collect()
+    }
+
+    pub fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.records.iter().map(|record| record.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    pub fn add_record(&mut self, id: u32, name: String, value: f64, active: bool) {
+        self.records.push(Record {
+            id,
+            name,
+            value,
+            active,
+        });
+    }
+
+    pub fn get_record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn validate_records(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        for (index, record) in self.records.iter().enumerate() {
+            if record.name.is_empty() {
+                errors.push(format!("Record {}: Name cannot be empty", index));
+            }
+
+            if record.value < 0.0 {
+                errors.push(format!("Record {}: Value cannot be negative", index));
+            }
+        }
+
+        errors
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        
+        processor.add_record(1, "Test1".to_string(), 10.5, true);
+        processor.add_record(2, "Test2".to_string(), 20.0, false);
+        processor.add_record(3, "Test3".to_string(), 30.5, true);
+
+        assert_eq!(processor.get_record_count(), 3);
+        
+        let active_records = processor.filter_active();
+        assert_eq!(active_records.len(), 2);
+
+        let average = processor.calculate_average();
+        assert!(average.is_some());
+        assert!((average.unwrap() - 20.3333).abs() < 0.001);
+
+        let errors = processor.validate_records();
+        assert!(errors.is_empty());
+
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+        
+        assert!(processor.save_to_csv(path).is_ok());
+        
+        let mut new_processor = DataProcessor::new();
+        assert!(new_processor.load_from_csv(path).is_ok());
+        assert_eq!(new_processor.get_record_count(), 3);
+    }
+}
