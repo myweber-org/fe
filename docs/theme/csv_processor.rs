@@ -1,113 +1,72 @@
-use csv::{ReaderBuilder, WriterBuilder};
 use std::error::Error;
 use std::fs::File;
+use std::io::{BufReader, BufWriter};
+use csv::{ReaderBuilder, WriterBuilder};
 
-pub fn clean_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(input_path)?;
-    let mut rdr = ReaderBuilder::new()
-        .has_headers(true)
-        .trim(csv::Trim::All)
-        .from_reader(file);
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+fn process_csv(input_path: &str, output_path: &str, min_value: f64) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let reader = BufReader::new(input_file);
+    let mut csv_reader = ReaderBuilder::new().has_headers(true).from_reader(reader);
 
     let output_file = File::create(output_path)?;
-    let mut wtr = WriterBuilder::new()
-        .has_headers(true)
-        .from_writer(output_file);
+    let writer = BufWriter::new(output_file);
+    let mut csv_writer = WriterBuilder::new().has_headers(true).from_writer(writer);
 
-    let headers = rdr.headers()?.clone();
-    wtr.write_record(&headers)?;
-
-    for result in rdr.records() {
-        let record = result?;
-        let cleaned_record: Vec<String> = record
-            .iter()
-            .map(|field| {
-                let trimmed = field.trim();
-                if trimmed.is_empty() {
-                    "N/A".to_string()
-                } else {
-                    trimmed.to_string()
-                }
-            })
-            .collect();
-
-        wtr.write_record(&cleaned_record)?;
+    for result in csv_reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.value >= min_value && record.active {
+            csv_writer.serialize(&record)?;
+        }
     }
 
-    wtr.flush()?;
+    csv_writer.flush()?;
     Ok(())
 }
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 
-pub struct CsvFilter {
-    delimiter: char,
-    has_header: bool,
+fn main() -> Result<(), Box<dyn Error>> {
+    let input_file = "data/input.csv";
+    let output_file = "data/filtered.csv";
+    let threshold = 50.0;
+
+    process_csv(input_file, output_file, threshold)?;
+    println!("Filtered data saved to {}", output_file);
+    
+    Ok(())
 }
 
-impl CsvFilter {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
-        CsvFilter {
-            delimiter,
-            has_header,
-        }
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
-    pub fn filter_rows<P>(
-        &self,
-        file_path: P,
-        predicate: impl Fn(&[String]) -> bool,
-    ) -> Result<Vec<Vec<String>>, Box<dyn Error>>
-    where
-        P: AsRef<std::path::Path>,
-    {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut lines = reader.lines();
+    #[test]
+    fn test_process_csv() -> Result<(), Box<dyn Error>> {
+        let input_data = "id,name,value,active\n1,test1,30.5,true\n2,test2,75.2,true\n3,test3,45.0,false\n";
+        
+        let mut input_file = NamedTempFile::new()?;
+        write!(input_file, "{}", input_data)?;
+        
+        let output_file = NamedTempFile::new()?;
+        
+        process_csv(input_file.path().to_str().unwrap(), 
+                   output_file.path().to_str().unwrap(), 
+                   50.0)?;
 
-        if self.has_header {
-            lines.next();
-        }
-
-        let mut filtered_rows = Vec::new();
-
-        for line_result in lines {
-            let line = line_result?;
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-
-            if predicate(&fields) {
-                filtered_rows.push(fields);
-            }
-        }
-
-        Ok(filtered_rows)
-    }
-
-    pub fn extract_column(&self, rows: &[Vec<String>], column_index: usize) -> Vec<String> {
-        rows.iter()
-            .filter_map(|row| row.get(column_index).cloned())
-            .collect()
-    }
-}
-
-pub fn calculate_average(values: &[String]) -> Option<f64> {
-    let mut sum = 0.0;
-    let mut count = 0;
-
-    for value in values {
-        if let Ok(num) = value.parse::<f64>() {
-            sum += num;
-            count += 1;
-        }
-    }
-
-    if count > 0 {
-        Some(sum / count as f64)
-    } else {
-        None
+        let output_content = std::fs::read_to_string(output_file.path())?;
+        assert!(output_content.contains("test2"));
+        assert!(!output_content.contains("test1"));
+        assert!(!output_content.contains("test3"));
+        
+        Ok(())
     }
 }
