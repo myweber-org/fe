@@ -4,32 +4,36 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 pub struct DataProcessor {
-    file_path: String,
     delimiter: char,
+    has_header: bool,
 }
 
 impl DataProcessor {
-    pub fn new(file_path: &str, delimiter: char) -> Self {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
         DataProcessor {
-            file_path: file_path.to_string(),
             delimiter,
+            has_header,
         }
     }
 
-    pub fn process(&self) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let path = Path::new(&self.file_path);
-        let file = File::open(path)?;
+    pub fn process_csv<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
         let reader = BufReader::new(file);
-
         let mut records = Vec::new();
-        for line in reader.lines() {
-            let line = line?;
+        let mut lines = reader.lines();
+
+        if self.has_header {
+            lines.next();
+        }
+
+        for line_result in lines {
+            let line = line_result?;
             let fields: Vec<String> = line
                 .split(self.delimiter)
                 .map(|s| s.trim().to_string())
                 .collect();
             
-            if !fields.is_empty() && !fields.iter().all(|f| f.is_empty()) {
+            if !fields.is_empty() {
                 records.push(fields);
             }
         }
@@ -37,37 +41,39 @@ impl DataProcessor {
         Ok(records)
     }
 
-    pub fn filter_by_column(&self, column_index: usize, filter_value: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let records = self.process()?;
-        let filtered: Vec<Vec<String>> = records
-            .into_iter()
-            .filter(|record| {
-                if column_index < record.len() {
-                    record[column_index] == filter_value
-                } else {
-                    false
-                }
-            })
-            .collect();
-
-        Ok(filtered)
-    }
-
-    pub fn get_column_stats(&self, column_index: usize) -> Result<(usize, String, String), Box<dyn Error>> {
-        let records = self.process()?;
-        let mut values = Vec::new();
+    pub fn validate_numeric_fields(&self, records: &[Vec<String>], column_index: usize) -> Result<Vec<f64>, Box<dyn Error>> {
+        let mut numeric_values = Vec::new();
         
-        for record in &records {
-            if column_index < record.len() {
-                values.push(record[column_index].clone());
+        for (row_num, record) in records.iter().enumerate() {
+            if column_index >= record.len() {
+                return Err(format!("Row {}: Column index out of bounds", row_num + 1).into());
+            }
+            
+            match record[column_index].parse::<f64>() {
+                Ok(value) => numeric_values.push(value),
+                Err(_) => return Err(format!("Row {}: Invalid numeric value '{}'", 
+                    row_num + 1, record[column_index]).into()),
             }
         }
+        
+        Ok(numeric_values)
+    }
 
-        let count = values.len();
-        let min_value = values.iter().min().unwrap_or(&String::new()).clone();
-        let max_value = values.iter().max().unwrap_or(&String::new()).clone();
+    pub fn calculate_statistics(&self, values: &[f64]) -> (f64, f64, f64) {
+        if values.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
 
-        Ok((count, min_value, max_value))
+        let sum: f64 = values.iter().sum();
+        let mean = sum / values.len() as f64;
+        
+        let variance: f64 = values.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / values.len() as f64;
+        
+        let std_dev = variance.sqrt();
+        
+        (mean, variance, std_dev)
     }
 }
 
@@ -78,33 +84,42 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_data_processing() {
+    fn test_csv_processing() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,name,value").unwrap();
-        writeln!(temp_file, "1,apple,100").unwrap();
-        writeln!(temp_file, "2,banana,200").unwrap();
-        writeln!(temp_file, "3,apple,150").unwrap();
+        writeln!(temp_file, "name,age,salary").unwrap();
+        writeln!(temp_file, "Alice,30,50000.5").unwrap();
+        writeln!(temp_file, "Bob,25,45000.0").unwrap();
+        writeln!(temp_file, "Charlie,35,55000.75").unwrap();
 
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap(), ',');
-        let result = processor.process().unwrap();
+        let processor = DataProcessor::new(',', true);
+        let records = processor.process_csv(temp_file.path()).unwrap();
         
-        assert_eq!(result.len(), 4);
-        assert_eq!(result[1][1], "apple");
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0], vec!["Alice", "30", "50000.5"]);
     }
 
     #[test]
-    fn test_filter_by_column() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,name,value").unwrap();
-        writeln!(temp_file, "1,apple,100").unwrap();
-        writeln!(temp_file, "2,banana,200").unwrap();
-        writeln!(temp_file, "3,apple,150").unwrap();
-
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap(), ',');
-        let filtered = processor.filter_by_column(1, "apple").unwrap();
+    fn test_numeric_validation() {
+        let records = vec![
+            vec!["100.5".to_string()],
+            vec!["200.0".to_string()],
+            vec!["300.75".to_string()],
+        ];
         
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0][0], "1");
-        assert_eq!(filtered[1][0], "3");
+        let processor = DataProcessor::new(',', false);
+        let numeric_values = processor.validate_numeric_fields(&records, 0).unwrap();
+        
+        assert_eq!(numeric_values, vec![100.5, 200.0, 300.75]);
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let values = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+        let processor = DataProcessor::new(',', false);
+        let (mean, variance, std_dev) = processor.calculate_statistics(&values);
+        
+        assert_eq!(mean, 30.0);
+        assert_eq!(variance, 200.0);
+        assert!((std_dev - 14.142135623730951).abs() < 1e-10);
     }
 }
