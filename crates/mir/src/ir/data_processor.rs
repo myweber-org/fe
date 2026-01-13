@@ -1,116 +1,122 @@
-
-use std::collections::HashMap;
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
 pub struct DataProcessor {
-    cache: HashMap<String, Vec<f64>>,
+    delimiter: char,
+    has_header: bool,
 }
 
 impl DataProcessor {
-    pub fn new() -> Self {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
         DataProcessor {
-            cache: HashMap::new(),
+            delimiter,
+            has_header,
         }
     }
 
-    pub fn process_dataset(&mut self, key: &str, data: &[f64]) -> Result<Vec<f64>, String> {
-        if data.is_empty() {
-            return Err("Empty dataset provided".to_string());
-        }
+    pub fn process_csv<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut records = Vec::new();
 
-        if let Some(cached) = self.cache.get(key) {
-            return Ok(cached.clone());
-        }
-
-        let validated = self.validate_data(data)?;
-        let normalized = self.normalize_data(&validated);
-        let transformed = self.apply_transformations(&normalized);
-
-        self.cache.insert(key.to_string(), transformed.clone());
-        Ok(transformed)
-    }
-
-    fn validate_data(&self, data: &[f64]) -> Result<Vec<f64>, String> {
-        let mut result = Vec::with_capacity(data.len());
-        
-        for &value in data {
-            if !value.is_finite() {
-                return Err("Invalid numeric value detected".to_string());
+        for (index, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if self.has_header && index == 0 {
+                continue;
             }
-            result.push(value);
+
+            let fields: Vec<String> = line
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if !fields.is_empty() {
+                records.push(fields);
+            }
         }
+
+        Ok(records)
+    }
+
+    pub fn validate_numeric_fields(&self, records: &[Vec<String>], field_index: usize) -> Result<Vec<f64>, String> {
+        let mut numeric_values = Vec::new();
+
+        for (row_num, record) in records.iter().enumerate() {
+            if field_index >= record.len() {
+                return Err(format!("Field index {} out of bounds on row {}", field_index, row_num + 1));
+            }
+
+            match record[field_index].parse::<f64>() {
+                Ok(value) => numeric_values.push(value),
+                Err(_) => return Err(format!("Invalid numeric value '{}' on row {}", record[field_index], row_num + 1)),
+            }
+        }
+
+        Ok(numeric_values)
+    }
+
+    pub fn calculate_statistics(&self, values: &[f64]) -> (f64, f64, f64) {
+        if values.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+
+        let sum: f64 = values.iter().sum();
+        let mean = sum / values.len() as f64;
         
-        Ok(result)
-    }
+        let variance: f64 = values.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / values.len() as f64;
+        
+        let std_dev = variance.sqrt();
 
-    fn normalize_data(&self, data: &[f64]) -> Vec<f64> {
-        if data.len() < 2 {
-            return data.to_vec();
-        }
-
-        let min = data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let max = data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-        let range = max - min;
-
-        if range.abs() < f64::EPSILON {
-            return vec![0.5; data.len()];
-        }
-
-        data.iter()
-            .map(|&x| (x - min) / range)
-            .collect()
-    }
-
-    fn apply_transformations(&self, data: &[f64]) -> Vec<f64> {
-        data.iter()
-            .map(|&x| x.sqrt().abs())
-            .collect()
-    }
-
-    pub fn clear_cache(&mut self) {
-        self.cache.clear();
-    }
-
-    pub fn cache_stats(&self) -> (usize, usize) {
-        let total_keys = self.cache.len();
-        let total_values: usize = self.cache.values().map(|v| v.len()).sum();
-        (total_keys, total_values)
+        (mean, variance, std_dev)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_empty_dataset() {
-        let mut processor = DataProcessor::new();
-        let result = processor.process_dataset("test", &[]);
-        assert!(result.is_err());
+    fn test_csv_processing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,salary").unwrap();
+        writeln!(temp_file, "Alice,30,50000.5").unwrap();
+        writeln!(temp_file, "Bob,25,45000.0").unwrap();
+
+        let processor = DataProcessor::new(',', true);
+        let records = processor.process_csv(temp_file.path()).unwrap();
+        
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0], vec!["Alice", "30", "50000.5"]);
     }
 
     #[test]
-    fn test_normalization() {
-        let mut processor = DataProcessor::new();
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let result = processor.process_dataset("normal", &data).unwrap();
+    fn test_numeric_validation() {
+        let records = vec![
+            vec!["10.5".to_string(), "text".to_string()],
+            vec!["20.0".to_string(), "more".to_string()],
+        ];
         
-        assert_eq!(result.len(), 5);
-        assert!((result[0] - 0.0).abs() < 0.001);
-        assert!((result[4] - 1.0).abs() < 0.001);
+        let processor = DataProcessor::new(',', false);
+        let numeric_values = processor.validate_numeric_fields(&records, 0).unwrap();
+        
+        assert_eq!(numeric_values, vec![10.5, 20.0]);
     }
 
     #[test]
-    fn test_cache_functionality() {
-        let mut processor = DataProcessor::new();
-        let data = vec![10.0, 20.0, 30.0];
+    fn test_statistics_calculation() {
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let processor = DataProcessor::new(',', false);
+        let (mean, variance, std_dev) = processor.calculate_statistics(&values);
         
-        let first_result = processor.process_dataset("cached", &data).unwrap();
-        let second_result = processor.process_dataset("cached", &data).unwrap();
-        
-        assert_eq!(first_result, second_result);
-        
-        let (keys, values) = processor.cache_stats();
-        assert_eq!(keys, 1);
-        assert_eq!(values, 3);
+        assert_eq!(mean, 3.0);
+        assert_eq!(variance, 2.0);
+        assert!((std_dev - 1.41421356237).abs() < 0.0001);
     }
 }
