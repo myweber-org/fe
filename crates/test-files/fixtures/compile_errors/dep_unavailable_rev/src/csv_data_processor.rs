@@ -1,188 +1,171 @@
+
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, BufWriter};
+use csv::{ReaderBuilder, WriterBuilder};
 
 #[derive(Debug, Clone)]
-pub struct CsvRecord {
-    pub id: u32,
-    pub name: String,
-    pub value: f64,
-    pub active: bool,
+struct DataRecord {
+    id: u32,
+    category: String,
+    value: f64,
+    timestamp: String,
 }
 
-impl CsvRecord {
-    pub fn new(id: u32, name: String, value: f64, active: bool) -> Self {
+impl DataRecord {
+    fn new(id: u32, category: String, value: f64, timestamp: String) -> Self {
         Self {
             id,
-            name,
+            category,
             value,
-            active,
+            timestamp,
         }
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        if self.name.trim().is_empty() {
-            return Err("Name cannot be empty".to_string());
-        }
-        if self.value < 0.0 {
-            return Err("Value cannot be negative".to_string());
-        }
-        Ok(())
-    }
-
-    pub fn transform(&mut self, multiplier: f64) {
-        self.value *= multiplier;
-        self.name = self.name.to_uppercase();
     }
 }
 
-pub struct CsvProcessor {
-    records: Vec<CsvRecord>,
+struct DataProcessor {
+    records: Vec<DataRecord>,
 }
 
-impl CsvProcessor {
-    pub fn new() -> Self {
+impl DataProcessor {
+    fn new() -> Self {
         Self {
             records: Vec::new(),
         }
     }
 
-    pub fn load_from_file(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+    fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
         let file = File::open(file_path)?;
         let reader = BufReader::new(file);
+        let mut csv_reader = ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(reader);
 
-        for (index, line) in reader.lines().enumerate() {
-            let line = line?;
-            if index == 0 {
-                continue;
+        for result in csv_reader.records() {
+            let record = result?;
+            if record.len() >= 4 {
+                let id: u32 = record[0].parse().unwrap_or(0);
+                let category = record[1].to_string();
+                let value: f64 = record[2].parse().unwrap_or(0.0);
+                let timestamp = record[3].to_string();
+
+                self.records.push(DataRecord::new(id, category, value, timestamp));
             }
-
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() != 4 {
-                continue;
-            }
-
-            let id = parts[0].parse::<u32>().unwrap_or(0);
-            let name = parts[1].to_string();
-            let value = parts[2].parse::<f64>().unwrap_or(0.0);
-            let active = parts[3].parse::<bool>().unwrap_or(false);
-
-            let record = CsvRecord::new(id, name, value, active);
-            self.records.push(record);
         }
 
         Ok(())
     }
 
-    pub fn validate_all(&self) -> Vec<Result<(), String>> {
+    fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
         self.records
             .iter()
-            .map(|record| record.validate())
+            .filter(|record| record.category == category)
             .collect()
     }
 
-    pub fn transform_all(&mut self, multiplier: f64) {
-        for record in &mut self.records {
-            record.transform(multiplier);
-        }
-    }
+    fn calculate_average(&self, category: Option<&str>) -> f64 {
+        let filtered_records: Vec<&DataRecord> = match category {
+            Some(cat) => self.filter_by_category(cat),
+            None => self.records.iter().collect(),
+        };
 
-    pub fn filter_active(&self) -> Vec<&CsvRecord> {
-        self.records
-            .iter()
-            .filter(|record| record.active)
-            .collect()
-    }
-
-    pub fn calculate_total(&self) -> f64 {
-        self.records.iter().map(|record| record.value).sum()
-    }
-
-    pub fn save_to_file(&self, file_path: &str) -> Result<(), Box<dyn Error>> {
-        let mut file = File::create(file_path)?;
-        writeln!(file, "id,name,value,active")?;
-
-        for record in &self.records {
-            writeln!(
-                file,
-                "{},{},{},{}",
-                record.id, record.name, record.value, record.active
-            )?;
+        if filtered_records.is_empty() {
+            return 0.0;
         }
 
+        let sum: f64 = filtered_records.iter().map(|r| r.value).sum();
+        sum / filtered_records.len() as f64
+    }
+
+    fn save_filtered_to_csv(&self, category: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+        let filtered = self.filter_by_category(category);
+        
+        let file = File::create(output_path)?;
+        let writer = BufWriter::new(file);
+        let mut csv_writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_writer(writer);
+
+        csv_writer.write_record(&["ID", "Category", "Value", "Timestamp"])?;
+
+        for record in filtered {
+            csv_writer.write_record(&[
+                record.id.to_string(),
+                record.category.clone(),
+                record.value.to_string(),
+                record.timestamp.clone(),
+            ])?;
+        }
+
+        csv_writer.flush()?;
         Ok(())
     }
 
-    pub fn get_statistics(&self) -> (f64, f64, f64) {
-        let values: Vec<f64> = self.records.iter().map(|r| r.value).collect();
-        let count = values.len() as f64;
-
-        if count == 0.0 {
-            return (0.0, 0.0, 0.0);
-        }
-
-        let sum: f64 = values.iter().sum();
-        let mean = sum / count;
-
-        let variance: f64 = values
+    fn get_summary(&self) -> String {
+        let total_records = self.records.len();
+        let categories: Vec<String> = self.records
             .iter()
-            .map(|value| {
-                let diff = mean - value;
-                diff * diff
-            })
-            .sum::<f64>()
-            / count;
-
-        let std_dev = variance.sqrt();
-
-        (mean, variance, std_dev)
+            .map(|r| r.category.clone())
+            .collect();
+        
+        let unique_categories: std::collections::HashSet<String> = categories.into_iter().collect();
+        
+        format!(
+            "Total records: {}, Unique categories: {}, Overall average: {:.2}",
+            total_records,
+            unique_categories.len(),
+            self.calculate_average(None)
+        )
     }
 }
 
-impl Default for CsvProcessor {
-    fn default() -> Self {
-        Self::new()
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut processor = DataProcessor::new();
+    
+    match processor.load_from_csv("input_data.csv") {
+        Ok(_) => println!("Data loaded successfully"),
+        Err(e) => eprintln!("Error loading data: {}", e),
     }
+
+    println!("{}", processor.get_summary());
+
+    let tech_records = processor.filter_by_category("Technology");
+    println!("Technology records: {}", tech_records.len());
+
+    let tech_avg = processor.calculate_average(Some("Technology"));
+    println!("Technology average value: {:.2}", tech_avg);
+
+    processor.save_filtered_to_csv("Technology", "tech_data.csv")?;
+    println!("Filtered data saved to tech_data.csv");
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_record_validation() {
-        let valid_record = CsvRecord::new(1, "Test".to_string(), 100.0, true);
-        assert!(valid_record.validate().is_ok());
-
-        let invalid_record = CsvRecord::new(2, "".to_string(), -50.0, false);
-        assert!(invalid_record.validate().is_err());
+    fn test_data_record_creation() {
+        let record = DataRecord::new(1, "Test".to_string(), 100.0, "2024-01-01".to_string());
+        assert_eq!(record.id, 1);
+        assert_eq!(record.category, "Test");
+        assert_eq!(record.value, 100.0);
     }
 
     #[test]
-    fn test_record_transformation() {
-        let mut record = CsvRecord::new(1, "test".to_string(), 100.0, true);
-        record.transform(2.0);
-        assert_eq!(record.name, "TEST");
-        assert_eq!(record.value, 200.0);
+    fn test_empty_processor() {
+        let processor = DataProcessor::new();
+        assert_eq!(processor.records.len(), 0);
     }
 
     #[test]
-    fn test_csv_processing() {
-        let mut processor = CsvProcessor::new();
+    fn test_average_calculation() {
+        let mut processor = DataProcessor::new();
+        processor.records.push(DataRecord::new(1, "A".to_string(), 10.0, "".to_string()));
+        processor.records.push(DataRecord::new(2, "A".to_string(), 20.0, "".to_string()));
         
-        let csv_data = "id,name,value,active\n1,item1,100.0,true\n2,item2,200.0,false\n";
-        let mut temp_file = NamedTempFile::new().unwrap();
-        temp_file.write_all(csv_data.as_bytes()).unwrap();
-        
-        let result = processor.load_from_file(temp_file.path().to_str().unwrap());
-        assert!(result.is_ok());
-        assert_eq!(processor.records.len(), 2);
-        
-        let active_records = processor.filter_active();
-        assert_eq!(active_records.len(), 1);
-        
-        let total = processor.calculate_total();
-        assert_eq!(total, 300.0);
+        let avg = processor.calculate_average(Some("A"));
+        assert_eq!(avg, 15.0);
     }
 }
