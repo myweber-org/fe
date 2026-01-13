@@ -111,3 +111,125 @@ mod tests {
         assert_eq!(result.unwrap(), "MOC.ELPMAXE@TSET");
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    id: u32,
+    values: Vec<f64>,
+    metadata: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub enum DataError {
+    InvalidId,
+    EmptyValues,
+    ValueOutOfRange(f64),
+    MissingMetadata(String),
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataError::InvalidId => write!(f, "Invalid record ID"),
+            DataError::EmptyValues => write!(f, "Record contains no values"),
+            DataError::ValueOutOfRange(val) => write!(f, "Value {} is out of acceptable range", val),
+            DataError::MissingMetadata(key) => write!(f, "Missing required metadata: {}", key),
+        }
+    }
+}
+
+impl Error for DataError {}
+
+impl DataRecord {
+    pub fn new(id: u32, values: Vec<f64>, metadata: HashMap<String, String>) -> Result<Self, DataError> {
+        if id == 0 {
+            return Err(DataError::InvalidId);
+        }
+        
+        if values.is_empty() {
+            return Err(DataError::EmptyValues);
+        }
+        
+        for &value in &values {
+            if !value.is_finite() {
+                return Err(DataError::ValueOutOfRange(value));
+            }
+        }
+        
+        Ok(Self {
+            id,
+            values,
+            metadata,
+        })
+    }
+    
+    pub fn validate_metadata(&self, required_keys: &[&str]) -> Result<(), DataError> {
+        for key in required_keys {
+            if !self.metadata.contains_key(*key) {
+                return Err(DataError::MissingMetadata(key.to_string()));
+            }
+        }
+        Ok(())
+    }
+    
+    pub fn calculate_statistics(&self) -> (f64, f64, f64) {
+        let count = self.values.len() as f64;
+        let sum: f64 = self.values.iter().sum();
+        let mean = sum / count;
+        
+        let variance: f64 = self.values.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / count;
+        
+        let std_dev = variance.sqrt();
+        
+        (mean, variance, std_dev)
+    }
+    
+    pub fn transform_values<F>(&mut self, transform_fn: F) 
+    where
+        F: Fn(f64) -> f64,
+    {
+        self.values = self.values.iter()
+            .map(|&x| transform_fn(x))
+            .collect();
+    }
+    
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+    
+    pub fn get_id(&self) -> u32 {
+        self.id
+    }
+    
+    pub fn get_values(&self) -> &[f64] {
+        &self.values
+    }
+    
+    pub fn get_metadata(&self) -> &HashMap<String, String> {
+        &self.metadata
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord]) -> Vec<(u32, f64, f64, f64)> {
+    records.iter()
+        .filter(|record| record.validate_metadata(&["source", "timestamp"]).is_ok())
+        .map(|record| {
+            let (mean, variance, std_dev) = record.calculate_statistics();
+            (record.id, mean, variance, std_dev)
+        })
+        .collect()
+}
+
+pub fn normalize_values(records: &mut [DataRecord]) {
+    for record in records {
+        let (mean, _, std_dev) = record.calculate_statistics();
+        if std_dev > 0.0 {
+            record.transform_values(|x| (x - mean) / std_dev);
+        }
+    }
+}
