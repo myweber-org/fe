@@ -1,88 +1,91 @@
+use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
 
-use std::collections::HashMap;
-
-pub struct DataProcessor {
-    cache: HashMap<String, Vec<f64>>,
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
 }
 
-impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor {
-            cache: HashMap::new(),
+pub fn process_data(input_path: &str, output_path: &str, threshold: f64) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let mut reader = Reader::from_reader(input_file);
+    
+    let output_file = File::create(output_path)?;
+    let mut writer = Writer::from_writer(output_file);
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.value >= threshold && record.active {
+            writer.serialize(&record)?;
         }
     }
 
-    pub fn process_numeric_data(&mut self, key: &str, values: &[f64]) -> Result<Vec<f64>, String> {
-        if values.is_empty() {
-            return Err("Empty data array provided".to_string());
-        }
+    writer.flush()?;
+    Ok(())
+}
 
-        if values.iter().any(|&x| x.is_nan() || x.is_infinite()) {
-            return Err("Invalid numeric values detected".to_string());
-        }
-
-        let processed: Vec<f64> = values
-            .iter()
-            .map(|&x| (x * 100.0).round() / 100.0)
-            .collect();
-
-        self.cache.insert(key.to_string(), processed.clone());
-        Ok(processed)
+pub fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
+    let count = records.len() as f64;
+    if count == 0.0 {
+        return (0.0, 0.0, 0.0);
     }
 
-    pub fn calculate_statistics(&self, key: &str) -> Option<(f64, f64, f64)> {
-        self.cache.get(key).map(|data| {
-            let sum: f64 = data.iter().sum();
-            let count = data.len() as f64;
-            let mean = sum / count;
-
-            let variance: f64 = data.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / count;
-            let std_dev = variance.sqrt();
-
-            (mean, variance, std_dev)
-        })
-    }
-
-    pub fn clear_cache(&mut self) {
-        self.cache.clear();
-    }
-
-    pub fn get_cached_keys(&self) -> Vec<String> {
-        self.cache.keys().cloned().collect()
-    }
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let mean = sum / count;
+    
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (mean, variance, std_dev)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_valid_data_processing() {
-        let mut processor = DataProcessor::new();
-        let data = vec![1.234, 2.567, 3.891];
-        let result = processor.process_numeric_data("test_data", &data);
+    fn test_calculate_statistics() {
+        let records = vec![
+            Record { id: 1, name: "Test1".to_string(), value: 10.0, active: true },
+            Record { id: 2, name: "Test2".to_string(), value: 20.0, active: true },
+            Record { id: 3, name: "Test3".to_string(), value: 30.0, active: false },
+        ];
         
-        assert!(result.is_ok());
-        let processed = result.unwrap();
-        assert_eq!(processed, vec![1.23, 2.57, 3.89]);
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        
+        assert_eq!(mean, 20.0);
+        assert_eq!(variance, 66.66666666666667);
+        assert_eq!(std_dev, 8.16496580927726);
     }
 
     #[test]
-    fn test_invalid_data() {
-        let mut processor = DataProcessor::new();
-        let data = vec![1.0, f64::NAN, 3.0];
-        let result = processor.process_numeric_data("invalid", &data);
+    fn test_process_data() -> Result<(), Box<dyn Error>> {
+        let input_data = "id,name,value,active\n1,Alice,15.5,true\n2,Bob,5.0,true\n3,Charlie,25.0,false";
         
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_statistics_calculation() {
-        let mut processor = DataProcessor::new();
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        processor.process_numeric_data("stats", &data).unwrap();
+        let input_file = NamedTempFile::new()?;
+        std::fs::write(&input_file, input_data)?;
         
-        let stats = processor.calculate_statistics("stats").unwrap();
-        assert_eq!(stats.0, 3.0);
+        let output_file = NamedTempFile::new()?;
+        
+        process_data(input_file.path().to_str().unwrap(), 
+                    output_file.path().to_str().unwrap(), 
+                    10.0)?;
+        
+        let output_content = std::fs::read_to_string(output_file.path())?;
+        assert!(output_content.contains("Alice"));
+        assert!(!output_content.contains("Bob"));
+        assert!(!output_content.contains("Charlie"));
+        
+        Ok(())
     }
 }
