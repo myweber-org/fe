@@ -1,113 +1,164 @@
 
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::error::Error;
-use std::fs::File;
-use std::path::Path;
+use std::fmt;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataRecord {
-    id: u32,
-    value: f64,
-    timestamp: String,
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: HashMap<String, f64>,
+    pub metadata: Option<HashMap<String, String>>,
 }
 
-impl DataRecord {
-    pub fn new(id: u32, value: f64, timestamp: &str) -> Result<Self, String> {
-        if value < 0.0 {
-            return Err("Value cannot be negative".to_string());
-        }
-        if timestamp.is_empty() {
-            return Err("Timestamp cannot be empty".to_string());
-        }
-        Ok(Self {
-            id,
-            value,
-            timestamp: timestamp.to_string(),
-        })
-    }
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidData(String),
+    TransformationFailed(String),
+    ValidationError(String),
+}
 
-    pub fn calculate_adjusted_value(&self, multiplier: f64) -> f64 {
-        self.value * multiplier
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
+            ProcessingError::TransformationFailed(msg) => write!(f, "Transformation failed: {}", msg),
+            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
+        }
     }
 }
 
-pub fn load_records_from_csv(file_path: &Path) -> Result<Vec<DataRecord>, Box<dyn Error>> {
-    let file = File::open(file_path)?;
-    let mut rdr = csv::Reader::from_reader(file);
-    let mut records = Vec::new();
+impl Error for ProcessingError {}
 
-    for result in rdr.deserialize() {
-        let raw_record: (u32, f64, String) = result?;
-        match DataRecord::new(raw_record.0, raw_record.1, &raw_record.2) {
-            Ok(record) => records.push(record),
-            Err(e) => eprintln!("Skipping invalid record: {}", e),
+pub struct DataProcessor {
+    validation_rules: Vec<Box<dyn Fn(&DataRecord) -> Result<(), ProcessingError>>>,
+    transformation_pipeline: Vec<Box<dyn Fn(DataRecord) -> Result<DataRecord, ProcessingError>>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            validation_rules: Vec::new(),
+            transformation_pipeline: Vec::new(),
         }
     }
 
-    Ok(records)
-}
-
-pub fn process_records(records: &[DataRecord]) -> (f64, f64, usize) {
-    let count = records.len();
-    if count == 0 {
-        return (0.0, 0.0, 0);
+    pub fn add_validation_rule<F>(&mut self, rule: F)
+    where
+        F: Fn(&DataRecord) -> Result<(), ProcessingError> + 'static,
+    {
+        self.validation_rules.push(Box::new(rule));
     }
 
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let avg = sum / count as f64;
-    let max = records
-        .iter()
-        .map(|r| r.value)
-        .fold(f64::NEG_INFINITY, f64::max);
+    pub fn add_transformation<F>(&mut self, transformation: F)
+    where
+        F: Fn(DataRecord) -> Result<DataRecord, ProcessingError> + 'static,
+    {
+        self.transformation_pipeline.push(Box::new(transformation));
+    }
 
-    (avg, max, count)
+    pub fn process(&self, mut record: DataRecord) -> Result<DataRecord, ProcessingError> {
+        for rule in &self.validation_rules {
+            rule(&record)?;
+        }
+
+        for transformation in &self.transformation_pipeline {
+            record = transformation(record)?;
+        }
+
+        Ok(record)
+    }
+
+    pub fn batch_process(&self, records: Vec<DataRecord>) -> Vec<Result<DataRecord, ProcessingError>> {
+        records.into_iter().map(|record| self.process(record)).collect()
+    }
+}
+
+pub fn create_default_processor() -> DataProcessor {
+    let mut processor = DataProcessor::new();
+
+    processor.add_validation_rule(|record| {
+        if record.id == 0 {
+            Err(ProcessingError::ValidationError("ID cannot be zero".to_string()))
+        } else {
+            Ok(())
+        }
+    });
+
+    processor.add_validation_rule(|record| {
+        if record.timestamp < 0 {
+            Err(ProcessingError::ValidationError("Timestamp cannot be negative".to_string()))
+        } else {
+            Ok(())
+        }
+    });
+
+    processor.add_transformation(|mut record| {
+        let normalized_values: HashMap<String, f64> = record.values
+            .iter()
+            .map(|(key, value)| (key.to_lowercase(), value.abs()))
+            .collect();
+        
+        record.values = normalized_values;
+        Ok(record)
+    });
+
+    processor.add_transformation(|mut record| {
+        if let Some(metadata) = &mut record.metadata {
+            metadata.insert("processed".to_string(), "true".to_string());
+            metadata.insert("processor_version".to_string(), "1.0.0".to_string());
+        }
+        Ok(record)
+    });
+
+    processor
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
+    use std::collections::HashMap;
 
     #[test]
-    fn test_valid_record_creation() {
-        let record = DataRecord::new(1, 42.5, "2024-01-15T10:30:00Z");
-        assert!(record.is_ok());
-        let record = record.unwrap();
-        assert_eq!(record.id, 1);
-        assert_eq!(record.value, 42.5);
-        assert_eq!(record.timestamp, "2024-01-15T10:30:00Z");
-    }
-
-    #[test]
-    fn test_invalid_record_creation() {
-        let record = DataRecord::new(1, -5.0, "2024-01-15T10:30:00Z");
-        assert!(record.is_err());
+    fn test_data_processing() {
+        let processor = create_default_processor();
         
-        let record = DataRecord::new(1, 5.0, "");
-        assert!(record.is_err());
+        let mut values = HashMap::new();
+        values.insert("TEMPERATURE".to_string(), -25.5);
+        values.insert("Pressure".to_string(), 101.3);
+        
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1625097600,
+            values,
+            metadata: Some(HashMap::new()),
+        };
+
+        let result = processor.process(record);
+        assert!(result.is_ok());
+        
+        let processed = result.unwrap();
+        assert!(processed.values.contains_key("temperature"));
+        assert_eq!(processed.values.get("temperature"), Some(&25.5));
+        
+        if let Some(metadata) = processed.metadata {
+            assert_eq!(metadata.get("processed"), Some(&"true".to_string()));
+        }
     }
 
     #[test]
-    fn test_calculate_adjusted_value() {
-        let record = DataRecord::new(1, 10.0, "2024-01-15T10:30:00Z").unwrap();
-        assert_eq!(record.calculate_adjusted_value(2.5), 25.0);
-    }
+    fn test_validation_failure() {
+        let processor = create_default_processor();
+        
+        let record = DataRecord {
+            id: 0,
+            timestamp: 1625097600,
+            values: HashMap::new(),
+            metadata: None,
+        };
 
-    #[test]
-    fn test_load_and_process_records() -> Result<(), Box<dyn Error>> {
-        let mut temp_file = NamedTempFile::new()?;
-        writeln!(temp_file, "id,value,timestamp")?;
-        writeln!(temp_file, "1,10.5,2024-01-15T10:30:00Z")?;
-        writeln!(temp_file, "2,20.0,2024-01-15T11:30:00Z")?;
-        writeln!(temp_file, "3,15.5,2024-01-15T12:30:00Z")?;
-
-        let records = load_records_from_csv(temp_file.path())?;
-        assert_eq!(records.len(), 3);
-
-        let (avg, max, count) = process_records(&records);
-        assert_eq!(count, 3);
-        assert!((avg - 15.333333333333334).abs() < 0.0001);
-        assert_eq!(max, 20.0);
-
-        Ok(())
+        let result = processor.process(record);
+        assert!(result.is_err());
     }
 }
