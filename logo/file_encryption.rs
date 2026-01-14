@@ -105,4 +105,54 @@ mod tests {
         
         assert_eq!(original_content.to_vec(), decrypted_content);
     }
+}use std::fs;
+use std::io::{self, Read, Write};
+
+const DEFAULT_KEY: &[u8] = b"secret_key_123";
+
+fn xor_cipher(data: &[u8], key: &[u8]) -> Vec<u8> {
+    data.iter()
+        .enumerate()
+        .map(|(i, &byte)| byte ^ key[i % key.len()])
+        .collect()
+}
+
+fn process_file(input_path: &str, output_path: &str, key: Option<&[u8]>) -> io::Result<()> {
+    let key = key.unwrap_or(DEFAULT_KEY);
+    let mut file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+
+    let processed = xor_cipher(&buffer, key);
+
+    let mut output = fs::File::create(output_path)?;
+    output.write_all(&processed)?;
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 3 {
+        eprintln!("Usage: {} <input> <output> [key]", args[0]);
+        std::process::exit(1);
+    }
+
+    let key = args.get(3).map(|k| k.as_bytes());
+    process_file(&args[1], &args[2], key)?;
+    println!("File processed successfully");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_xor_cipher() {
+        let data = b"hello world";
+        let key = b"key";
+        let encrypted = xor_cipher(data, key);
+        let decrypted = xor_cipher(&encrypted, key);
+        assert_eq!(data.to_vec(), decrypted);
+    }
 }
