@@ -1,88 +1,65 @@
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use std::fs::{self, File};
+use std::io::{Read, Write};
 
-use std::fs;
-use std::io::{self, Read, Write};
+const NONCE_SIZE: usize = 12;
 
-const DEFAULT_KEY: u8 = 0x55;
+pub fn encrypt_file(input_path: &str, output_path: &str, password: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = File::open(input_path)?;
+    let mut plaintext = Vec::new();
+    file.read_to_end(&mut plaintext)?;
 
-fn xor_cipher(data: &mut [u8], key: u8) {
-    for byte in data.iter_mut() {
-        *byte ^= key;
-    }
-}
+    let key = derive_key(password);
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = Nonce::from_slice(&generate_nonce());
 
-fn process_file(input_path: &str, output_path: &str, key: u8) -> io::Result<()> {
-    let mut file = fs::File::open(input_path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    
-    xor_cipher(&mut buffer, key);
-    
-    let mut output_file = fs::File::create(output_path)?;
-    output_file.write_all(&buffer)?;
-    
+    let ciphertext = cipher.encrypt(nonce, plaintext.as_ref())
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+
+    let mut output = File::create(output_path)?;
+    output.write_all(nonce.as_slice())?;
+    output.write_all(&ciphertext)?;
+
     Ok(())
 }
 
-fn main() -> io::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    
-    if args.len() != 3 {
-        eprintln!("Usage: {} <input_file> <output_file>", args[0]);
-        std::process::exit(1);
+pub fn decrypt_file(input_path: &str, output_path: &str, password: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = File::open(input_path)?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
+
+    if data.len() < NONCE_SIZE {
+        return Err("File too short to contain nonce".into());
     }
-    
-    let input_path = &args[1];
-    let output_path = &args[2];
-    
-    process_file(input_path, output_path, DEFAULT_KEY)?;
-    println!("File processed successfully with key: 0x{:02X}", DEFAULT_KEY);
-    
+
+    let (nonce_slice, ciphertext) = data.split_at(NONCE_SIZE);
+    let nonce = Nonce::from_slice(nonce_slice);
+    let key = derive_key(password);
+    let cipher = Aes256Gcm::new(&key);
+
+    let plaintext = cipher.decrypt(nonce, ciphertext)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+
+    let mut output = File::create(output_path)?;
+    output.write_all(&plaintext)?;
+
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-    
-    #[test]
-    fn test_xor_cipher_symmetry() {
-        let mut data = vec![0x00, 0xFF, 0x55, 0xAA];
-        let original = data.clone();
-        let key = 0x33;
-        
-        xor_cipher(&mut data, key);
-        assert_ne!(data, original);
-        
-        xor_cipher(&mut data, key);
-        assert_eq!(data, original);
+fn derive_key(password: &str) -> Key<Aes256Gcm> {
+    let mut key = [0u8; 32];
+    let password_bytes = password.as_bytes();
+    for (i, &byte) in password_bytes.iter().enumerate() {
+        key[i % 32] ^= byte;
     }
-    
-    #[test]
-    fn test_file_encryption() -> io::Result<()> {
-        let mut input_file = NamedTempFile::new()?;
-        let test_data = b"Hello, World!";
-        input_file.write_all(test_data)?;
-        
-        let output_file = NamedTempFile::new()?;
-        
-        process_file(
-            input_file.path().to_str().unwrap(),
-            output_file.path().to_str().unwrap(),
-            DEFAULT_KEY
-        )?;
-        
-        let mut encrypted = Vec::new();
-        fs::File::open(output_file.path())?.read_to_end(&mut encrypted)?;
-        
-        assert_ne!(encrypted, test_data);
-        
-        let mut decrypted = encrypted.clone();
-        xor_cipher(&mut decrypted, DEFAULT_KEY);
-        
-        assert_eq!(decrypted, test_data);
-        
-        Ok(())
-    }
+    *Key::<Aes256Gcm>::from_slice(&key)
+}
+
+fn generate_nonce() -> [u8; NONCE_SIZE] {
+    let mut nonce = [0u8; NONCE_SIZE];
+    OsRng.fill_bytes(&mut nonce);
+    nonce
 }
