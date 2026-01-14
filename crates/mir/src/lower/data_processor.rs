@@ -735,3 +735,152 @@ mod tests {
         assert_eq!(category_counts.get("TypeB"), Some(&1));
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    data: HashMap<String, Vec<f64>>,
+    validation_rules: HashMap<String, ValidationRule>,
+}
+
+pub struct ValidationRule {
+    min_value: Option<f64>,
+    max_value: Option<f64>,
+    required: bool,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            data: HashMap::new(),
+            validation_rules: HashMap::new(),
+        }
+    }
+
+    pub fn add_dataset(&mut self, key: String, values: Vec<f64>) -> Result<(), String> {
+        if let Some(rule) = self.validation_rules.get(&key) {
+            if rule.required && values.is_empty() {
+                return Err(format!("Dataset '{}' cannot be empty", key));
+            }
+
+            for &value in &values {
+                if let Some(min) = rule.min_value {
+                    if value < min {
+                        return Err(format!("Value {} below minimum {}", value, min));
+                    }
+                }
+                if let Some(max) = rule.max_value {
+                    if value > max {
+                        return Err(format!("Value {} above maximum {}", value, max));
+                    }
+                }
+            }
+        }
+
+        self.data.insert(key, values);
+        Ok(())
+    }
+
+    pub fn set_validation_rule(&mut self, key: String, rule: ValidationRule) {
+        self.validation_rules.insert(key, rule);
+    }
+
+    pub fn calculate_statistics(&self, key: &str) -> Option<Statistics> {
+        self.data.get(key).map(|values| {
+            let sum: f64 = values.iter().sum();
+            let count = values.len() as f64;
+            let mean = if count > 0.0 { sum / count } else { 0.0 };
+
+            let variance: f64 = if count > 1.0 {
+                values.iter()
+                    .map(|&x| (x - mean).powi(2))
+                    .sum::<f64>() / (count - 1.0)
+            } else {
+                0.0
+            };
+
+            Statistics {
+                mean,
+                variance,
+                count: values.len(),
+                min: values.iter().copied().fold(f64::INFINITY, f64::min),
+                max: values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            }
+        })
+    }
+
+    pub fn normalize_data(&mut self, key: &str) -> Result<(), String> {
+        if let Some(values) = self.data.get_mut(key) {
+            if values.is_empty() {
+                return Ok(());
+            }
+
+            let stats = self.calculate_statistics(key).unwrap();
+            if stats.variance == 0.0 {
+                return Ok(());
+            }
+
+            for value in values.iter_mut() {
+                *value = (*value - stats.mean) / stats.variance.sqrt();
+            }
+            Ok(())
+        } else {
+            Err(format!("Dataset '{}' not found", key))
+        }
+    }
+
+    pub fn get_data(&self, key: &str) -> Option<&Vec<f64>> {
+        self.data.get(key)
+    }
+}
+
+pub struct Statistics {
+    pub mean: f64,
+    pub variance: f64,
+    pub count: usize,
+    pub min: f64,
+    pub max: f64,
+}
+
+impl ValidationRule {
+    pub fn new(min_value: Option<f64>, max_value: Option<f64>, required: bool) -> Self {
+        ValidationRule {
+            min_value,
+            max_value,
+            required,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        let rule = ValidationRule::new(Some(0.0), Some(100.0), true);
+        processor.set_validation_rule("test_data".to_string(), rule);
+
+        let data = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+        assert!(processor.add_dataset("test_data".to_string(), data).is_ok());
+
+        let stats = processor.calculate_statistics("test_data").unwrap();
+        assert_eq!(stats.mean, 30.0);
+        assert_eq!(stats.count, 5);
+        assert_eq!(stats.min, 10.0);
+        assert_eq!(stats.max, 50.0);
+
+        assert!(processor.normalize_data("test_data").is_ok());
+    }
+
+    #[test]
+    fn test_validation_failure() {
+        let mut processor = DataProcessor::new();
+        let rule = ValidationRule::new(Some(0.0), Some(10.0), true);
+        processor.set_validation_rule("test_data".to_string(), rule);
+
+        let data = vec![5.0, 15.0, 25.0];
+        let result = processor.add_dataset("test_data".to_string(), data);
+        assert!(result.is_err());
+    }
+}
