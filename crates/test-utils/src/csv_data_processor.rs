@@ -1,107 +1,135 @@
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 
-#[derive(Debug)]
-pub struct CsvRecord {
-    pub id: u32,
-    pub name: String,
-    pub value: f64,
-    pub category: String,
+pub struct CsvProcessor {
+    delimiter: char,
+    has_headers: bool,
 }
 
-impl CsvRecord {
-    pub fn new(id: u32, name: String, value: f64, category: String) -> Result<Self, String> {
-        if name.is_empty() {
-            return Err("Name cannot be empty".to_string());
+impl CsvProcessor {
+    pub fn new(delimiter: char, has_headers: bool) -> Self {
+        CsvProcessor {
+            delimiter,
+            has_headers,
         }
-        if value < 0.0 {
-            return Err("Value must be non-negative".to_string());
-        }
-        if category.is_empty() {
-            return Err("Category cannot be empty".to_string());
-        }
-
-        Ok(Self {
-            id,
-            name,
-            value,
-            category,
-        })
     }
 
-    pub fn transform_value(&mut self, multiplier: f64) {
-        self.value *= multiplier;
+    pub fn read_and_validate(&self, file_path: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut records = Vec::new();
+        let mut line_number = 0;
+
+        for line in reader.lines() {
+            line_number += 1;
+            let line_content = line?;
+            let fields: Vec<String> = line_content
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if fields.is_empty() {
+                return Err(format!("Empty line found at line {}", line_number).into());
+            }
+
+            records.push(fields);
+        }
+
+        if records.is_empty() {
+            return Err("CSV file is empty".into());
+        }
+
+        Ok(records)
     }
 
-    pub fn to_json(&self) -> String {
-        format!(
-            r#"{{"id":{},"name":"{}","value":{},"category":"{}"}}"#,
-            self.id, self.name, self.value, self.category
-        )
+    pub fn transform_numeric_fields(
+        &self,
+        data: &[Vec<String>],
+        column_index: usize,
+        multiplier: f64,
+    ) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let mut transformed = Vec::new();
+        let start_index = if self.has_headers { 1 } else { 0 };
+
+        for (row_index, row) in data.iter().enumerate() {
+            if row_index == 0 && self.has_headers {
+                transformed.push(row.clone());
+                continue;
+            }
+
+            if column_index >= row.len() {
+                return Err(format!(
+                    "Column index {} out of bounds for row {}",
+                    column_index, row_index
+                )
+                .into());
+            }
+
+            let mut new_row = row.clone();
+            match row[column_index].parse::<f64>() {
+                Ok(value) => {
+                    let transformed_value = value * multiplier;
+                    new_row[column_index] = transformed_value.to_string();
+                }
+                Err(_) => {
+                    return Err(format!(
+                        "Invalid numeric value at row {}, column {}: '{}'",
+                        row_index, column_index, row[column_index]
+                    )
+                    .into());
+                }
+            }
+            transformed.push(new_row);
+        }
+
+        Ok(transformed)
     }
-}
 
-pub fn process_csv_file(file_path: &str) -> Result<Vec<CsvRecord>, Box<dyn Error>> {
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
-    let mut records = Vec::new();
-    let mut line_number = 0;
-
-    for line in reader.lines() {
-        line_number += 1;
-        let line = line?;
+    pub fn write_to_file(&self, data: &[Vec<String>], output_path: &str) -> Result<(), Box<dyn Error>> {
+        let mut file = File::create(output_path)?;
         
-        if line.trim().is_empty() || line.starts_with('#') {
-            continue;
+        for row in data {
+            let line = row.join(&self.delimiter.to_string());
+            writeln!(file, "{}", line)?;
         }
-
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() != 4 {
-            return Err(format!("Invalid CSV format at line {}", line_number).into());
-        }
-
-        let id = parts[0].parse::<u32>()
-            .map_err(|_| format!("Invalid ID at line {}", line_number))?;
         
-        let name = parts[1].trim().to_string();
-        
-        let value = parts[2].parse::<f64>()
-            .map_err(|_| format!("Invalid value at line {}", line_number))?;
-        
-        let category = parts[3].trim().to_string();
-
-        match CsvRecord::new(id, name, value, category) {
-            Ok(record) => records.push(record),
-            Err(e) => eprintln!("Warning: Skipping line {}: {}", line_number, e),
-        }
+        Ok(())
     }
 
-    Ok(records)
-}
+    pub fn calculate_column_summary(&self, data: &[Vec<String>], column_index: usize) -> Result<(f64, f64, f64), Box<dyn Error>> {
+        let start_index = if self.has_headers { 1 } else { 0 };
+        let mut values = Vec::new();
+        let mut sum = 0.0;
 
-pub fn calculate_statistics(records: &[CsvRecord]) -> (f64, f64, f64) {
-    if records.is_empty() {
-        return (0.0, 0.0, 0.0);
+        for (row_index, row) in data.iter().enumerate().skip(start_index) {
+            if column_index >= row.len() {
+                return Err(format!("Column index {} out of bounds for row {}", column_index, row_index).into());
+            }
+
+            match row[column_index].parse::<f64>() {
+                Ok(value) => {
+                    values.push(value);
+                    sum += value;
+                }
+                Err(_) => {
+                    return Err(format!("Invalid numeric value at row {}, column {}: '{}'", 
+                        row_index, column_index, row[column_index]).into());
+                }
+            }
+        }
+
+        if values.is_empty() {
+            return Err("No valid numeric values found in specified column".into());
+        }
+
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let min = values[0];
+        let max = values[values.len() - 1];
+        let average = sum / values.len() as f64;
+
+        Ok((min, max, average))
     }
-
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let count = records.len() as f64;
-    let mean = sum / count;
-    
-    let variance: f64 = records.iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>() / count;
-    
-    let std_dev = variance.sqrt();
-
-    (mean, variance, std_dev)
-}
-
-pub fn filter_by_category(records: Vec<CsvRecord>, category: &str) -> Vec<CsvRecord> {
-    records.into_iter()
-        .filter(|r| r.category == category)
-        .collect()
 }
 
 #[cfg(test)]
@@ -111,59 +139,24 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_csv_record_creation() {
-        let record = CsvRecord::new(1, "Test".to_string(), 100.0, "A".to_string());
-        assert!(record.is_ok());
-        
-        let invalid_record = CsvRecord::new(2, "".to_string(), -10.0, "".to_string());
-        assert!(invalid_record.is_err());
-    }
-
-    #[test]
-    fn test_value_transformation() {
-        let mut record = CsvRecord::new(1, "Test".to_string(), 100.0, "A".to_string()).unwrap();
-        record.transform_value(1.5);
-        assert_eq!(record.value, 150.0);
-    }
-
-    #[test]
     fn test_csv_processing() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "1,Item1,100.5,CategoryA").unwrap();
-        writeln!(temp_file, "2,Item2,200.0,CategoryB").unwrap();
-        writeln!(temp_file, "# This is a comment").unwrap();
-        writeln!(temp_file, "").unwrap();
-        
-        let result = process_csv_file(temp_file.path().to_str().unwrap());
-        assert!(result.is_ok());
-        let records = result.unwrap();
-        assert_eq!(records.len(), 2);
-    }
+        writeln!(temp_file, "name,age,salary").unwrap();
+        writeln!(temp_file, "Alice,30,50000").unwrap();
+        writeln!(temp_file, "Bob,25,45000").unwrap();
+        writeln!(temp_file, "Charlie,35,60000").unwrap();
 
-    #[test]
-    fn test_statistics_calculation() {
-        let records = vec![
-            CsvRecord::new(1, "A".to_string(), 10.0, "X".to_string()).unwrap(),
-            CsvRecord::new(2, "B".to_string(), 20.0, "X".to_string()).unwrap(),
-            CsvRecord::new(3, "C".to_string(), 30.0, "X".to_string()).unwrap(),
-        ];
+        let processor = CsvProcessor::new(',', true);
+        let data = processor.read_and_validate(temp_file.path().to_str().unwrap()).unwrap();
         
-        let (mean, variance, std_dev) = calculate_statistics(&records);
-        assert_eq!(mean, 20.0);
-        assert_eq!(variance, 66.66666666666667);
-        assert_eq!(std_dev, 8.16496580927726);
-    }
-
-    #[test]
-    fn test_category_filter() {
-        let records = vec![
-            CsvRecord::new(1, "A".to_string(), 10.0, "X".to_string()).unwrap(),
-            CsvRecord::new(2, "B".to_string(), 20.0, "Y".to_string()).unwrap(),
-            CsvRecord::new(3, "C".to_string(), 30.0, "X".to_string()).unwrap(),
-        ];
+        assert_eq!(data.len(), 3);
+        assert_eq!(data[0], vec!["name", "age", "salary"]);
         
-        let filtered = filter_by_category(records, "X");
-        assert_eq!(filtered.len(), 2);
-        assert!(filtered.iter().all(|r| r.category == "X"));
+        let transformed = processor.transform_numeric_fields(&data, 2, 1.1).unwrap();
+        assert_eq!(transformed[1][2], "55000");
+        
+        let summary = processor.calculate_column_summary(&data, 1).unwrap();
+        assert_eq!(summary.0, 25.0);
+        assert_eq!(summary.1, 35.0);
     }
 }
