@@ -437,3 +437,154 @@ mod tests {
         assert_eq!(record.values.get("temperature").unwrap(), &0.75);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidId,
+    InvalidValue,
+    MissingField(String),
+    TransformationError(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidId => write!(f, "Invalid record ID"),
+            ProcessingError::InvalidValue => write!(f, "Invalid numeric value"),
+            ProcessingError::MissingField(field) => write!(f, "Missing required field: {}", field),
+            ProcessingError::TransformationError(msg) => write!(f, "Transformation error: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    validation_rules: Vec<Box<dyn Fn(&DataRecord) -> Result<(), ProcessingError>>>,
+    transformation_pipeline: Vec<Box<dyn Fn(DataRecord) -> Result<DataRecord, ProcessingError>>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            validation_rules: Vec::new(),
+            transformation_pipeline: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule<F>(&mut self, rule: F)
+    where
+        F: Fn(&DataRecord) -> Result<(), ProcessingError> + 'static,
+    {
+        self.validation_rules.push(Box::new(rule));
+    }
+
+    pub fn add_transformation<F>(&mut self, transform: F)
+    where
+        F: Fn(DataRecord) -> Result<DataRecord, ProcessingError> + 'static,
+    {
+        self.transformation_pipeline.push(Box::new(transform));
+    }
+
+    pub fn process_record(&self, mut record: DataRecord) -> Result<DataRecord, ProcessingError> {
+        for rule in &self.validation_rules {
+            rule(&record)?;
+        }
+
+        for transform in &self.transformation_pipeline {
+            record = transform(record)?;
+        }
+
+        Ok(record)
+    }
+
+    pub fn process_batch(&self, records: Vec<DataRecord>) -> Vec<Result<DataRecord, ProcessingError>> {
+        records.into_iter()
+            .map(|record| self.process_record(record))
+            .collect()
+    }
+}
+
+pub fn create_default_processor() -> DataProcessor {
+    let mut processor = DataProcessor::new();
+
+    processor.add_validation_rule(|record| {
+        if record.id == 0 {
+            Err(ProcessingError::InvalidId)
+        } else {
+            Ok(())
+        }
+    });
+
+    processor.add_validation_rule(|record| {
+        if record.value.is_nan() || record.value.is_infinite() {
+            Err(ProcessingError::InvalidValue)
+        } else {
+            Ok(())
+        }
+    });
+
+    processor.add_transformation(|mut record| {
+        record.value = (record.value * 100.0).round() / 100.0;
+        Ok(record)
+    });
+
+    processor.add_transformation(|mut record| {
+        record.metadata.insert("processed_timestamp".to_string(), 
+            chrono::Utc::now().to_rfc3339());
+        Ok(record)
+    });
+
+    processor
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record_processing() {
+        let processor = create_default_processor();
+        let mut metadata = HashMap::new();
+        metadata.insert("source".to_string(), "test".to_string());
+
+        let record = DataRecord {
+            id: 1,
+            name: "Test Record".to_string(),
+            value: 123.456,
+            metadata,
+        };
+
+        let result = processor.process_record(record);
+        assert!(result.is_ok());
+        
+        let processed = result.unwrap();
+        assert_eq!(processed.value, 123.46);
+        assert!(processed.metadata.contains_key("processed_timestamp"));
+    }
+
+    #[test]
+    fn test_invalid_id() {
+        let processor = create_default_processor();
+        let record = DataRecord {
+            id: 0,
+            name: "Invalid".to_string(),
+            value: 100.0,
+            metadata: HashMap::new(),
+        };
+
+        let result = processor.process_record(record);
+        assert!(matches!(result, Err(ProcessingError::InvalidId)));
+    }
+}
