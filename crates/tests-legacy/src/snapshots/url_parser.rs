@@ -1,21 +1,15 @@
+
 use regex::Regex;
 
-pub struct ParsedUrl {
-    pub protocol: String,
-    pub domain: String,
-    pub path: String,
-}
-
-pub fn parse_url(url: &str) -> Option<ParsedUrl> {
-    let re = Regex::new(r"^(https?)://([^/]+)(/.*)?$").unwrap();
+pub fn parse_url(url: &str) -> Option<String> {
+    let pattern = r"^(https?://)?([\w-]+\.)+[\w-]+(:\d+)?(/[\w-./?%&=]*)?$";
+    let re = Regex::new(pattern).unwrap();
     
-    re.captures(url).map(|caps| {
-        let protocol = caps.get(1).map_or("", |m| m.as_str()).to_string();
-        let domain = caps.get(2).map_or("", |m| m.as_str()).to_string();
-        let path = caps.get(3).map_or("/", |m| m.as_str()).to_string();
-        
-        ParsedUrl { protocol, domain, path }
-    })
+    if re.is_match(url) {
+        Some(url.to_string())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -23,28 +17,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_valid_url() {
-        let result = parse_url("https://example.com/path/to/resource");
-        assert!(result.is_some());
-        let parsed = result.unwrap();
-        assert_eq!(parsed.protocol, "https");
-        assert_eq!(parsed.domain, "example.com");
-        assert_eq!(parsed.path, "/path/to/resource");
+    fn test_valid_urls() {
+        assert!(parse_url("https://example.com").is_some());
+        assert!(parse_url("http://sub.domain.co.uk/path").is_some());
+        assert!(parse_url("localhost:8080/api").is_some());
     }
 
     #[test]
-    fn test_parse_url_without_path() {
-        let result = parse_url("http://example.com");
-        assert!(result.is_some());
-        let parsed = result.unwrap();
-        assert_eq!(parsed.protocol, "http");
-        assert_eq!(parsed.domain, "example.com");
-        assert_eq!(parsed.path, "/");
-    }
-
-    #[test]
-    fn test_parse_invalid_url() {
-        let result = parse_url("not-a-valid-url");
-        assert!(result.is_none());
+    fn test_invalid_urls() {
+        assert!(parse_url("not-a-url").is_none());
+        assert!(parse_url("http://").is_none());
+        assert!(parse_url("://example.com").is_none());
     }
 }
