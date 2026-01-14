@@ -204,4 +204,91 @@ mod tests {
         assert_eq!(config.get_or_default("EXISTING", "default"), "value");
         assert_eq!(config.get_or_default("MISSING", "default"), "default");
     }
+}use std::collections::HashMap;
+use std::fs;
+use std::io;
+
+pub struct Config {
+    values: HashMap<String, String>,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        Config {
+            values: HashMap::new(),
+        }
+    }
+
+    pub fn from_file(path: &str) -> io::Result<Self> {
+        let content = fs::read_to_string(path)?;
+        let mut config = Config::new();
+        config.parse(&content);
+        Ok(config)
+    }
+
+    fn parse(&mut self, content: &str) {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            if let Some((key, value)) = trimmed.split_once('=') {
+                let key = key.trim().to_string();
+                let value = value.trim().to_string();
+                self.values.insert(key, value);
+            }
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.values.get(key)
+    }
+
+    pub fn set(&mut self, key: &str, value: &str) {
+        self.values.insert(key.to_string(), value.to_string());
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.values.contains_key(key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_parse_config() {
+        let mut config = Config::new();
+        let content = "host=localhost\nport=8080\n# comment\ndebug=true";
+        config.parse(content);
+
+        assert_eq!(config.get("host"), Some(&"localhost".to_string()));
+        assert_eq!(config.get("port"), Some(&"8080".to_string()));
+        assert_eq!(config.get("debug"), Some(&"true".to_string()));
+        assert_eq!(config.get("missing"), None);
+    }
+
+    #[test]
+    fn test_from_file() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "server=example.com").unwrap();
+        writeln!(temp_file, "timeout=30").unwrap();
+
+        let config = Config::from_file(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.get("server"), Some(&"example.com".to_string()));
+        assert_eq!(config.get("timeout"), Some(&"30".to_string()));
+    }
+
+    #[test]
+    fn test_set_and_get() {
+        let mut config = Config::new();
+        config.set("key", "value");
+        assert_eq!(config.get("key"), Some(&"value".to_string()));
+        assert!(config.contains_key("key"));
+        assert!(!config.contains_key("nonexistent"));
+    }
 }
