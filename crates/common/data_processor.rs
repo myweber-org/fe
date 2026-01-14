@@ -1,69 +1,64 @@
 
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fmt;
 
-pub struct DataProcessor {
-    cache: HashMap<String, Vec<f64>>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub timestamp: i64,
 }
 
-impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor {
-            cache: HashMap::new(),
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidValue(f64),
+    InvalidTimestamp(i64),
+    ValidationFailed(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidValue(v) => write!(f, "Invalid value: {}", v),
+            ProcessingError::InvalidTimestamp(t) => write!(f, "Invalid timestamp: {}", t),
+            ProcessingError::ValidationFailed(msg) => write!(f, "Validation failed: {}", msg),
         }
     }
+}
 
-    pub fn validate_data(&self, data: &[f64]) -> Result<(), String> {
-        if data.is_empty() {
-            return Err("Empty data array".to_string());
-        }
+impl Error for ProcessingError {}
 
-        for &value in data {
-            if !value.is_finite() {
-                return Err("Invalid numeric value detected".to_string());
-            }
-        }
-
-        Ok(())
+pub fn validate_record(record: &DataRecord) -> Result<(), ProcessingError> {
+    if record.value < 0.0 || record.value > 1000.0 {
+        return Err(ProcessingError::InvalidValue(record.value));
     }
-
-    pub fn normalize_data(&self, data: &[f64]) -> Vec<f64> {
-        if data.is_empty() {
-            return Vec::new();
-        }
-
-        let min = data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let max = data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-        
-        if (max - min).abs() < f64::EPSILON {
-            return vec![0.0; data.len()];
-        }
-
-        data.iter()
-            .map(|&x| (x - min) / (max - min))
-            .collect()
+    
+    if record.timestamp < 0 {
+        return Err(ProcessingError::InvalidTimestamp(record.timestamp));
     }
+    
+    Ok(())
+}
 
-    pub fn process_with_cache(&mut self, key: &str, data: &[f64]) -> Result<Vec<f64>, String> {
-        if let Some(cached) = self.cache.get(key) {
-            return Ok(cached.clone());
-        }
-
-        self.validate_data(data)?;
-        let normalized = self.normalize_data(data);
-        self.cache.insert(key.to_string(), normalized.clone());
-        
-        Ok(normalized)
+pub fn transform_record(record: &DataRecord) -> DataRecord {
+    DataRecord {
+        id: record.id,
+        value: record.value * 1.1,
+        timestamp: record.timestamp + 3600,
     }
+}
 
-    pub fn clear_cache(&mut self) {
-        self.cache.clear();
+pub fn process_records(records: Vec<DataRecord>) -> Result<Vec<DataRecord>, ProcessingError> {
+    let mut processed = Vec::with_capacity(records.len());
+    
+    for record in records {
+        validate_record(&record)?;
+        let transformed = transform_record(&record);
+        processed.push(transformed);
     }
-
-    pub fn cache_stats(&self) -> (usize, usize) {
-        let total_keys = self.cache.len();
-        let total_values: usize = self.cache.values().map(|v| v.len()).sum();
-        (total_keys, total_values)
-    }
+    
+    Ok(processed)
 }
 
 #[cfg(test)]
@@ -71,33 +66,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_validation() {
-        let processor = DataProcessor::new();
-        assert!(processor.validate_data(&[1.0, 2.0, 3.0]).is_ok());
-        assert!(processor.validate_data(&[]).is_err());
+    fn test_validate_record_valid() {
+        let record = DataRecord {
+            id: 1,
+            value: 500.0,
+            timestamp: 1609459200,
+        };
+        assert!(validate_record(&record).is_ok());
     }
 
     #[test]
-    fn test_normalization() {
-        let processor = DataProcessor::new();
-        let data = vec![1.0, 2.0, 3.0];
-        let normalized = processor.normalize_data(&data);
-        assert_eq!(normalized, vec![0.0, 0.5, 1.0]);
+    fn test_validate_record_invalid_value() {
+        let record = DataRecord {
+            id: 1,
+            value: -10.0,
+            timestamp: 1609459200,
+        };
+        assert!(validate_record(&record).is_err());
     }
 
     #[test]
-    fn test_cache_operations() {
-        let mut processor = DataProcessor::new();
-        let data = vec![10.0, 20.0, 30.0];
-        
-        let result1 = processor.process_with_cache("test", &data);
-        assert!(result1.is_ok());
-        
-        let result2 = processor.process_with_cache("test", &data);
-        assert!(result2.is_ok());
-        assert_eq!(result1.unwrap(), result2.unwrap());
-        
-        let stats = processor.cache_stats();
-        assert_eq!(stats, (1, 3));
+    fn test_transform_record() {
+        let record = DataRecord {
+            id: 1,
+            value: 100.0,
+            timestamp: 1609459200,
+        };
+        let transformed = transform_record(&record);
+        assert_eq!(transformed.value, 110.0);
+        assert_eq!(transformed.timestamp, 1609462800);
     }
 }
