@@ -90,3 +90,77 @@ mod tests {
         assert_eq!(test_data.to_vec(), decrypted_data);
     }
 }
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+pub fn xor_cipher(data: &mut [u8], key: &[u8]) {
+    for (i, byte) in data.iter_mut().enumerate() {
+        *byte ^= key[i % key.len()];
+    }
+}
+
+pub fn process_file(input_path: &str, output_path: &str, key: &str) -> io::Result<()> {
+    let key_bytes = key.as_bytes();
+    let mut content = fs::read(input_path)?;
+    
+    xor_cipher(&mut content, key_bytes);
+    
+    fs::write(output_path, &content)?;
+    Ok(())
+}
+
+pub fn validate_key(key: &str) -> bool {
+    !key.is_empty() && key.len() <= 256
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_xor_cipher_symmetry() {
+        let mut data = vec![1, 2, 3, 4, 5];
+        let original = data.clone();
+        let key = b"secret";
+        
+        xor_cipher(&mut data, key);
+        assert_ne!(data, original);
+        
+        xor_cipher(&mut data, key);
+        assert_eq!(data, original);
+    }
+    
+    #[test]
+    fn test_file_encryption() -> io::Result<()> {
+        let input_file = NamedTempFile::new()?;
+        let output_file = NamedTempFile::new()?;
+        
+        let test_data = b"Hello, XOR encryption!";
+        fs::write(input_file.path(), test_data)?;
+        
+        process_file(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap(),
+            "mykey123"
+        )?;
+        
+        let encrypted = fs::read(output_file.path())?;
+        assert_ne!(encrypted, test_data);
+        
+        let mut double_encrypted = encrypted.clone();
+        xor_cipher(&mut double_encrypted, b"mykey123");
+        assert_eq!(double_encrypted, test_data);
+        
+        Ok(())
+    }
+    
+    #[test]
+    fn test_key_validation() {
+        assert!(validate_key("a"));
+        assert!(validate_key(&"x".repeat(256)));
+        assert!(!validate_key(""));
+        assert!(!validate_key(&"x".repeat(257)));
+    }
+}
