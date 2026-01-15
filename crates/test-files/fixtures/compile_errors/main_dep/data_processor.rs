@@ -1,86 +1,82 @@
+use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::path::Path;
 
-pub struct DataProcessor {
-    file_path: String,
-    delimiter: char,
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
 }
 
-impl DataProcessor {
-    pub fn new(file_path: &str, delimiter: char) -> Self {
-        DataProcessor {
-            file_path: file_path.to_string(),
-            delimiter,
+impl Record {
+    pub fn is_valid(&self) -> bool {
+        !self.name.is_empty() && self.value >= 0.0
+    }
+}
+
+pub fn process_csv_file(input_path: &Path, output_path: &Path) -> Result<(), Box<dyn Error>> {
+    let mut reader = Reader::from_path(input_path)?;
+    let mut writer = Writer::from_path(output_path)?;
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.is_valid() {
+            writer.serialize(&record)?;
+        } else {
+            eprintln!("Skipping invalid record: {:?}", record);
         }
     }
 
-    pub fn filter_records(&self, column_index: usize, filter_value: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(&self.file_path)?;
-        let reader = BufReader::new(file);
-        let mut filtered = Vec::new();
+    writer.flush()?;
+    Ok(())
+}
 
-        for line in reader.lines() {
-            let line = line?;
-            let fields: Vec<String> = line.split(self.delimiter).map(|s| s.to_string()).collect();
-            
-            if column_index < fields.len() && fields[column_index] == filter_value {
-                filtered.push(fields);
-            }
-        }
-
-        Ok(filtered)
+pub fn calculate_average_value(records: &[Record]) -> Option<f64> {
+    if records.is_empty() {
+        return None;
     }
 
-    pub fn count_records(&self) -> Result<usize, Box<dyn Error>> {
-        let file = File::open(&self.file_path)?;
-        let reader = BufReader::new(file);
-        Ok(reader.lines().count())
-    }
-
-    pub fn get_column_values(&self, column_index: usize) -> Result<Vec<String>, Box<dyn Error>> {
-        let file = File::open(&self.file_path)?;
-        let reader = BufReader::new(file);
-        let mut values = Vec::new();
-
-        for line in reader.lines() {
-            let line = line?;
-            let fields: Vec<String> = line.split(self.delimiter).map(|s| s.to_string()).collect();
-            
-            if column_index < fields.len() {
-                values.push(fields[column_index].clone());
-            }
-        }
-
-        Ok(values)
-    }
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    Some(sum / records.len() as f64)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_filter_records() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,name,age\n1,alice,30\n2,bob,25\n3,alice,28").unwrap();
-        
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap(), ',');
-        let filtered = processor.filter_records(1, "alice").unwrap();
-        
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0][0], "1");
-        assert_eq!(filtered[1][0], "3");
+    fn test_record_validation() {
+        let valid_record = Record {
+            id: 1,
+            name: "Test".to_string(),
+            value: 42.5,
+            active: true,
+        };
+        assert!(valid_record.is_valid());
+
+        let invalid_record = Record {
+            id: 2,
+            name: "".to_string(),
+            value: -10.0,
+            active: false,
+        };
+        assert!(!invalid_record.is_valid());
     }
 
     #[test]
-    fn test_count_records() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "a,b,c\n1,2,3\n4,5,6").unwrap();
+    fn test_average_calculation() {
+        let records = vec![
+            Record { id: 1, name: "A".to_string(), value: 10.0, active: true },
+            Record { id: 2, name: "B".to_string(), value: 20.0, active: false },
+            Record { id: 3, name: "C".to_string(), value: 30.0, active: true },
+        ];
         
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap(), ',');
-        assert_eq!(processor.count_records().unwrap(), 3);
+        assert_eq!(calculate_average_value(&records), Some(20.0));
+        assert_eq!(calculate_average_value(&[]), None);
     }
 }
