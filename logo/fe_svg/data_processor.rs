@@ -1,376 +1,179 @@
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 
-pub struct DataRecord {
-    pub id: u32,
-    pub value: f64,
-    pub category: String,
-}
-
-impl DataRecord {
-    pub fn new(id: u32, value: f64, category: String) -> Self {
-        DataRecord {
-            id,
-            value,
-            category,
-        }
-    }
-
-    pub fn is_valid(&self) -> bool {
-        self.id > 0 && self.value >= 0.0 && !self.category.is_empty()
-    }
-}
-
-pub fn process_csv_file(file_path: &str) -> Result<Vec<DataRecord>, Box<dyn Error>> {
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
-    let mut records = Vec::new();
-
-    for (line_number, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() != 3 {
-            return Err(format!("Invalid format at line {}", line_number + 1).into());
-        }
-
-        let id = parts[0].parse::<u32>()?;
-        let value = parts[1].parse::<f64>()?;
-        let category = parts[2].to_string();
-
-        let record = DataRecord::new(id, value, category);
-        if !record.is_valid() {
-            return Err(format!("Invalid data at line {}", line_number + 1).into());
-        }
-
-        records.push(record);
-    }
-
-    Ok(records)
-}
-
-pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
-    if records.is_empty() {
-        return (0.0, 0.0, 0.0);
-    }
-
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let count = records.len() as f64;
-    let mean = sum / count;
-
-    let variance: f64 = records
-        .iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>()
-        / count;
-
-    let std_dev = variance.sqrt();
-
-    (sum, mean, std_dev)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_valid_record() {
-        let record = DataRecord::new(1, 42.5, "test".to_string());
-        assert!(record.is_valid());
-    }
-
-    #[test]
-    fn test_invalid_record() {
-        let record1 = DataRecord::new(0, 42.5, "test".to_string());
-        assert!(!record1.is_valid());
-
-        let record2 = DataRecord::new(1, -1.0, "test".to_string());
-        assert!(!record2.is_valid());
-
-        let record3 = DataRecord::new(1, 42.5, "".to_string());
-        assert!(!record3.is_valid());
-    }
-
-    #[test]
-    fn test_process_csv() -> Result<(), Box<dyn Error>> {
-        let mut temp_file = NamedTempFile::new()?;
-        writeln!(temp_file, "1,42.5,category_a")?;
-        writeln!(temp_file, "2,33.7,category_b")?;
-        writeln!(temp_file, "# This is a comment")?;
-        writeln!(temp_file, "3,19.2,category_c")?;
-
-        let records = process_csv_file(temp_file.path().to_str().unwrap())?;
-        assert_eq!(records.len(), 3);
-        assert_eq!(records[0].id, 1);
-        assert_eq!(records[1].value, 33.7);
-        assert_eq!(records[2].category, "category_c");
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_calculate_statistics() {
-        let records = vec![
-            DataRecord::new(1, 10.0, "a".to_string()),
-            DataRecord::new(2, 20.0, "b".to_string()),
-            DataRecord::new(3, 30.0, "c".to_string()),
-        ];
-
-        let (sum, mean, std_dev) = calculate_statistics(&records);
-        assert_eq!(sum, 60.0);
-        assert_eq!(mean, 20.0);
-        assert!((std_dev - 8.164965).abs() < 0.0001);
-    }
-}use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
-
-#[derive(Debug, PartialEq)]
-pub struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    active: bool,
-}
-
-impl Record {
-    pub fn new(id: u32, name: String, value: f64, active: bool) -> Self {
-        Record {
-            id,
-            name,
-            value,
-            active,
-        }
-    }
-
-    pub fn is_valid(&self) -> bool {
-        !self.name.is_empty() && self.value >= 0.0
-    }
-}
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    records: Vec<Record>,
+    data: HashMap<String, Vec<f64>>,
+    validation_rules: HashMap<String, ValidationRule>,
+}
+
+pub struct ValidationRule {
+    min_value: Option<f64>,
+    max_value: Option<f64>,
+    required: bool,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
         DataProcessor {
-            records: Vec::new(),
+            data: HashMap::new(),
+            validation_rules: HashMap::new(),
         }
     }
 
-    pub fn load_from_csv(&mut self, file_path: &str) -> Result<usize, Box<dyn Error>> {
-        let path = Path::new(file_path);
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-
-        let mut loaded = 0;
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line?;
-            if line_num == 0 || line.trim().is_empty() {
-                continue;
+    pub fn add_dataset(&mut self, key: &str, values: Vec<f64>) -> Result<(), String> {
+        if let Some(rule) = self.validation_rules.get(key) {
+            if rule.required && values.is_empty() {
+                return Err(format!("Dataset '{}' cannot be empty", key));
             }
 
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() != 4 {
-                continue;
-            }
-
-            let id = match parts[0].parse::<u32>() {
-                Ok(val) => val,
-                Err(_) => continue,
-            };
-
-            let name = parts[1].to_string();
-            let value = match parts[2].parse::<f64>() {
-                Ok(val) => val,
-                Err(_) => continue,
-            };
-
-            let active = match parts[3].to_lowercase().as_str() {
-                "true" | "1" | "yes" => true,
-                _ => false,
-            };
-
-            let record = Record::new(id, name, value, active);
-            if record.is_valid() {
-                self.records.push(record);
-                loaded += 1;
+            for &value in &values {
+                if let Some(min) = rule.min_value {
+                    if value < min {
+                        return Err(format!("Value {} below minimum {} for dataset '{}'", value, min, key));
+                    }
+                }
+                if let Some(max) = rule.max_value {
+                    if value > max {
+                        return Err(format!("Value {} above maximum {} for dataset '{}'", value, max, key));
+                    }
+                }
             }
         }
 
-        Ok(loaded)
+        self.data.insert(key.to_string(), values);
+        Ok(())
     }
 
-    pub fn filter_active(&self) -> Vec<&Record> {
-        self.records
-            .iter()
-            .filter(|record| record.active)
-            .collect()
+    pub fn set_validation_rule(&mut self, key: &str, rule: ValidationRule) {
+        self.validation_rules.insert(key.to_string(), rule);
     }
 
-    pub fn calculate_average(&self) -> Option<f64> {
-        if self.records.is_empty() {
-            return None;
+    pub fn calculate_statistics(&self, key: &str) -> Option<Statistics> {
+        self.data.get(key).map(|values| {
+            let count = values.len();
+            if count == 0 {
+                return Statistics::empty();
+            }
+
+            let sum: f64 = values.iter().sum();
+            let mean = sum / count as f64;
+            
+            let variance: f64 = values.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / count as f64;
+            
+            let std_dev = variance.sqrt();
+
+            let sorted_values = {
+                let mut sorted = values.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                sorted
+            };
+
+            let median = if count % 2 == 0 {
+                (sorted_values[count / 2 - 1] + sorted_values[count / 2]) / 2.0
+            } else {
+                sorted_values[count / 2]
+            };
+
+            Statistics {
+                count,
+                mean,
+                median,
+                std_dev,
+                min: *sorted_values.first().unwrap(),
+                max: *sorted_values.last().unwrap(),
+            }
+        })
+    }
+
+    pub fn normalize_data(&mut self, key: &str) -> Result<(), String> {
+        if let Some(values) = self.data.get_mut(key) {
+            if values.is_empty() {
+                return Err("Cannot normalize empty dataset".to_string());
+            }
+
+            let stats = self.calculate_statistics(key).unwrap();
+            
+            if stats.std_dev == 0.0 {
+                return Err("Cannot normalize dataset with zero standard deviation".to_string());
+            }
+
+            for value in values.iter_mut() {
+                *value = (*value - stats.mean) / stats.std_dev;
+            }
+            Ok(())
+        } else {
+            Err(format!("Dataset '{}' not found", key))
         }
-
-        let sum: f64 = self.records.iter().map(|r| r.value).sum();
-        Some(sum / self.records.len() as f64)
     }
 
-    pub fn find_by_id(&self, target_id: u32) -> Option<&Record> {
-        self.records.iter().find(|record| record.id == target_id)
+    pub fn get_data(&self, key: &str) -> Option<&Vec<f64>> {
+        self.data.get(key)
     }
+}
 
-    pub fn record_count(&self) -> usize {
-        self.records.len()
+pub struct Statistics {
+    pub count: usize,
+    pub mean: f64,
+    pub median: f64,
+    pub std_dev: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+impl Statistics {
+    fn empty() -> Self {
+        Statistics {
+            count: 0,
+            mean: 0.0,
+            median: 0.0,
+            std_dev: 0.0,
+            min: 0.0,
+            max: 0.0,
+        }
+    }
+}
+
+impl ValidationRule {
+    pub fn new(min_value: Option<f64>, max_value: Option<f64>, required: bool) -> Self {
+        ValidationRule {
+            min_value,
+            max_value,
+            required,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_record_validation() {
-        let valid_record = Record::new(1, "Test".to_string(), 10.5, true);
-        assert!(valid_record.is_valid());
-
-        let invalid_name = Record::new(2, "".to_string(), 5.0, false);
-        assert!(!invalid_name.is_valid());
-
-        let invalid_value = Record::new(3, "Data".to_string(), -1.0, true);
-        assert!(!invalid_value.is_valid());
-    }
 
     #[test]
     fn test_data_processing() {
         let mut processor = DataProcessor::new();
         
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,name,value,active").unwrap();
-        writeln!(temp_file, "1,Alice,100.5,true").unwrap();
-        writeln!(temp_file, "2,Bob,75.0,false").unwrap();
-        writeln!(temp_file, "3,Charlie,50.25,true").unwrap();
+        let rule = ValidationRule::new(Some(0.0), Some(100.0), true);
+        processor.set_validation_rule("scores", rule);
         
-        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 3);
-        assert_eq!(processor.record_count(), 3);
+        let data = vec![85.5, 92.0, 78.5, 95.0];
+        assert!(processor.add_dataset("scores", data).is_ok());
         
-        let active_records = processor.filter_active();
-        assert_eq!(active_records.len(), 2);
+        let stats = processor.calculate_statistics("scores").unwrap();
+        assert_eq!(stats.count, 4);
+        assert!(stats.mean > 87.0 && stats.mean < 88.0);
         
-        let average = processor.calculate_average();
-        assert!(average.is_some());
-        assert!((average.unwrap() - 75.25).abs() < 0.001);
-        
-        let found = processor.find_by_id(2);
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().name, "Bob");
-    }
-}
-use std::collections::HashMap;
-
-#[derive(Debug, Clone)]
-pub struct DataRecord {
-    pub id: u32,
-    pub values: Vec<f64>,
-    pub metadata: HashMap<String, String>,
-}
-
-impl DataRecord {
-    pub fn new(id: u32, values: Vec<f64>) -> Self {
-        Self {
-            id,
-            values,
-            metadata: HashMap::new(),
-        }
-    }
-
-    pub fn add_metadata(&mut self, key: String, value: String) {
-        self.metadata.insert(key, value);
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        if self.id == 0 {
-            return Err("Invalid record ID".to_string());
-        }
-
-        if self.values.is_empty() {
-            return Err("Empty values vector".to_string());
-        }
-
-        for value in &self.values {
-            if value.is_nan() || value.is_infinite() {
-                return Err("Invalid numeric value detected".to_string());
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn normalize(&mut self) {
-        if self.values.is_empty() {
-            return;
-        }
-
-        let sum: f64 = self.values.iter().sum();
-        if sum != 0.0 {
-            for value in &mut self.values {
-                *value /= sum;
-            }
-        }
-    }
-}
-
-pub fn process_records(records: &mut [DataRecord]) -> Vec<Result<DataRecord, String>> {
-    let mut results = Vec::new();
-
-    for record in records {
-        match record.validate() {
-            Ok(_) => {
-                let mut processed_record = record.clone();
-                processed_record.normalize();
-                results.push(Ok(processed_record));
-            }
-            Err(e) => {
-                results.push(Err(format!("Record {} failed validation: {}", record.id, e)));
-            }
-        }
-    }
-
-    results
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_record_validation() {
-        let valid_record = DataRecord::new(1, vec![1.0, 2.0, 3.0]);
-        assert!(valid_record.validate().is_ok());
-
-        let invalid_record = DataRecord::new(0, vec![1.0, 2.0]);
-        assert!(invalid_record.validate().is_err());
+        assert!(processor.normalize_data("scores").is_ok());
     }
 
     #[test]
-    fn test_normalization() {
-        let mut record = DataRecord::new(1, vec![1.0, 2.0, 3.0]);
-        record.normalize();
+    fn test_validation_failure() {
+        let mut processor = DataProcessor::new();
         
-        let sum: f64 = record.values.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-10);
+        let rule = ValidationRule::new(Some(0.0), Some(100.0), true);
+        processor.set_validation_rule("scores", rule);
+        
+        let invalid_data = vec![85.5, 105.0, 78.5];
+        assert!(processor.add_dataset("scores", invalid_data).is_err());
     }
 }
