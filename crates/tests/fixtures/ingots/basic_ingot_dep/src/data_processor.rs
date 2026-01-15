@@ -97,3 +97,122 @@ mod tests {
         assert!((average - 30.0).abs() < 0.001);
     }
 }
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+}
+
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    InvalidValue,
+    EmptyCategory,
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "ID must be greater than 0"),
+            ValidationError::InvalidValue => write!(f, "Value must be between 0.0 and 1000.0"),
+            ValidationError::EmptyCategory => write!(f, "Category cannot be empty"),
+        }
+    }
+}
+
+impl Error for ValidationError {}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Result<Self, ValidationError> {
+        if id == 0 {
+            return Err(ValidationError::InvalidId);
+        }
+        
+        if value < 0.0 || value > 1000.0 {
+            return Err(ValidationError::InvalidValue);
+        }
+        
+        if category.trim().is_empty() {
+            return Err(ValidationError::EmptyCategory);
+        }
+        
+        Ok(Self {
+            id,
+            value,
+            category: category.trim().to_string(),
+        })
+    }
+    
+    pub fn normalize_value(&self) -> f64 {
+        self.value / 1000.0
+    }
+    
+    pub fn to_uppercase_category(&self) -> String {
+        self.category.to_uppercase()
+    }
+}
+
+pub fn process_records(records: &[DataRecord]) -> Vec<(u32, f64, String)> {
+    records
+        .iter()
+        .map(|record| {
+            (
+                record.id,
+                record.normalize_value(),
+                record.to_uppercase_category(),
+            )
+        })
+        .collect()
+}
+
+pub fn filter_by_threshold(records: &[DataRecord], threshold: f64) -> Vec<&DataRecord> {
+    records
+        .iter()
+        .filter(|record| record.value >= threshold)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(1, 500.0, "Test".to_string());
+        assert!(record.is_ok());
+        
+        let record = record.unwrap();
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 500.0);
+        assert_eq!(record.category, "Test");
+    }
+    
+    #[test]
+    fn test_invalid_id() {
+        let record = DataRecord::new(0, 500.0, "Test".to_string());
+        assert!(matches!(record, Err(ValidationError::InvalidId)));
+    }
+    
+    #[test]
+    fn test_normalize_value() {
+        let record = DataRecord::new(1, 500.0, "Test".to_string()).unwrap();
+        assert_eq!(record.normalize_value(), 0.5);
+    }
+    
+    #[test]
+    fn test_process_records() {
+        let records = vec![
+            DataRecord::new(1, 200.0, "alpha".to_string()).unwrap(),
+            DataRecord::new(2, 800.0, "beta".to_string()).unwrap(),
+        ];
+        
+        let processed = process_records(&records);
+        assert_eq!(processed.len(), 2);
+        assert_eq!(processed[0].1, 0.2);
+        assert_eq!(processed[1].2, "BETA");
+    }
+}
