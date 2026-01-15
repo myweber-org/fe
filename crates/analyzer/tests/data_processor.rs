@@ -16,24 +16,24 @@ impl DataProcessor {
         }
     }
 
-    pub fn process_csv<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
+    pub fn process_file<P: AsRef<Path>>(&self, path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut records = Vec::new();
-        let mut lines = reader.lines();
 
-        if self.has_header {
-            lines.next();
-        }
+        for (index, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if index == 0 && self.has_header {
+                continue;
+            }
 
-        for line_result in lines {
-            let line = line_result?;
             let fields: Vec<String> = line
                 .split(self.delimiter)
                 .map(|s| s.trim().to_string())
                 .collect();
-            
-            if !fields.is_empty() {
+
+            if !fields.is_empty() && !fields.iter().all(|f| f.is_empty()) {
                 records.push(fields);
             }
         }
@@ -41,39 +41,26 @@ impl DataProcessor {
         Ok(records)
     }
 
-    pub fn validate_numeric_fields(&self, records: &[Vec<String>], column_index: usize) -> Result<Vec<f64>, Box<dyn Error>> {
-        let mut numeric_values = Vec::new();
+    pub fn validate_records(&self, records: &[Vec<String>]) -> Vec<usize> {
+        let mut invalid_indices = Vec::new();
         
-        for (row_num, record) in records.iter().enumerate() {
-            if column_index >= record.len() {
-                return Err(format!("Row {}: Column index out of bounds", row_num + 1).into());
-            }
-            
-            match record[column_index].parse::<f64>() {
-                Ok(value) => numeric_values.push(value),
-                Err(_) => return Err(format!("Row {}: Invalid numeric value '{}'", 
-                    row_num + 1, record[column_index]).into()),
+        for (index, record) in records.iter().enumerate() {
+            if record.len() < 2 {
+                invalid_indices.push(index);
+            } else if record.iter().any(|field| field.is_empty()) {
+                invalid_indices.push(index);
             }
         }
         
-        Ok(numeric_values)
+        invalid_indices
     }
 
-    pub fn calculate_statistics(&self, values: &[f64]) -> (f64, f64, f64) {
-        if values.is_empty() {
-            return (0.0, 0.0, 0.0);
-        }
-
-        let sum: f64 = values.iter().sum();
-        let mean = sum / values.len() as f64;
-        
-        let variance: f64 = values.iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / values.len() as f64;
-        
-        let std_dev = variance.sqrt();
-        
-        (mean, variance, std_dev)
+    pub fn extract_column(&self, records: &[Vec<String>], column_index: usize) -> Vec<String> {
+        records
+            .iter()
+            .filter_map(|record| record.get(column_index))
+            .cloned()
+            .collect()
     }
 }
 
@@ -84,42 +71,43 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_csv_processing() {
+    fn test_process_file_with_header() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,salary").unwrap();
-        writeln!(temp_file, "Alice,30,50000.5").unwrap();
-        writeln!(temp_file, "Bob,25,45000.0").unwrap();
-        writeln!(temp_file, "Charlie,35,55000.75").unwrap();
-
-        let processor = DataProcessor::new(',', true);
-        let records = processor.process_csv(temp_file.path()).unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "John,30,New York").unwrap();
+        writeln!(temp_file, "Alice,25,London").unwrap();
         
-        assert_eq!(records.len(), 3);
-        assert_eq!(records[0], vec!["Alice", "30", "50000.5"]);
+        let processor = DataProcessor::new(',', true);
+        let result = processor.process_file(temp_file.path()).unwrap();
+        
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], vec!["John", "30", "New York"]);
     }
 
     #[test]
-    fn test_numeric_validation() {
+    fn test_validate_records() {
         let records = vec![
-            vec!["100.5".to_string()],
-            vec!["200.0".to_string()],
-            vec!["300.75".to_string()],
+            vec!["a".to_string(), "b".to_string()],
+            vec!["c".to_string()],
+            vec!["d".to_string(), "".to_string()],
         ];
         
         let processor = DataProcessor::new(',', false);
-        let numeric_values = processor.validate_numeric_fields(&records, 0).unwrap();
+        let invalid = processor.validate_records(&records);
         
-        assert_eq!(numeric_values, vec![100.5, 200.0, 300.75]);
+        assert_eq!(invalid, vec![1, 2]);
     }
 
     #[test]
-    fn test_statistics_calculation() {
-        let values = vec![10.0, 20.0, 30.0, 40.0, 50.0];
-        let processor = DataProcessor::new(',', false);
-        let (mean, variance, std_dev) = processor.calculate_statistics(&values);
+    fn test_extract_column() {
+        let records = vec![
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec!["d".to_string(), "e".to_string(), "f".to_string()],
+        ];
         
-        assert_eq!(mean, 30.0);
-        assert_eq!(variance, 200.0);
-        assert!((std_dev - 14.142135623730951).abs() < 1e-10);
+        let processor = DataProcessor::new(',', false);
+        let column = processor.extract_column(&records, 1);
+        
+        assert_eq!(column, vec!["b", "e"]);
     }
 }
