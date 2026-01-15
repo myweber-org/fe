@@ -202,3 +202,148 @@ mod tests {
         assert!(result.unwrap_err().contains("cannot be empty"));
     }
 }
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use pbkdf2::pbkdf2_hmac;
+use sha2::Sha256;
+use std::fs;
+use std::io::{self, Read, Write};
+
+const SALT_LENGTH: usize = 16;
+const NONCE_LENGTH: usize = 12;
+const PBKDF2_ITERATIONS: u32 = 100_000;
+
+pub struct EncryptionResult {
+    pub ciphertext: Vec<u8>,
+    pub salt: [u8; SALT_LENGTH],
+    pub nonce: [u8; NONCE_LENGTH],
+}
+
+pub fn derive_key(password: &str, salt: &[u8]) -> Key<Aes256Gcm> {
+    let mut key = [0u8; 32];
+    pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, PBKDF2_ITERATIONS, &mut key);
+    Key::<Aes256Gcm>::from_slice(&key).clone()
+}
+
+pub fn encrypt_file(password: &str, input_path: &str, output_path: &str) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
+    let mut plaintext = Vec::new();
+    file.read_to_end(&mut plaintext)?;
+
+    let mut salt = [0u8; SALT_LENGTH];
+    OsRng.fill_bytes(&mut salt);
+
+    let mut nonce = [0u8; NONCE_LENGTH];
+    OsRng.fill_bytes(&mut nonce);
+
+    let key = derive_key(password, &salt);
+    let cipher = Aes256Gcm::new(&key);
+
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    let result = EncryptionResult {
+        ciphertext,
+        salt,
+        nonce,
+    };
+
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&result.salt)?;
+    output_file.write_all(&result.nonce)?;
+    output_file.write_all(&result.ciphertext)?;
+
+    Ok(())
+}
+
+pub fn decrypt_file(password: &str, input_path: &str, output_path: &str) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
+    let mut encrypted_data = Vec::new();
+    file.read_to_end(&mut encrypted_data)?;
+
+    if encrypted_data.len() < SALT_LENGTH + NONCE_LENGTH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "File too short to contain encryption metadata"
+        ));
+    }
+
+    let salt = &encrypted_data[0..SALT_LENGTH];
+    let nonce = &encrypted_data[SALT_LENGTH..SALT_LENGTH + NONCE_LENGTH];
+    let ciphertext = &encrypted_data[SALT_LENGTH + NONCE_LENGTH..];
+
+    let key = derive_key(password, salt);
+    let cipher = Aes256Gcm::new(&key);
+
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&plaintext)?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_encryption_decryption() {
+        let password = "secure_password_123";
+        let test_data = b"Hello, this is a secret message!";
+
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+
+        fs::write(input_file.path(), test_data).unwrap();
+
+        encrypt_file(
+            password,
+            input_file.path().to_str().unwrap(),
+            encrypted_file.path().to_str().unwrap()
+        ).unwrap();
+
+        decrypt_file(
+            password,
+            encrypted_file.path().to_str().unwrap(),
+            decrypted_file.path().to_str().unwrap()
+        ).unwrap();
+
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(decrypted_data, test_data);
+    }
+
+    #[test]
+    fn test_wrong_password_fails() {
+        let password = "correct_password";
+        let wrong_password = "wrong_password";
+        let test_data = b"Test data";
+
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+
+        fs::write(input_file.path(), test_data).unwrap();
+
+        encrypt_file(
+            password,
+            input_file.path().to_str().unwrap(),
+            encrypted_file.path().to_str().unwrap()
+        ).unwrap();
+
+        let result = decrypt_file(
+            wrong_password,
+            encrypted_file.path().to_str().unwrap(),
+            decrypted_file.path().to_str().unwrap()
+        );
+
+        assert!(result.is_err());
+    }
+}
