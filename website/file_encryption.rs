@@ -52,3 +52,49 @@ pub fn decrypt_file(input_path: &str, output_path: &str) -> io::Result<()> {
     fs::write(output_path, plaintext)?;
     Ok(())
 }
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+pub fn xor_encrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> io::Result<()> {
+    let input_data = fs::read(input_path)?;
+    let encrypted_data = xor_encrypt(&input_data, key);
+    fs::write(output_path, encrypted_data)
+}
+
+pub fn xor_decrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> io::Result<()> {
+    let input_data = fs::read(input_path)?;
+    let decrypted_data = xor_decrypt(&input_data, key);
+    fs::write(output_path, decrypted_data)
+}
+
+fn xor_encrypt(data: &[u8], key: &[u8]) -> Vec<u8> {
+    data.iter()
+        .enumerate()
+        .map(|(i, &byte)| byte ^ key[i % key.len()])
+        .collect()
+}
+
+fn xor_decrypt(data: &[u8], key: &[u8]) -> Vec<u8> {
+    xor_encrypt(data, key)
+}
+
+pub fn process_files() -> io::Result<()> {
+    let key = b"secret_key";
+    let original_file = "document.txt";
+    let encrypted_file = "document.enc";
+    let decrypted_file = "document_decrypted.txt";
+
+    fs::write(original_file, b"Confidential data: Project details")?;
+    
+    xor_encrypt_file(original_file, encrypted_file, key)?;
+    xor_decrypt_file(encrypted_file, decrypted_file, key)?;
+
+    let original_content = fs::read_to_string(original_file)?;
+    let decrypted_content = fs::read_to_string(decrypted_file)?;
+
+    assert_eq!(original_content, decrypted_content);
+    println!("Encryption and decryption successful!");
+    
+    Ok(())
+}
