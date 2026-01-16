@@ -152,3 +152,102 @@ mod tests {
         assert_eq!(merged["a"], 2);
     }
 }
+use serde_json::{Value, Map};
+use std::collections::HashSet;
+
+pub enum ConflictResolution {
+    PreferFirst,
+    PreferSecond,
+    MergeArrays,
+    FailOnConflict,
+}
+
+pub fn merge_json_objects(
+    first: &Value,
+    second: &Value,
+    resolution: ConflictResolution,
+) -> Result<Value, String> {
+    if !first.is_object() || !second.is_object() {
+        return Err("Both inputs must be JSON objects".to_string());
+    }
+
+    let mut result = Map::new();
+    let first_obj = first.as_object().unwrap();
+    let second_obj = second.as_object().unwrap();
+
+    let first_keys: HashSet<_> = first_obj.keys().collect();
+    let second_keys: HashSet<_> = second_obj.keys().collect();
+
+    for key in first_keys.union(&second_keys) {
+        let key_str = key.to_string();
+        
+        match (first_obj.get(key), second_obj.get(key)) {
+            (Some(v1), Some(v2)) => {
+                if v1 == v2 {
+                    result.insert(key_str, v1.clone());
+                } else {
+                    match resolution {
+                        ConflictResolution::PreferFirst => {
+                            result.insert(key_str, v1.clone());
+                        }
+                        ConflictResolution::PreferSecond => {
+                            result.insert(key_str, v2.clone());
+                        }
+                        ConflictResolution::MergeArrays => {
+                            if v1.is_array() && v2.is_array() {
+                                let mut merged_array = v1.as_array().unwrap().clone();
+                                merged_array.extend(v2.as_array().unwrap().clone());
+                                result.insert(key_str, Value::Array(merged_array));
+                            } else {
+                                return Err(format!(
+                                    "Conflict on key '{}': both values are not arrays",
+                                    key
+                                ));
+                            }
+                        }
+                        ConflictResolution::FailOnConflict => {
+                            return Err(format!("Conflict on key '{}'", key));
+                        }
+                    }
+                }
+            }
+            (Some(v), None) => {
+                result.insert(key_str, v.clone());
+            }
+            (None, Some(v)) => {
+                result.insert(key_str, v.clone());
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+
+    Ok(Value::Object(result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_merge_prefer_first() {
+        let first = json!({"a": 1, "b": 2});
+        let second = json!({"b": 3, "c": 4});
+        
+        let result = merge_json_objects(&first, &second, ConflictResolution::PreferFirst)
+            .unwrap();
+        
+        assert_eq!(result, json!({"a": 1, "b": 2, "c": 4}));
+    }
+
+    #[test]
+    fn test_merge_arrays() {
+        let first = json!({"items": [1, 2]});
+        let second = json!({"items": [3, 4]});
+        
+        let result = merge_json_objects(&first, &second, ConflictResolution::MergeArrays)
+            .unwrap();
+        
+        assert_eq!(result, json!({"items": [1, 2, 3, 4]}));
+    }
+}
