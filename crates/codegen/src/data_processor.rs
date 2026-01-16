@@ -135,3 +135,132 @@ mod tests {
         assert!(result.is_err());
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+pub struct DataProcessor {
+    delimiter: char,
+    has_header: bool,
+}
+
+impl DataProcessor {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        DataProcessor {
+            delimiter,
+            has_header,
+        }
+    }
+
+    pub fn process_file<P: AsRef<Path>>(
+        &self,
+        file_path: P,
+        filter_predicate: Option<Box<dyn Fn(&[String]) -> bool>>,
+    ) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
+
+        if self.has_header {
+            lines.next();
+        }
+
+        let mut results = Vec::new();
+
+        for line_result in lines {
+            let line = line_result?;
+            let fields: Vec<String> = line
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if let Some(ref predicate) = filter_predicate {
+                if predicate(&fields) {
+                    results.push(fields);
+                }
+            } else {
+                results.push(fields);
+            }
+        }
+
+        Ok(results)
+    }
+
+    pub fn calculate_column_average(
+        &self,
+        data: &[Vec<String>],
+        column_index: usize,
+    ) -> Result<f64, Box<dyn Error>> {
+        let mut sum = 0.0;
+        let mut count = 0;
+
+        for row in data {
+            if column_index < row.len() {
+                if let Ok(value) = row[column_index].parse::<f64>() {
+                    sum += value;
+                    count += 1;
+                }
+            }
+        }
+
+        if count > 0 {
+            Ok(sum / count as f64)
+        } else {
+            Err("No valid numeric data found in specified column".into())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,salary").unwrap();
+        writeln!(temp_file, "Alice,30,50000.0").unwrap();
+        writeln!(temp_file, "Bob,25,45000.0").unwrap();
+        writeln!(temp_file, "Charlie,35,55000.0").unwrap();
+
+        let processor = DataProcessor::new(',', true);
+        let results = processor
+            .process_file(temp_file.path(), None)
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0][0], "Alice");
+        assert_eq!(results[1][1], "25");
+
+        let avg_age = processor.calculate_column_average(&results, 1).unwrap();
+        assert!((avg_age - 30.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_filtered_processing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,value").unwrap();
+        writeln!(temp_file, "1,100").unwrap();
+        writeln!(temp_file, "2,200").unwrap();
+        writeln!(temp_file, "3,50").unwrap();
+
+        let processor = DataProcessor::new(',', true);
+        let filter = Box::new(|fields: &[String]| {
+            if fields.len() > 1 {
+                fields[1].parse::<i32>().unwrap_or(0) > 100
+            } else {
+                false
+            }
+        });
+
+        let results = processor
+            .process_file(temp_file.path(), Some(filter))
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0][1], "200");
+    }
+}
