@@ -1,88 +1,13 @@
-use std::error::Error;
-use std::fmt;
+use regex::Regex;
 
-#[derive(Debug, Clone)]
-pub struct ValidationError {
-    field: String,
-    reason: String,
+pub fn is_valid_email(email: &str) -> bool {
+    let email_regex = Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$").unwrap();
+    email_regex.is_match(email)
 }
 
-impl fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Validation failed for field '{}': {}", self.field, self.reason)
-    }
-}
-
-impl Error for ValidationError {}
-
-pub struct DataValidator {
-    rules: Vec<ValidationRule>,
-}
-
-struct ValidationRule {
-    field_name: String,
-    validator: Box<dyn Fn(&str) -> Result<(), ValidationError>>,
-}
-
-impl DataValidator {
-    pub fn new() -> Self {
-        DataValidator {
-            rules: Vec::new(),
-        }
-    }
-
-    pub fn add_rule<F>(mut self, field_name: &str, validator: F) -> Self
-    where
-        F: Fn(&str) -> Result<(), ValidationError> + 'static,
-    {
-        self.rules.push(ValidationRule {
-            field_name: field_name.to_string(),
-            validator: Box::new(validator),
-        });
-        self
-    }
-
-    pub fn validate(&self, data: &[(&str, &str)]) -> Result<(), Vec<ValidationError>> {
-        let mut errors = Vec::new();
-
-        for rule in &self.rules {
-            if let Some((_, value)) = data.iter().find(|(field, _)| *field == rule.field_name) {
-                if let Err(err) = (rule.validator)(value) {
-                    errors.push(err);
-                }
-            }
-        }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
-    }
-}
-
-pub fn create_email_validator() -> DataValidator {
-    DataValidator::new()
-        .add_rule("email", |value| {
-            if value.contains('@') && value.contains('.') {
-                Ok(())
-            } else {
-                Err(ValidationError {
-                    field: "email".to_string(),
-                    reason: "Invalid email format".to_string(),
-                })
-            }
-        })
-        .add_rule("username", |value| {
-            if value.len() >= 3 && value.len() <= 20 && value.chars().all(|c| c.is_alphanumeric()) {
-                Ok(())
-            } else {
-                Err(ValidationError {
-                    field: "username".to_string(),
-                    reason: "Username must be 3-20 alphanumeric characters".to_string(),
-                })
-            }
-        })
+pub fn is_valid_phone(phone: &str) -> bool {
+    let phone_regex = Regex::new(r"^\+?[1-9]\d{1,14}$").unwrap();
+    phone_regex.is_match(phone)
 }
 
 #[cfg(test)]
@@ -90,41 +15,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_valid_data() {
-        let validator = create_email_validator();
-        let data = vec![
-            ("email", "test@example.com"),
-            ("username", "user123"),
-        ];
-
-        assert!(validator.validate(&data).is_ok());
+    fn test_valid_emails() {
+        assert!(is_valid_email("user@example.com"));
+        assert!(is_valid_email("john.doe@company.co.uk"));
+        assert!(is_valid_email("alice+tag@domain.org"));
     }
 
     #[test]
-    fn test_invalid_email() {
-        let validator = create_email_validator();
-        let data = vec![
-            ("email", "invalid-email"),
-            ("username", "user123"),
-        ];
-
-        let result = validator.validate(&data);
-        assert!(result.is_err());
-        if let Err(errors) = result {
-            assert_eq!(errors.len(), 1);
-            assert!(errors[0].to_string().contains("email"));
-        }
+    fn test_invalid_emails() {
+        assert!(!is_valid_email("invalid-email"));
+        assert!(!is_valid_email("user@.com"));
+        assert!(!is_valid_email("@domain.com"));
     }
 
     #[test]
-    fn test_invalid_username() {
-        let validator = create_email_validator();
-        let data = vec![
-            ("email", "test@example.com"),
-            ("username", "ab"),
-        ];
+    fn test_valid_phones() {
+        assert!(is_valid_phone("+1234567890"));
+        assert!(is_valid_phone("1234567890"));
+        assert!(is_valid_phone("+441234567890"));
+    }
 
-        let result = validator.validate(&data);
-        assert!(result.is_err());
+    #[test]
+    fn test_invalid_phones() {
+        assert!(!is_valid_phone("123"));
+        assert!(!is_valid_phone("+01234567890"));
+        assert!(!is_valid_phone("abc1234567"));
     }
 }
