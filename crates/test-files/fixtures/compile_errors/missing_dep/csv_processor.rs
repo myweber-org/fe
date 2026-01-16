@@ -167,4 +167,105 @@ mod tests {
         
         assert!(result.is_err());
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader};
+use std::path::Path;
+
+pub struct CsvProcessor {
+    delimiter: char,
+    has_headers: bool,
+}
+
+impl CsvProcessor {
+    pub fn new(delimiter: char, has_headers: bool) -> Self {
+        CsvProcessor {
+            delimiter,
+            has_headers,
+        }
+    }
+
+    pub fn read_file<P: AsRef<Path>>(&self, path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut records = Vec::new();
+
+        for (index, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if index == 0 && self.has_headers {
+                continue;
+            }
+
+            let fields: Vec<String> = line
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            records.push(fields);
+        }
+
+        Ok(records)
+    }
+
+    pub fn filter_records<F>(&self, records: Vec<Vec<String>>, predicate: F) -> Vec<Vec<String>>
+    where
+        F: Fn(&[String]) -> bool,
+    {
+        records
+            .into_iter()
+            .filter(|record| predicate(record))
+            .collect()
+    }
+
+    pub fn print_records(&self, records: &[Vec<String>]) {
+        for record in records {
+            println!("{}", record.join(", "));
+        }
+    }
+
+    pub fn calculate_column_average(&self, records: &[Vec<String>], column_index: usize) -> Option<f64> {
+        if records.is_empty() {
+            return None;
+        }
+
+        let mut sum = 0.0;
+        let mut count = 0;
+
+        for record in records {
+            if column_index < record.len() {
+                if let Ok(value) = record[column_index].parse::<f64>() {
+                    sum += value;
+                    count += 1;
+                }
+            }
+        }
+
+        if count > 0 {
+            Some(sum / count as f64)
+        } else {
+            None
+        }
+    }
+}
+
+pub fn process_sample_data() -> Result<(), Box<dyn Error>> {
+    let processor = CsvProcessor::new(',', true);
+    
+    let records = processor.read_file("data/sample.csv")?;
+    
+    println!("Total records: {}", records.len());
+    
+    let filtered = processor.filter_records(records, |record| {
+        record.len() >= 3 && !record[2].is_empty()
+    });
+    
+    println!("Filtered records: {}", filtered.len());
+    processor.print_records(&filtered);
+    
+    if let Some(avg) = processor.calculate_column_average(&filtered, 1) {
+        println!("Average of column 1: {:.2}", avg);
+    }
+    
+    Ok(())
 }
