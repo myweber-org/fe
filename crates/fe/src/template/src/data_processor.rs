@@ -426,3 +426,74 @@ mod tests {
         assert_eq!(stats["average"], 2.5);
     }
 }
+use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+impl Record {
+    fn is_valid(&self) -> bool {
+        !self.name.is_empty() && self.value >= 0.0
+    }
+}
+
+pub fn process_csv(input_path: &str, output_path: &str) -> Result<usize, Box<dyn Error>> {
+    let input_file = File::open(Path::new(input_path))?;
+    let mut reader = ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(input_file);
+
+    let output_file = File::create(Path::new(output_path))?;
+    let mut writer = WriterBuilder::new()
+        .has_headers(true)
+        .from_writer(output_file);
+
+    let mut valid_count = 0;
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.is_valid() {
+            writer.serialize(&record)?;
+            valid_count += 1;
+        }
+    }
+
+    writer.flush()?;
+    Ok(valid_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_process_csv() -> Result<(), Box<dyn Error>> {
+        let mut input_file = NamedTempFile::new()?;
+        writeln!(input_file, "id,name,value,active")?;
+        writeln!(input_file, "1,Test1,100.5,true")?;
+        writeln!(input_file, "2,,50.0,false")?;
+        writeln!(input_file, "3,Test3,-10.0,true")?;
+
+        let output_file = NamedTempFile::new()?;
+
+        let valid_count = process_csv(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap(),
+        )?;
+
+        assert_eq!(valid_count, 1);
+        Ok(())
+    }
+}
