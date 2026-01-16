@@ -1,75 +1,103 @@
-use csv::Reader;
-use serde::{Deserialize, Serialize};
+
 use std::error::Error;
 use std::fs::File;
+use std::path::Path;
 
-#[derive(Debug, Deserialize, Serialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    active: bool,
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
 }
 
-struct DataProcessor {
-    records: Vec<Record>,
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
 }
 
 impl DataProcessor {
-    fn new() -> Self {
+    pub fn new() -> Self {
         DataProcessor {
             records: Vec::new(),
         }
     }
 
-    fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let mut rdr = Reader::from_reader(file);
-        
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let path = Path::new(file_path);
+        let file = File::open(path)?;
+        let mut rdr = csv::Reader::from_reader(file);
+
         for result in rdr.deserialize() {
-            let record: Record = result?;
+            let record: DataRecord = result?;
             self.records.push(record);
         }
-        
+
         Ok(())
     }
 
-    fn filter_by_value(&self, threshold: f64) -> Vec<&Record> {
-        self.records
-            .iter()
-            .filter(|record| record.value > threshold && record.active)
-            .collect()
-    }
-
-    fn calculate_average(&self) -> Option<f64> {
+    pub fn calculate_average(&self) -> Option<f64> {
         if self.records.is_empty() {
             return None;
         }
-        
+
         let sum: f64 = self.records.iter().map(|r| r.value).sum();
         Some(sum / self.records.len() as f64)
     }
 
-    fn export_to_json(&self, file_path: &str) -> Result<(), Box<dyn Error>> {
-        let file = File::create(file_path)?;
-        serde_json::to_writer_pretty(file, &self.records)?;
-        Ok(())
+    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|r| r.category == category)
+            .collect()
+    }
+
+    pub fn validate_records(&self) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|r| r.value >= 0.0 && r.value <= 100.0)
+            .collect()
+    }
+
+    pub fn get_statistics(&self) -> (f64, f64, f64) {
+        if self.records.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+
+        let values: Vec<f64> = self.records.iter().map(|r| r.value).collect();
+        let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let avg = self.calculate_average().unwrap_or(0.0);
+
+        (min, max, avg)
     }
 }
 
-fn process_data_sample() -> Result<(), Box<dyn Error>> {
-    let mut processor = DataProcessor::new();
-    
-    processor.load_from_csv("input.csv")?;
-    
-    let filtered = processor.filter_by_value(50.0);
-    println!("Filtered records: {}", filtered.len());
-    
-    if let Some(avg) = processor.calculate_average() {
-        println!("Average value: {:.2}", avg);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,value,category").unwrap();
+        writeln!(temp_file, "1,85.5,category_a").unwrap();
+        writeln!(temp_file, "2,92.3,category_b").unwrap();
+        writeln!(temp_file, "3,78.9,category_a").unwrap();
+        
+        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+        
+        let avg = processor.calculate_average();
+        assert!(avg.is_some());
+        assert!((avg.unwrap() - 85.56666666666666).abs() < 0.0001);
+        
+        let filtered = processor.filter_by_category("category_a");
+        assert_eq!(filtered.len(), 2);
+        
+        let stats = processor.get_statistics();
+        assert!((stats.0 - 78.9).abs() < 0.0001);
+        assert!((stats.1 - 92.3).abs() < 0.0001);
     }
-    
-    processor.export_to_json("output.json")?;
-    
-    Ok(())
 }
