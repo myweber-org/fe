@@ -284,4 +284,89 @@ pub fn key_to_hex(key: &[u8]) -> String {
 
 pub fn hex_to_key(hex_str: &str) -> Result<Vec<u8>, String> {
     decode(hex_str).map_err(|e| format!("Invalid hex string: {}", e))
+}use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+/// XOR cipher implementation for file encryption/decryption
+pub struct XorCipher {
+    key: Vec<u8>,
+}
+
+impl XorCipher {
+    /// Create new cipher with given key
+    pub fn new(key: &[u8]) -> Self {
+        XorCipher { key: key.to_vec() }
+    }
+
+    /// Process data using XOR cipher
+    pub fn process(&self, data: &[u8]) -> Vec<u8> {
+        data.iter()
+            .enumerate()
+            .map(|(i, &byte)| byte ^ self.key[i % self.key.len()])
+            .collect()
+    }
+}
+
+/// Encrypt/decrypt file using XOR cipher
+pub fn process_file(input_path: &Path, output_path: &Path, key: &[u8]) -> io::Result<()> {
+    let cipher = XorCipher::new(key);
+    
+    let mut input_file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    input_file.read_to_end(&mut buffer)?;
+    
+    let processed_data = cipher.process(&buffer);
+    
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&processed_data)?;
+    
+    Ok(())
+}
+
+/// Generate random key of specified length
+pub fn generate_key(length: usize) -> Vec<u8> {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    (0..length).map(|_| rng.gen()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_xor_cipher_symmetry() {
+        let key = b"secret_key";
+        let cipher = XorCipher::new(key);
+        let original_data = b"Hello, World!";
+        
+        let encrypted = cipher.process(original_data);
+        let decrypted = cipher.process(&encrypted);
+        
+        assert_eq!(original_data, decrypted.as_slice());
+    }
+
+    #[test]
+    fn test_file_processing() -> io::Result<()> {
+        let key = generate_key(16);
+        let test_data = b"Test file content for encryption";
+        
+        let input_file = NamedTempFile::new()?;
+        let output_file = NamedTempFile::new()?;
+        
+        fs::write(input_file.path(), test_data)?;
+        
+        process_file(input_file.path(), output_file.path(), &key)?;
+        
+        let encrypted = fs::read(output_file.path())?;
+        assert_ne!(encrypted, test_data);
+        
+        process_file(output_file.path(), input_file.path(), &key)?;
+        let decrypted = fs::read(input_file.path())?;
+        assert_eq!(decrypted, test_data);
+        
+        Ok(())
+    }
 }
