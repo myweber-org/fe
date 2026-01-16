@@ -75,3 +75,81 @@ mod tests {
         assert_eq!(parsed["city"], "London");
     }
 }
+use serde_json::{Value, from_reader, json};
+use std::fs::{self, File};
+use std::io::{self, BufReader};
+use std::path::Path;
+
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P]) -> io::Result<Value> {
+    let mut merged_array = Vec::new();
+
+    for path in paths {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let json_value: Value = from_reader(reader)?;
+
+        if let Value::Array(arr) = json_value {
+            merged_array.extend(arr);
+        } else {
+            merged_array.push(json_value);
+        }
+    }
+
+    Ok(json!(merged_array))
+}
+
+pub fn merge_json_directory<P: AsRef<Path>>(dir_path: P) -> io::Result<Value> {
+    let mut json_paths = Vec::new();
+
+    for entry in fs::read_dir(dir_path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().map_or(false, |ext| ext == "json") {
+            json_paths.push(path);
+        }
+    }
+
+    merge_json_files(&json_paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_merge_json_files() {
+        let dir = tempdir().unwrap();
+        
+        let file1_path = dir.path().join("data1.json");
+        let file2_path = dir.path().join("data2.json");
+
+        let mut file1 = File::create(&file1_path).unwrap();
+        file1.write_all(b"[1, 2, 3]").unwrap();
+
+        let mut file2 = File::create(&file2_path).unwrap();
+        file2.write_all(b"[4, 5, 6]").unwrap();
+
+        let result = merge_json_files(&[file1_path, file2_path]).unwrap();
+        assert_eq!(result, json!([1, 2, 3, 4, 5, 6]));
+    }
+
+    #[test]
+    fn test_merge_json_directory() {
+        let dir = tempdir().unwrap();
+        
+        let file1_path = dir.path().join("a.json");
+        let file2_path = dir.path().join("b.json");
+
+        let mut file1 = File::create(&file1_path).unwrap();
+        file1.write_all(b"{\"id\": 1}").unwrap();
+
+        let mut file2 = File::create(&file2_path).unwrap();
+        file2.write_all(b"{\"id\": 2}").unwrap();
+
+        let result = merge_json_directory(dir.path()).unwrap();
+        assert_eq!(result, json!([{"id": 1}, {"id": 2}]));
+    }
+}
