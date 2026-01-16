@@ -254,4 +254,109 @@ fn process_data_sample() -> Result<(), Box<dyn Error>> {
     processor.save_filtered_to_csv("premium", "premium_records.csv")?;
     
     Ok(())
+}use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+impl Record {
+    fn validate(&self) -> Result<(), String> {
+        if self.name.is_empty() {
+            return Err("Name cannot be empty".to_string());
+        }
+        if self.value < 0.0 {
+            return Err("Value must be non-negative".to_string());
+        }
+        Ok(())
+    }
+}
+
+pub fn process_csv(input_path: &Path, output_path: &Path) -> Result<(), Box<dyn Error>> {
+    let mut reader = ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(input_path)?;
+
+    let mut writer = WriterBuilder::new()
+        .from_path(output_path)?;
+
+    let mut valid_count = 0;
+    let mut invalid_count = 0;
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+
+        match record.validate() {
+            Ok(_) => {
+                writer.serialize(&record)?;
+                valid_count += 1;
+            }
+            Err(e) => {
+                eprintln!("Invalid record {}: {}", record.id, e);
+                invalid_count += 1;
+            }
+        }
+    }
+
+    writer.flush()?;
+
+    println!("Processing complete:");
+    println!("  Valid records: {}", valid_count);
+    println!("  Invalid records: {}", invalid_count);
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_valid_record() {
+        let record = Record {
+            id: 1,
+            name: "Test".to_string(),
+            value: 100.0,
+            active: true,
+        };
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        let record = Record {
+            id: 2,
+            name: "".to_string(),
+            value: -50.0,
+            active: false,
+        };
+        assert!(record.validate().is_err());
+    }
+
+    #[test]
+    fn test_csv_processing() -> Result<(), Box<dyn Error>> {
+        let input_data = "id,name,value,active\n1,Alice,100.5,true\n2,Bob,-50.0,false\n";
+        
+        let mut input_file = NamedTempFile::new()?;
+        write!(input_file, "{}", input_data)?;
+        
+        let output_file = NamedTempFile::new()?;
+        
+        process_csv(input_file.path(), output_file.path())?;
+        
+        let output_content = std::fs::read_to_string(output_file.path())?;
+        assert!(output_content.contains("Alice"));
+        assert!(!output_content.contains("Bob"));
+        
+        Ok(())
+    }
 }
