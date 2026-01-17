@@ -1,16 +1,40 @@
+
+use regex::Regex;
 use std::collections::HashSet;
 
-pub fn deduplicate_vector<T: Eq + std::hash::Hash + Clone>(input: &[T]) -> Vec<T> {
-    let mut seen = HashSet::new();
-    let mut result = Vec::new();
+pub fn clean_text(input: &str) -> String {
+    let trimmed = input.trim();
     
-    for item in input {
-        if seen.insert(item) {
-            result.push(item.clone());
-        }
-    }
+    let re_multispace = Regex::new(r"\s+").unwrap();
+    let normalized_spaces = re_multispace.replace_all(trimmed, " ");
     
-    result
+    let re_special = Regex::new(r"[^\w\s\-.,!?;:]").unwrap();
+    let cleaned = re_special.replace_all(&normalized_spaces, "");
+    
+    cleaned.to_string()
+}
+
+pub fn deduplicate_lines(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let unique_lines: HashSet<&str> = lines.into_iter().collect();
+    
+    let mut sorted_lines: Vec<&str> = unique_lines.into_iter().collect();
+    sorted_lines.sort();
+    
+    sorted_lines.join("\n")
+}
+
+pub fn normalize_whitespace(text: &str) -> String {
+    let re_newlines = Regex::new(r"\r\n|\r").unwrap();
+    let unified = re_newlines.replace_all(text, "\n");
+    
+    let re_trailing = Regex::new(r"[ \t]+$").unwrap();
+    let trimmed_lines: Vec<String> = unified
+        .lines()
+        .map(|line| re_trailing.replace_all(line, "").to_string())
+        .collect();
+    
+    trimmed_lines.join("\n")
 }
 
 #[cfg(test)]
@@ -18,23 +42,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_deduplicate_integers() {
-        let input = vec![1, 2, 2, 3, 4, 4, 5];
-        let expected = vec![1, 2, 3, 4, 5];
-        assert_eq!(deduplicate_vector(&input), expected);
+    fn test_clean_text() {
+        let input = "  Hello   World!!!  ";
+        let expected = "Hello World!!!";
+        assert_eq!(clean_text(input), expected);
     }
 
     #[test]
-    fn test_deduplicate_strings() {
-        let input = vec!["apple", "banana", "apple", "orange", "banana"];
-        let expected = vec!["apple", "banana", "orange"];
-        assert_eq!(deduplicate_vector(&input), expected);
-    }
-
-    #[test]
-    fn test_empty_vector() {
-        let input: Vec<i32> = vec![];
-        let expected: Vec<i32> = vec![];
-        assert_eq!(deduplicate_vector(&input), expected);
+    fn test_deduplicate_lines() {
+        let input = "apple\nbanana\napple\ncherry\nbanana";
+        let result = deduplicate_lines(input);
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines.contains(&"apple"));
+        assert!(lines.contains(&"banana"));
+        assert!(lines.contains(&"cherry"));
     }
 }
