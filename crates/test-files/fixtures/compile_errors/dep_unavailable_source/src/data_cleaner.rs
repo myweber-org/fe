@@ -1,52 +1,67 @@
-use csv::{ReaderBuilder, WriterBuilder};
-use serde::{Deserialize, Serialize};
-use std::error::Error;
-use std::fs::File;
+use std::collections::HashSet;
 
-#[derive(Debug, Deserialize, Serialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
+pub struct DataCleaner<T> {
+    seen: HashSet<T>,
 }
 
-fn clean_data(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
-    let input_file = File::open(input_path)?;
-    let mut reader = ReaderBuilder::new()
-        .has_headers(true)
-        .from_reader(input_file);
-
-    let output_file = File::create(output_path)?;
-    let mut writer = WriterBuilder::new()
-        .has_headers(true)
-        .from_writer(output_file);
-
-    for result in reader.deserialize() {
-        let mut record: Record = result?;
-        
-        record.name = record.name.trim().to_string();
-        record.category = record.category.to_uppercase();
-        
-        if record.value < 0.0 {
-            record.value = 0.0;
+impl<T> DataCleaner<T>
+where
+    T: Eq + std::hash::Hash + Clone,
+{
+    pub fn new() -> Self {
+        DataCleaner {
+            seen: HashSet::new(),
         }
-        
-        writer.serialize(&record)?;
     }
 
-    writer.flush()?;
-    Ok(())
+    pub fn process(&mut self, item: T) -> Option<T> {
+        if self.seen.insert(item.clone()) {
+            Some(item)
+        } else {
+            None
+        }
+    }
+
+    pub fn process_batch(&mut self, items: Vec<T>) -> Vec<T> {
+        items
+            .into_iter()
+            .filter_map(|item| self.process(item))
+            .collect()
+    }
+
+    pub fn reset(&mut self) {
+        self.seen.clear();
+    }
+
+    pub fn count_unique(&self) -> usize {
+        self.seen.len()
+    }
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let input = "raw_data.csv";
-    let output = "cleaned_data.csv";
-    
-    match clean_data(input, output) {
-        Ok(_) => println!("Data cleaning completed successfully"),
-        Err(e) => eprintln!("Error during data cleaning: {}", e),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deduplication() {
+        let mut cleaner = DataCleaner::new();
+        let data = vec![1, 2, 2, 3, 1, 4];
+
+        let result = cleaner.process_batch(data);
+        assert_eq!(result, vec![1, 2, 3, 4]);
+        assert_eq!(cleaner.count_unique(), 4);
     }
-    
-    Ok(())
+
+    #[test]
+    fn test_reset() {
+        let mut cleaner = DataCleaner::new();
+        cleaner.process_batch(vec!["a", "b", "c"]);
+        assert_eq!(cleaner.count_unique(), 3);
+
+        cleaner.reset();
+        assert_eq!(cleaner.count_unique(), 0);
+
+        let result = cleaner.process_batch(vec!["a", "a", "b"]);
+        assert_eq!(result, vec!["a", "b"]);
+    }
 }
