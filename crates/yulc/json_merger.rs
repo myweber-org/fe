@@ -1,31 +1,42 @@
-use serde_json::{Map, Value};
-use std::fs;
+
+use serde_json::{Value, Map};
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-pub fn merge_json_files(file_paths: &[&str], output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut merged_object = Map::new();
+pub fn merge_json_files<P: AsRef<Path>>(
+    input_paths: &[P],
+    output_path: P,
+    dedup_key: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
+    let mut seen_keys = HashSet::new();
 
-    for file_path in file_paths {
-        let content = fs::read_to_string(file_path)?;
-        let json_value: Value = serde_json::from_str(&content)?;
+    for path in input_paths {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let json_value: Value = serde_json::from_reader(reader)?;
 
-        if let Value::Object(obj) = json_value {
-            for (key, value) in obj {
-                merged_object.insert(key, value);
+        if let Value::Array(items) = json_value {
+            for item in items {
+                if let Value::Object(obj) = item {
+                    if let Some(key_value) = obj.get(dedup_key) {
+                        let key_string = key_value.to_string();
+                        if !seen_keys.contains(&key_string) {
+                            seen_keys.insert(key_string.clone());
+                            merged_map.insert(key_string, Value::Object(obj));
+                        }
+                    }
+                }
             }
-        } else {
-            return Err("Each JSON file must contain a JSON object".into());
         }
     }
 
-    let output_json = Value::Object(merged_object);
-    let serialized = serde_json::to_string_pretty(&output_json)?;
+    let output_array: Vec<Value> = merged_map.into_values().collect();
+    let output_file = File::create(output_path)?;
+    let writer = BufWriter::new(output_file);
+    serde_json::to_writer_pretty(writer, &output_array)?;
 
-    let output_dir = Path::new(output_path).parent().unwrap();
-    if !output_dir.exists() {
-        fs::create_dir_all(output_dir)?;
-    }
-
-    fs::write(output_path, serialized)?;
     Ok(())
 }
