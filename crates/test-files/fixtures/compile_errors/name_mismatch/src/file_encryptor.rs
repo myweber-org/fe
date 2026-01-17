@@ -126,3 +126,116 @@ mod tests {
         assert_eq!(original_content, decrypted_content);
     }
 }
+use std::fs;
+use std::io::{Read, Write};
+use std::path::Path;
+
+pub struct FileEncryptor {
+    key: Vec<u8>,
+}
+
+impl FileEncryptor {
+    pub fn new(key: &str) -> Self {
+        FileEncryptor {
+            key: key.as_bytes().to_vec(),
+        }
+    }
+
+    pub fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), String> {
+        self.process_file(input_path, output_path, true)
+    }
+
+    pub fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), String> {
+        self.process_file(input_path, output_path, false)
+    }
+
+    fn process_file(&self, input_path: &Path, output_path: &Path, is_encrypt: bool) -> Result<(), String> {
+        if self.key.is_empty() {
+            return Err("Encryption key cannot be empty".to_string());
+        }
+
+        let mut input_file = fs::File::open(input_path)
+            .map_err(|e| format!("Failed to open input file: {}", e))?;
+
+        let mut output_file = fs::File::create(output_path)
+            .map_err(|e| format!("Failed to create output file: {}", e))?;
+
+        let mut buffer = [0u8; 4096];
+        let mut key_index = 0;
+
+        loop {
+            let bytes_read = input_file.read(&mut buffer)
+                .map_err(|e| format!("Failed to read from input file: {}", e))?;
+
+            if bytes_read == 0 {
+                break;
+            }
+
+            let processed_data: Vec<u8> = buffer[..bytes_read]
+                .iter()
+                .map(|&byte| {
+                    let result = byte ^ self.key[key_index];
+                    key_index = (key_index + 1) % self.key.len();
+                    result
+                })
+                .collect();
+
+            output_file.write_all(&processed_data)
+                .map_err(|e| format!("Failed to write to output file: {}", e))?;
+        }
+
+        if is_encrypt {
+            println!("File encrypted successfully: {:?} -> {:?}", input_path, output_path);
+        } else {
+            println!("File decrypted successfully: {:?} -> {:?}", input_path, output_path);
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_encrypt_decrypt_cycle() {
+        let encryptor = FileEncryptor::new("secret_key_123");
+        
+        let mut original_file = NamedTempFile::new().unwrap();
+        writeln!(original_file, "This is a test message for encryption.").unwrap();
+        
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+
+        let encrypt_result = encryptor.encrypt_file(
+            original_file.path(),
+            encrypted_file.path()
+        );
+        assert!(encrypt_result.is_ok());
+
+        let decrypt_result = encryptor.decrypt_file(
+            encrypted_file.path(),
+            decrypted_file.path()
+        );
+        assert!(decrypt_result.is_ok());
+
+        let original_content = fs::read_to_string(original_file.path()).unwrap();
+        let decrypted_content = fs::read_to_string(decrypted_file.path()).unwrap();
+        
+        assert_eq!(original_content, decrypted_content);
+    }
+
+    #[test]
+    fn test_empty_key() {
+        let encryptor = FileEncryptor::new("");
+        let temp_file = NamedTempFile::new().unwrap();
+        let output_file = NamedTempFile::new().unwrap();
+
+        let result = encryptor.encrypt_file(temp_file.path(), output_file.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Encryption key cannot be empty"));
+    }
+}
