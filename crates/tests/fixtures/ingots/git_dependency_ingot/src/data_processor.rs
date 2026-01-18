@@ -283,3 +283,234 @@ mod tests {
         assert_eq!(new_processor.count(), 2);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidId,
+    InvalidName,
+    InvalidValue,
+    DuplicateRecord,
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidId => write!(f, "ID must be greater than 0"),
+            ProcessingError::InvalidName => write!(f, "Name cannot be empty"),
+            ProcessingError::InvalidValue => write!(f, "Value must be between 0.0 and 1000.0"),
+            ProcessingError::DuplicateRecord => write!(f, "Record with this ID already exists"),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    records: HashMap<u32, DataRecord>,
+    statistics: ProcessingStats,
+}
+
+#[derive(Debug, Default)]
+pub struct ProcessingStats {
+    pub total_records: usize,
+    pub total_value: f64,
+    pub average_value: f64,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: HashMap::new(),
+            statistics: ProcessingStats::default(),
+        }
+    }
+
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), ProcessingError> {
+        self.validate_record(&record)?;
+        
+        if self.records.contains_key(&record.id) {
+            return Err(ProcessingError::DuplicateRecord);
+        }
+
+        self.update_statistics(&record);
+        self.records.insert(record.id, record);
+        Ok(())
+    }
+
+    pub fn get_record(&self, id: u32) -> Option<&DataRecord> {
+        self.records.get(&id)
+    }
+
+    pub fn remove_record(&mut self, id: u32) -> Option<DataRecord> {
+        if let Some(record) = self.records.remove(&id) {
+            self.statistics.total_records -= 1;
+            self.statistics.total_value -= record.value;
+            self.update_average();
+            Some(record)
+        } else {
+            None
+        }
+    }
+
+    pub fn transform_records<F>(&mut self, transform_fn: F) 
+    where
+        F: Fn(&DataRecord) -> DataRecord,
+    {
+        let transformed: Vec<DataRecord> = self.records
+            .values()
+            .map(transform_fn)
+            .collect();
+
+        self.records.clear();
+        self.statistics = ProcessingStats::default();
+
+        for record in transformed {
+            if self.add_record(record).is_err() {
+                eprintln!("Failed to add transformed record");
+            }
+        }
+    }
+
+    pub fn filter_records<F>(&mut self, filter_fn: F) 
+    where
+        F: Fn(&DataRecord) -> bool,
+    {
+        let ids_to_remove: Vec<u32> = self.records
+            .iter()
+            .filter(|(_, record)| !filter_fn(record))
+            .map(|(id, _)| *id)
+            .collect();
+
+        for id in ids_to_remove {
+            self.remove_record(id);
+        }
+    }
+
+    pub fn get_statistics(&self) -> &ProcessingStats {
+        &self.statistics
+    }
+
+    pub fn export_records(&self) -> Vec<&DataRecord> {
+        self.records.values().collect()
+    }
+
+    fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.id == 0 {
+            return Err(ProcessingError::InvalidId);
+        }
+
+        if record.name.trim().is_empty() {
+            return Err(ProcessingError::InvalidName);
+        }
+
+        if !(0.0..=1000.0).contains(&record.value) {
+            return Err(ProcessingError::InvalidValue);
+        }
+
+        Ok(())
+    }
+
+    fn update_statistics(&mut self, record: &DataRecord) {
+        self.statistics.total_records += 1;
+        self.statistics.total_value += record.value;
+        self.update_average();
+    }
+
+    fn update_average(&mut self) {
+        if self.statistics.total_records > 0 {
+            self.statistics.average_value = 
+                self.statistics.total_value / self.statistics.total_records as f64;
+        } else {
+            self.statistics.average_value = 0.0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_valid_record() {
+        let mut processor = DataProcessor::new();
+        let record = DataRecord {
+            id: 1,
+            name: "Test".to_string(),
+            value: 100.0,
+            tags: vec!["tag1".to_string()],
+        };
+
+        assert!(processor.add_record(record).is_ok());
+        assert_eq!(processor.get_statistics().total_records, 1);
+    }
+
+    #[test]
+    fn test_add_invalid_record() {
+        let mut processor = DataProcessor::new();
+        let record = DataRecord {
+            id: 0,
+            name: "".to_string(),
+            value: -10.0,
+            tags: vec![],
+        };
+
+        assert!(processor.add_record(record).is_err());
+    }
+
+    #[test]
+    fn test_duplicate_record() {
+        let mut processor = DataProcessor::new();
+        let record1 = DataRecord {
+            id: 1,
+            name: "First".to_string(),
+            value: 50.0,
+            tags: vec![],
+        };
+
+        let record2 = DataRecord {
+            id: 1,
+            name: "Second".to_string(),
+            value: 60.0,
+            tags: vec![],
+        };
+
+        assert!(processor.add_record(record1).is_ok());
+        assert!(processor.add_record(record2).is_err());
+    }
+
+    #[test]
+    fn test_transform_records() {
+        let mut processor = DataProcessor::new();
+        
+        let record = DataRecord {
+            id: 1,
+            name: "Original".to_string(),
+            value: 50.0,
+            tags: vec![],
+        };
+
+        processor.add_record(record).unwrap();
+
+        processor.transform_records(|r| DataRecord {
+            id: r.id,
+            name: format!("{}_transformed", r.name),
+            value: r.value * 2.0,
+            tags: r.tags.clone(),
+        });
+
+        let transformed = processor.get_record(1).unwrap();
+        assert_eq!(transformed.name, "Original_transformed");
+        assert_eq!(transformed.value, 100.0);
+    }
+}
