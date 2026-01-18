@@ -274,3 +274,103 @@ mod tests {
         assert!(!processor.validate("even_length", "abc"));
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    validators: Vec<Box<dyn Fn(&str) -> bool>>,
+    transformers: HashMap<String, Box<dyn Fn(String) -> String>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            validators: Vec::new(),
+            transformers: HashMap::new(),
+        }
+    }
+
+    pub fn add_validator<F>(&mut self, validator: F)
+    where
+        F: Fn(&str) -> bool + 'static,
+    {
+        self.validators.push(Box::new(validator));
+    }
+
+    pub fn add_transformer<F>(&mut self, name: &str, transformer: F)
+    where
+        F: Fn(String) -> String + 'static,
+    {
+        self.transformers
+            .insert(name.to_string(), Box::new(transformer));
+    }
+
+    pub fn validate(&self, input: &str) -> bool {
+        self.validators.iter().all(|v| v(input))
+    }
+
+    pub fn transform(&self, name: &str, input: String) -> Option<String> {
+        self.transformers.get(name).map(|t| t(input))
+    }
+
+    pub fn process_pipeline(&self, input: &str, transformations: &[&str]) -> Option<String> {
+        if !self.validate(input) {
+            return None;
+        }
+
+        let mut result = input.to_string();
+        for &transform_name in transformations {
+            if let Some(transformed) = self.transform(transform_name, result) {
+                result = transformed;
+            } else {
+                return None;
+            }
+        }
+        Some(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validation() {
+        let mut processor = DataProcessor::new();
+        processor.add_validator(|s| !s.is_empty());
+        processor.add_validator(|s| s.len() <= 10);
+
+        assert!(processor.validate("test"));
+        assert!(!processor.validate(""));
+        assert!(!processor.validate("verylongstring"));
+    }
+
+    #[test]
+    fn test_transformation() {
+        let mut processor = DataProcessor::new();
+        processor.add_transformer("uppercase", |s| s.to_uppercase());
+        processor.add_transformer("reverse", |s| s.chars().rev().collect());
+
+        assert_eq!(
+            processor.transform("uppercase", "hello".to_string()),
+            Some("HELLO".to_string())
+        );
+        assert_eq!(
+            processor.transform("reverse", "rust".to_string()),
+            Some("tsur".to_string())
+        );
+    }
+
+    #[test]
+    fn test_pipeline() {
+        let mut processor = DataProcessor::new();
+        processor.add_validator(|s| s.len() > 0);
+        processor.add_transformer("uppercase", |s| s.to_uppercase());
+        processor.add_transformer("add_exclamation", |s| format!("{}!", s));
+
+        let result = processor.process_pipeline("hello", &["uppercase", "add_exclamation"]);
+        assert_eq!(result, Some("HELLO!".to_string()));
+
+        let invalid_result = processor.process_pipeline("", &["uppercase"]);
+        assert_eq!(invalid_result, None);
+    }
+}
