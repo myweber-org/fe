@@ -50,3 +50,125 @@ mod tests {
         assert_eq!(obj.get("active").unwrap(), true);
     }
 }
+use serde_json::{Value, Map};
+use std::collections::HashSet;
+
+pub fn merge_json(base: &mut Value, update: &Value, strategy: MergeStrategy) -> Result<(), String> {
+    match (base, update) {
+        (Value::Object(base_map), Value::Object(update_map)) => {
+            merge_objects(base_map, update_map, strategy)
+        }
+        (Value::Array(base_arr), Value::Array(update_arr)) => {
+            merge_arrays(base_arr, update_arr, strategy)
+        }
+        (base_val, update_val) if base_val.is_null() => {
+            *base = update_val.clone();
+            Ok(())
+        }
+        (base_val, update_val) if base_val != update_val => {
+            match strategy {
+                MergeStrategy::PreferUpdate => {
+                    *base = update_val.clone();
+                    Ok(())
+                }
+                MergeStrategy::PreferBase => Ok(()),
+                MergeStrategy::FailOnConflict => {
+                    Err("Conflict between primitive values".to_string())
+                }
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+fn merge_objects(
+    base: &mut Map<String, Value>,
+    update: &Map<String, Value>,
+    strategy: MergeStrategy,
+) -> Result<(), String> {
+    let base_keys: HashSet<_> = base.keys().collect();
+    let update_keys: HashSet<_> = update.keys().collect();
+    let conflicts: Vec<_> = base_keys.intersection(&update_keys)
+        .filter(|&&key| base[key] != update[key])
+        .collect();
+
+    if !conflicts.is_empty() && strategy == MergeStrategy::FailOnConflict {
+        return Err(format!("Conflicts in keys: {:?}", conflicts));
+    }
+
+    for (key, update_value) in update {
+        if let Some(base_value) = base.get_mut(key) {
+            if *base_value != *update_value {
+                match strategy {
+                    MergeStrategy::PreferUpdate => {
+                        merge_json(base_value, update_value, strategy)?;
+                    }
+                    MergeStrategy::PreferBase => {}
+                    MergeStrategy::FailOnConflict => {
+                        return Err(format!("Conflict in key '{}'", key));
+                    }
+                }
+            }
+        } else {
+            base.insert(key.clone(), update_value.clone());
+        }
+    }
+    Ok(())
+}
+
+fn merge_arrays(
+    base: &mut Vec<Value>,
+    update: &Vec<Value>,
+    strategy: MergeStrategy,
+) -> Result<(), String> {
+    match strategy {
+        MergeStrategy::PreferUpdate => {
+            base.extend_from_slice(update);
+            Ok(())
+        }
+        MergeStrategy::PreferBase => Ok(()),
+        MergeStrategy::FailOnConflict => {
+            if base != update {
+                Err("Arrays differ and strategy is FailOnConflict".to_string())
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeStrategy {
+    PreferBase,
+    PreferUpdate,
+    FailOnConflict,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_merge_objects_prefer_update() {
+        let mut base = json!({"a": 1, "b": {"c": 2}});
+        let update = json!({"b": {"c": 3, "d": 4}, "e": 5});
+        
+        merge_json(&mut base, &update, MergeStrategy::PreferUpdate).unwrap();
+        
+        assert_eq!(base["a"], 1);
+        assert_eq!(base["b"]["c"], 3);
+        assert_eq!(base["b"]["d"], 4);
+        assert_eq!(base["e"], 5);
+    }
+
+    #[test]
+    fn test_merge_arrays_prefer_update() {
+        let mut base = json!([1, 2, 3]);
+        let update = json!([4, 5]);
+        
+        merge_json(&mut base, &update, MergeStrategy::PreferUpdate).unwrap();
+        
+        assert_eq!(base, json!([1, 2, 3, 4, 5]));
+    }
+}
