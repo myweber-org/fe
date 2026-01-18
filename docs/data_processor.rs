@@ -1,188 +1,109 @@
-use csv::Reader;
-use serde::Deserialize;
-use std::error::Error;
 
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    active: bool,
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
 }
 
-pub fn process_csv_data(input_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
-    let mut reader = Reader::from_path(input_path)?;
-    let mut records = Vec::new();
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    InvalidValue,
+    EmptyCategory,
+}
 
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        if record.value >= 0.0 {
-            records.push(record);
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "ID must be greater than 0"),
+            ValidationError::InvalidValue => write!(f, "Value must be between 0.0 and 1000.0"),
+            ValidationError::EmptyCategory => write!(f, "Category cannot be empty"),
         }
     }
-
-    Ok(records)
 }
 
-pub fn calculate_statistics(records: &[Record]) -> (f64, f64, usize) {
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let count = records.len();
-    let average = if count > 0 { sum / count as f64 } else { 0.0 };
+impl Error for ValidationError {}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Result<Self, ValidationError> {
+        if id == 0 {
+            return Err(ValidationError::InvalidId);
+        }
+        
+        if value < 0.0 || value > 1000.0 {
+            return Err(ValidationError::InvalidValue);
+        }
+        
+        if category.trim().is_empty() {
+            return Err(ValidationError::EmptyCategory);
+        }
+        
+        Ok(Self {
+            id,
+            value,
+            category: category.trim().to_string(),
+        })
+    }
     
-    (sum, average, count)
+    pub fn normalize_value(&mut self) {
+        self.value = (self.value * 100.0).round() / 100.0;
+    }
+    
+    pub fn to_json(&self) -> String {
+        format!(
+            r#"{{"id":{},"value":{},"category":"{}"}}"#,
+            self.id, self.value, self.category
+        )
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord]) -> Vec<String> {
+    records.iter_mut().for_each(|record| {
+        record.normalize_value();
+    });
+    
+    records
+        .iter()
+        .map(|record| record.to_json())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
-    use std::io::Write;
-
+    
     #[test]
-    fn test_process_valid_csv() {
-        let csv_data = "id,name,value,active\n1,Test1,10.5,true\n2,Test2,-3.2,false\n";
-        let mut temp_file = NamedTempFile::new().unwrap();
-        write!(temp_file, "{}", csv_data).unwrap();
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(1, 50.5, "test".to_string());
+        assert!(record.is_ok());
         
-        let result = process_csv_data(temp_file.path().to_str().unwrap());
-        assert!(result.is_ok());
-        let records = result.unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].name, "Test1");
+        let record = record.unwrap();
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 50.5);
+        assert_eq!(record.category, "test");
     }
-
+    
     #[test]
-    fn test_calculate_statistics() {
-        let records = vec![
-            Record { id: 1, name: "A".to_string(), value: 10.0, active: true },
-            Record { id: 2, name: "B".to_string(), value: 20.0, active: false },
-        ];
-        
-        let (sum, avg, count) = calculate_statistics(&records);
-        assert_eq!(sum, 30.0);
-        assert_eq!(avg, 15.0);
-        assert_eq!(count, 2);
+    fn test_invalid_id() {
+        let record = DataRecord::new(0, 50.5, "test".to_string());
+        assert!(matches!(record, Err(ValidationError::InvalidId)));
     }
-}
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
-
-pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
-}
-
-impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
-        DataProcessor {
-            delimiter,
-            has_header,
-        }
-    }
-
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-
-        for (index, line) in reader.lines().enumerate() {
-            let line = line?;
-            
-            if index == 0 && self.has_header {
-                continue;
-            }
-
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-
-            if !fields.is_empty() && !fields.iter().all(|f| f.is_empty()) {
-                records.push(fields);
-            }
-        }
-
-        Ok(records)
-    }
-
-    pub fn validate_records(&self, records: &[Vec<String>]) -> Result<(), String> {
-        if records.is_empty() {
-            return Err("No valid records found".to_string());
-        }
-
-        let expected_len = records[0].len();
-        for (i, record) in records.iter().enumerate() {
-            if record.len() != expected_len {
-                return Err(format!("Record {} has {} fields, expected {}", 
-                    i + 1, record.len(), expected_len));
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn extract_column(&self, records: &[Vec<String>], column_index: usize) -> Result<Vec<String>, String> {
-        if records.is_empty() {
-            return Err("No records available".to_string());
-        }
-
-        if column_index >= records[0].len() {
-            return Err(format!("Column index {} out of bounds", column_index));
-        }
-
-        let column_data: Vec<String> = records
-            .iter()
-            .map(|record| record[column_index].clone())
-            .collect();
-
-        Ok(column_data)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
+    
     #[test]
-    fn test_process_csv() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "Alice,30,New York").unwrap();
-        writeln!(temp_file, "Bob,25,London").unwrap();
-
-        let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path());
-        
-        assert!(result.is_ok());
-        let records = result.unwrap();
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0], vec!["Alice", "30", "New York"]);
+    fn test_normalize_value() {
+        let mut record = DataRecord::new(1, 50.555, "test".to_string()).unwrap();
+        record.normalize_value();
+        assert_eq!(record.value, 50.56);
     }
-
+    
     #[test]
-    fn test_validate_records() {
-        let processor = DataProcessor::new(',', false);
-        let valid_records = vec![
-            vec!["a".to_string(), "b".to_string()],
-            vec!["c".to_string(), "d".to_string()],
-        ];
-        
-        assert!(processor.validate_records(&valid_records).is_ok());
-    }
-
-    #[test]
-    fn test_extract_column() {
-        let processor = DataProcessor::new(',', false);
-        let records = vec![
-            vec!["a".to_string(), "b".to_string()],
-            vec!["c".to_string(), "d".to_string()],
-        ];
-        
-        let column = processor.extract_column(&records, 0).unwrap();
-        assert_eq!(column, vec!["a".to_string(), "c".to_string()]);
+    fn test_to_json() {
+        let record = DataRecord::new(1, 50.5, "test".to_string()).unwrap();
+        let json = record.to_json();
+        assert_eq!(json, r#"{"id":1,"value":50.5,"category":"test"}"#);
     }
 }
