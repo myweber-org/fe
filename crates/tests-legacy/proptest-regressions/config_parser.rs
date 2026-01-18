@@ -91,4 +91,98 @@ mod tests {
         assert_eq!(config.get_or_default("EXISTING", "default"), "value");
         assert_eq!(config.get_or_default("MISSING", "default"), "default");
     }
+}use std::fs;
+use std::collections::HashMap;
+use toml::Value;
+
+pub struct Config {
+    settings: HashMap<String, Value>,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        Config {
+            settings: HashMap::new(),
+        }
+    }
+
+    pub fn load_from_file(&mut self, path: &str) -> Result<(), String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+        
+        let parsed: Value = content.parse()
+            .map_err(|e| format!("Failed to parse TOML: {}", e))?;
+
+        if let Value::Table(table) = parsed {
+            for (key, value) in table {
+                self.settings.insert(key, value);
+            }
+            Ok(())
+        } else {
+            Err("Invalid config structure".to_string())
+        }
+    }
+
+    pub fn get_string(&self, key: &str) -> Option<String> {
+        self.settings.get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
+    pub fn get_int(&self, key: &str) -> Option<i64> {
+        self.settings.get(key)
+            .and_then(|v| v.as_integer())
+    }
+
+    pub fn get_bool(&self, key: &str) -> Option<bool> {
+        self.settings.get(key)
+            .and_then(|v| v.as_bool())
+    }
+
+    pub fn get_float(&self, key: &str) -> Option<f64> {
+        self.settings.get(key)
+            .and_then(|v| v.as_float())
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.settings.contains_key(key)
+    }
+
+    pub fn get_all_keys(&self) -> Vec<String> {
+        self.settings.keys().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_config_loading() {
+        let mut config_content = NamedTempFile::new().unwrap();
+        writeln!(config_content, r#"
+            server_host = "localhost"
+            server_port = 8080
+            enable_logging = true
+            timeout = 30.5
+        "#).unwrap();
+
+        let mut config = Config::new();
+        let result = config.load_from_file(config_content.path().to_str().unwrap());
+        assert!(result.is_ok());
+
+        assert_eq!(config.get_string("server_host"), Some("localhost".to_string()));
+        assert_eq!(config.get_int("server_port"), Some(8080));
+        assert_eq!(config.get_bool("enable_logging"), Some(true));
+        assert_eq!(config.get_float("timeout"), Some(30.5));
+        assert!(config.contains_key("server_host"));
+    }
+
+    #[test]
+    fn test_missing_key() {
+        let config = Config::new();
+        assert_eq!(config.get_string("nonexistent"), None);
+    }
 }
