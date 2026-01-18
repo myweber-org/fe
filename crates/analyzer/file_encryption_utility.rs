@@ -2,89 +2,97 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const DEFAULT_KEY: u8 = 0x55;
+const DEFAULT_KEY: &[u8] = b"secret-encryption-key-2024";
 
-pub fn encrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
-    let encryption_key = key.unwrap_or(DEFAULT_KEY);
-    let data = fs::read(input_path)?;
-    
-    let encrypted_data: Vec<u8> = data.iter()
-        .map(|byte| byte ^ encryption_key)
-        .collect();
-    
-    fs::write(output_path, encrypted_data)?;
-    Ok(())
+pub struct FileEncryptor {
+    key: Vec<u8>,
 }
 
-pub fn decrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
-    encrypt_file(input_path, output_path, key)
-}
-
-pub fn process_stream<R: Read, W: Write>(mut reader: R, mut writer: W, key: u8) -> io::Result<()> {
-    let mut buffer = [0u8; 1024];
-    
-    loop {
-        let bytes_read = reader.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-        
-        for byte in buffer.iter_mut().take(bytes_read) {
-            *byte ^= key;
-        }
-        
-        writer.write_all(&buffer[..bytes_read])?;
+impl FileEncryptor {
+    pub fn new(key: Option<&[u8]>) -> Self {
+        let key = match key {
+            Some(k) => k.to_vec(),
+            None => DEFAULT_KEY.to_vec(),
+        };
+        FileEncryptor { key }
     }
-    
-    writer.flush()?;
-    Ok(())
+
+    pub fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> io::Result<()> {
+        let mut input_file = fs::File::open(input_path)?;
+        let mut output_file = fs::File::create(output_path)?;
+        
+        let mut buffer = [0u8; 4096];
+        let key_len = self.key.len();
+        let mut key_index = 0;
+        
+        loop {
+            let bytes_read = input_file.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            
+            for i in 0..bytes_read {
+                buffer[i] ^= self.key[key_index];
+                key_index = (key_index + 1) % key_len;
+            }
+            
+            output_file.write_all(&buffer[..bytes_read])?;
+        }
+        
+        Ok(())
+    }
+
+    pub fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> io::Result<()> {
+        self.encrypt_file(input_path, output_path)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
-    
+    use std::io::Write;
+
     #[test]
-    fn test_symmetric_encryption() {
-        let original_text = b"Hello, World!";
-        let key = 0x42;
+    fn test_encryption_decryption() {
+        let encryptor = FileEncryptor::new(None);
+        let test_data = b"Hello, this is a test message for encryption!";
         
-        let encrypted: Vec<u8> = original_text.iter()
-            .map(|byte| byte ^ key)
-            .collect();
+        let mut input_file = NamedTempFile::new().unwrap();
+        input_file.write_all(test_data).unwrap();
         
-        let decrypted: Vec<u8> = encrypted.iter()
-            .map(|byte| byte ^ key)
-            .collect();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
         
-        assert_eq!(original_text.to_vec(), decrypted);
+        encryptor.encrypt_file(input_file.path(), encrypted_file.path()).unwrap();
+        encryptor.decrypt_file(encrypted_file.path(), decrypted_file.path()).unwrap();
+        
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(test_data.to_vec(), decrypted_data);
     }
-    
+
     #[test]
-    fn test_file_encryption() -> io::Result<()> {
-        let test_data = b"Test encryption data";
-        let input_file = NamedTempFile::new()?;
-        let output_file = NamedTempFile::new()?;
-        let decrypted_file = NamedTempFile::new()?;
+    fn test_custom_key() {
+        let custom_key = b"my-custom-key-123";
+        let encryptor = FileEncryptor::new(Some(custom_key));
+        let test_data = b"Sensitive information";
         
-        fs::write(input_file.path(), test_data)?;
+        let mut input_file = NamedTempFile::new().unwrap();
+        input_file.write_all(test_data).unwrap();
         
-        encrypt_file(
-            input_file.path().to_str().unwrap(),
-            output_file.path().to_str().unwrap(),
-            Some(0x77)
-        )?;
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
         
-        decrypt_file(
-            output_file.path().to_str().unwrap(),
-            decrypted_file.path().to_str().unwrap(),
-            Some(0x77)
-        )?;
+        encryptor.encrypt_file(input_file.path(), encrypted_file.path()).unwrap();
         
-        let result = fs::read(decrypted_file.path())?;
-        assert_eq!(test_data.to_vec(), result);
+        let different_encryptor = FileEncryptor::new(Some(b"wrong-key"));
+        different_encryptor.decrypt_file(encrypted_file.path(), decrypted_file.path()).unwrap();
         
-        Ok(())
+        let wrong_decrypted = fs::read(decrypted_file.path()).unwrap();
+        assert_ne!(test_data.to_vec(), wrong_decrypted);
+        
+        encryptor.decrypt_file(encrypted_file.path(), decrypted_file.path()).unwrap();
+        let correct_decrypted = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(test_data.to_vec(), correct_decrypted);
     }
 }
