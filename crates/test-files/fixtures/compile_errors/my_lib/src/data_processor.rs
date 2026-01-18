@@ -106,4 +106,72 @@ mod tests {
         assert!((ds.mean().unwrap() - 12.9).abs() < 0.001);
         Ok(())
     }
+}use csv::Reader;
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+pub fn process_csv_file<P: AsRef<Path>>(path: P) -> Result<Vec<Record>, Box<dyn Error>> {
+    let mut reader = Reader::from_path(path)?;
+    let mut records = Vec::new();
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        if validate_record(&record) {
+            records.push(record);
+        }
+    }
+
+    Ok(records)
+}
+
+fn validate_record(record: &Record) -> bool {
+    !record.name.is_empty() && record.value >= 0.0
+}
+
+pub fn calculate_average(records: &[Record]) -> Option<f64> {
+    if records.is_empty() {
+        return None;
+    }
+
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    Some(sum / records.len() as f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_process_valid_csv() {
+        let csv_data = "id,name,value,active\n1,Test1,10.5,true\n2,Test2,20.0,false\n";
+        let temp_file = NamedTempFile::new().unwrap();
+        std::fs::write(temp_file.path(), csv_data).unwrap();
+
+        let result = process_csv_file(temp_file.path());
+        assert!(result.is_ok());
+        let records = result.unwrap();
+        assert_eq!(records.len(), 2);
+    }
+
+    #[test]
+    fn test_calculate_average() {
+        let records = vec![
+            Record { id: 1, name: "A".to_string(), value: 10.0, active: true },
+            Record { id: 2, name: "B".to_string(), value: 20.0, active: false },
+            Record { id: 3, name: "C".to_string(), value: 30.0, active: true },
+        ];
+
+        assert_eq!(calculate_average(&records), Some(20.0));
+        assert_eq!(calculate_average(&[]), None);
+    }
 }
