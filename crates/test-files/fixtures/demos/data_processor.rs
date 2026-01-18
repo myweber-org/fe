@@ -151,3 +151,160 @@ mod tests {
         assert_eq!(filtered[0].id, 1);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub category: String,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    EmptyName,
+    NegativeValue,
+    InvalidCategory,
+    MissingMetadata(String),
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "ID must be greater than 0"),
+            ValidationError::EmptyName => write!(f, "Name cannot be empty"),
+            ValidationError::NegativeValue => write!(f, "Value cannot be negative"),
+            ValidationError::InvalidCategory => write!(f, "Category must be one of: A, B, C, D"),
+            ValidationError::MissingMetadata(key) => write!(f, "Missing metadata key: {}", key),
+        }
+    }
+}
+
+impl Error for ValidationError {}
+
+pub fn validate_record(record: &DataRecord) -> Result<(), ValidationError> {
+    if record.id == 0 {
+        return Err(ValidationError::InvalidId);
+    }
+    
+    if record.name.trim().is_empty() {
+        return Err(ValidationError::EmptyName);
+    }
+    
+    if record.value < 0.0 {
+        return Err(ValidationError::NegativeValue);
+    }
+    
+    let valid_categories = ["A", "B", "C", "D"];
+    if !valid_categories.contains(&record.category.as_str()) {
+        return Err(ValidationError::InvalidCategory);
+    }
+    
+    if !record.metadata.contains_key("source") {
+        return Err(ValidationError::MissingMetadata("source".to_string()));
+    }
+    
+    Ok(())
+}
+
+pub fn transform_record(record: &DataRecord) -> DataRecord {
+    let mut transformed = record.clone();
+    
+    transformed.name = record.name.to_uppercase();
+    transformed.value = (record.value * 100.0).round() / 100.0;
+    
+    if transformed.category == "D" {
+        transformed.value *= 1.1;
+    }
+    
+    let mut new_metadata = record.metadata.clone();
+    new_metadata.insert("processed_timestamp".to_string(), 
+                       chrono::Utc::now().to_rfc3339());
+    new_metadata.insert("original_value".to_string(), 
+                       record.value.to_string());
+    
+    transformed.metadata = new_metadata;
+    transformed
+}
+
+pub fn process_records(records: Vec<DataRecord>) -> Result<Vec<DataRecord>, ValidationError> {
+    let mut processed_records = Vec::new();
+    
+    for record in records {
+        validate_record(&record)?;
+        let transformed = transform_record(&record);
+        processed_records.push(transformed);
+    }
+    
+    Ok(processed_records)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    fn create_test_record() -> DataRecord {
+        let mut metadata = HashMap::new();
+        metadata.insert("source".to_string(), "test".to_string());
+        
+        DataRecord {
+            id: 1,
+            name: "Test Record".to_string(),
+            value: 42.5,
+            category: "A".to_string(),
+            metadata,
+        }
+    }
+    
+    #[test]
+    fn test_valid_record_validation() {
+        let record = create_test_record();
+        assert!(validate_record(&record).is_ok());
+    }
+    
+    #[test]
+    fn test_invalid_id_validation() {
+        let mut record = create_test_record();
+        record.id = 0;
+        assert!(matches!(validate_record(&record), Err(ValidationError::InvalidId)));
+    }
+    
+    #[test]
+    fn test_empty_name_validation() {
+        let mut record = create_test_record();
+        record.name = "   ".to_string();
+        assert!(matches!(validate_record(&record), Err(ValidationError::EmptyName)));
+    }
+    
+    #[test]
+    fn test_negative_value_validation() {
+        let mut record = create_test_record();
+        record.value = -10.0;
+        assert!(matches!(validate_record(&record), Err(ValidationError::NegativeValue)));
+    }
+    
+    #[test]
+    fn test_transform_record() {
+        let record = create_test_record();
+        let transformed = transform_record(&record);
+        
+        assert_eq!(transformed.name, "TEST RECORD");
+        assert_eq!(transformed.value, 42.5);
+        assert!(transformed.metadata.contains_key("processed_timestamp"));
+        assert!(transformed.metadata.contains_key("original_value"));
+    }
+    
+    #[test]
+    fn test_process_records() {
+        let records = vec![create_test_record()];
+        let result = process_records(records);
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1);
+    }
+}
