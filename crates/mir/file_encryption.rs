@@ -35,3 +35,113 @@ pub fn decrypt_file(input_path: &str, key_path: &str, output_path: &str) -> Resu
     fs::write(output_path, decrypted_data)?;
     Ok(())
 }
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+const DEFAULT_KEY: u8 = 0x55;
+
+pub fn encrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
+    let encryption_key = key.unwrap_or(DEFAULT_KEY);
+    
+    let input_data = fs::read(input_path)?;
+    let encrypted_data: Vec<u8> = input_data
+        .iter()
+        .map(|byte| byte ^ encryption_key)
+        .collect();
+    
+    fs::write(output_path, encrypted_data)?;
+    Ok(())
+}
+
+pub fn decrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
+    let decryption_key = key.unwrap_or(DEFAULT_KEY);
+    
+    let encrypted_data = fs::read(input_path)?;
+    let decrypted_data: Vec<u8> = encrypted_data
+        .iter()
+        .map(|byte| byte ^ decryption_key)
+        .collect();
+    
+    fs::write(output_path, decrypted_data)?;
+    Ok(())
+}
+
+pub fn process_file(input_path: &str, output_path: &str, key: Option<u8>, encrypt: bool) -> io::Result<()> {
+    if !Path::new(input_path).exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Input file '{}' not found", input_path)
+        ));
+    }
+    
+    if encrypt {
+        encrypt_file(input_path, output_path, key)
+    } else {
+        decrypt_file(input_path, output_path, key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_encrypt_decrypt_cycle() {
+        let original_content = b"Hello, World! This is a test message.";
+        
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+        
+        fs::write(input_file.path(), original_content).unwrap();
+        
+        encrypt_file(
+            input_file.path().to_str().unwrap(),
+            encrypted_file.path().to_str().unwrap(),
+            Some(0x42)
+        ).unwrap();
+        
+        let encrypted_content = fs::read(encrypted_file.path()).unwrap();
+        assert_ne!(encrypted_content, original_content);
+        
+        decrypt_file(
+            encrypted_file.path().to_str().unwrap(),
+            decrypted_file.path().to_str().unwrap(),
+            Some(0x42)
+        ).unwrap();
+        
+        let decrypted_content = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(decrypted_content, original_content);
+    }
+    
+    #[test]
+    fn test_default_key() {
+        let test_data = b"Test data for default key";
+        
+        let input_file = NamedTempFile::new().unwrap();
+        let output_file = NamedTempFile::new().unwrap();
+        
+        fs::write(input_file.path(), test_data).unwrap();
+        
+        encrypt_file(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap(),
+            None
+        ).unwrap();
+        
+        let encrypted = fs::read(output_file.path()).unwrap();
+        assert_ne!(encrypted, test_data);
+        
+        let mut decrypted_file = NamedTempFile::new().unwrap();
+        decrypt_file(
+            output_file.path().to_str().unwrap(),
+            decrypted_file.path().to_str().unwrap(),
+            None
+        ).unwrap();
+        
+        let decrypted = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(decrypted, test_data);
+    }
+}
