@@ -78,4 +78,68 @@ mod tests {
         let parsed: JsonValue = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed, json_value);
     }
+}use serde_json::{Map, Value};
+use std::fs::File;
+use std::io::{BufReader, Write};
+use std::path::Path;
+
+pub fn merge_json_files(input_paths: &[&str], output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
+
+    for path_str in input_paths {
+        let path = Path::new(path_str);
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let json_value: Value = serde_json::from_reader(reader)?;
+
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                merged_map.insert(key, value);
+            }
+        } else {
+            return Err("Each input file must contain a JSON object".into());
+        }
+    }
+
+    let output_file = File::create(output_path)?;
+    let merged_value = Value::Object(merged_map);
+    serde_json::to_writer_pretty(output_file, &merged_value)?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_json_files() {
+        let json1 = r#"{"name": "Alice", "age": 30}"#;
+        let json2 = r#"{"city": "Berlin", "country": "Germany"}"#;
+
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
+        file1.write_all(json1.as_bytes()).unwrap();
+        file2.write_all(json2.as_bytes()).unwrap();
+
+        let output_file = NamedTempFile::new().unwrap();
+        let output_path = output_file.path().to_str().unwrap();
+
+        let input_paths = vec![
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ];
+
+        merge_json_files(&input_paths, output_path).unwrap();
+
+        let content = std::fs::read_to_string(output_path).unwrap();
+        let parsed: Value = serde_json::from_str(&content).unwrap();
+
+        assert_eq!(parsed["name"], "Alice");
+        assert_eq!(parsed["age"], 30);
+        assert_eq!(parsed["city"], "Berlin");
+        assert_eq!(parsed["country"], "Germany");
+    }
 }
