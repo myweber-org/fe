@@ -244,3 +244,58 @@ mod tests {
         assert_eq!(test_data.to_vec(), decrypted_data);
     }
 }
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use std::error::Error;
+
+pub fn encrypt_data(plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let key = Aes256Gcm::generate_key(&mut OsRng);
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    
+    let ciphertext = cipher.encrypt(&nonce, plaintext)?;
+    let mut result = Vec::with_capacity(key.len() + nonce.len() + ciphertext.len());
+    result.extend_from_slice(&key);
+    result.extend_from_slice(&nonce);
+    result.extend_from_slice(&ciphertext);
+    
+    Ok(result)
+}
+
+pub fn decrypt_data(encrypted_data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    if encrypted_data.len() < 48 {
+        return Err("Invalid encrypted data length".into());
+    }
+    
+    let key = Key::<Aes256Gcm>::from_slice(&encrypted_data[0..32]);
+    let nonce = Nonce::from_slice(&encrypted_data[32..44]);
+    let ciphertext = &encrypted_data[44..];
+    
+    let cipher = Aes256Gcm::new(key);
+    let plaintext = cipher.decrypt(nonce, ciphertext)?;
+    
+    Ok(plaintext)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encryption_decryption() {
+        let original_data = b"Secret message for encryption test";
+        let encrypted = encrypt_data(original_data).unwrap();
+        let decrypted = decrypt_data(&encrypted).unwrap();
+        
+        assert_eq!(original_data.to_vec(), decrypted);
+    }
+    
+    #[test]
+    fn test_invalid_data() {
+        let invalid_data = b"too short";
+        let result = decrypt_data(invalid_data);
+        assert!(result.is_err());
+    }
+}
