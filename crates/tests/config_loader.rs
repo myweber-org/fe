@@ -1,63 +1,71 @@
-use std::collections::HashMap;
+use serde::Deserialize;
 use std::env;
 use std::fs;
+use std::path::Path;
 
-pub struct Config {
-    pub settings: HashMap<String, String>,
+#[derive(Debug, Deserialize)]
+pub struct AppConfig {
+    pub server_port: u16,
+    pub database_url: String,
+    pub log_level: String,
+    pub cache_ttl: u64,
 }
 
-impl Config {
-    pub fn new() -> Self {
-        Config {
-            settings: HashMap::new(),
+impl AppConfig {
+    pub fn load() -> Result<Self, String> {
+        let config_path = env::var("CONFIG_PATH")
+            .unwrap_or_else(|_| "config.json".to_string());
+
+        if !Path::new(&config_path).exists() {
+            return Err(format!("Configuration file not found: {}", config_path));
+        }
+
+        let config_content = fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+
+        let mut config: AppConfig = serde_json::from_str(&config_content)
+            .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+
+        Self::apply_env_overrides(&mut config);
+        Ok(config)
+    }
+
+    fn apply_env_overrides(config: &mut AppConfig) {
+        if let Ok(port) = env::var("SERVER_PORT") {
+            if let Ok(parsed_port) = port.parse() {
+                config.server_port = parsed_port;
+            }
+        }
+
+        if let Ok(db_url) = env::var("DATABASE_URL") {
+            config.database_url = db_url;
+        }
+
+        if let Ok(log_level) = env::var("LOG_LEVEL") {
+            config.log_level = log_level;
+        }
+
+        if let Ok(cache_ttl) = env::var("CACHE_TTL") {
+            if let Ok(parsed_ttl) = cache_ttl.parse() {
+                config.cache_ttl = parsed_ttl;
+            }
         }
     }
 
-    pub fn load_from_file(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let content = fs::read_to_string(path)?;
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            if let Some((key, value)) = trimmed.split_once('=') {
-                let processed_value = self.substitute_env_vars(value.trim());
-                self.settings.insert(key.trim().to_string(), processed_value);
-            }
+    pub fn validate(&self) -> Result<(), String> {
+        if self.server_port == 0 {
+            return Err("Server port cannot be 0".to_string());
         }
+
+        if self.database_url.is_empty() {
+            return Err("Database URL cannot be empty".to_string());
+        }
+
+        let valid_log_levels = ["error", "warn", "info", "debug", "trace"];
+        if !valid_log_levels.contains(&self.log_level.as_str()) {
+            return Err(format!("Invalid log level: {}", self.log_level));
+        }
+
         Ok(())
-    }
-
-    fn substitute_env_vars(&self, value: &str) -> String {
-        let mut result = value.to_string();
-        for (key, val) in env::vars() {
-            let placeholder = format!("${{{}}}", key);
-            result = result.replace(&placeholder, &val);
-        }
-        result
-    }
-
-    pub fn get(&self, key: &str) -> Option<&String> {
-        self.settings.get(key)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::env;
-
-    #[test]
-    fn test_env_substitution() {
-        env::set_var("APP_PORT", "8080");
-        let mut config = Config::new();
-        let test_content = "server_port=${APP_PORT}\ndebug_mode=true";
-        fs::write("test_config.tmp", test_content).unwrap();
-
-        config.load_from_file("test_config.tmp").unwrap();
-        assert_eq!(config.get("server_port"), Some(&"8080".to_string()));
-        assert_eq!(config.get("debug_mode"), Some(&"true".to_string()));
-
-        fs::remove_file("test_config.tmp").unwrap();
     }
 }
