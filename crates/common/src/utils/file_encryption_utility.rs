@@ -105,4 +105,74 @@ mod tests {
 
         assert_eq!(decrypted_content, original_content);
     }
+}use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+const DEFAULT_KEY: u8 = 0x55;
+
+pub fn encrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
+    let encryption_key = key.unwrap_or(DEFAULT_KEY);
+    let data = fs::read(input_path)?;
+    
+    let encrypted_data: Vec<u8> = data
+        .iter()
+        .map(|byte| byte ^ encryption_key)
+        .collect();
+    
+    fs::write(output_path, encrypted_data)
+}
+
+pub fn decrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
+    encrypt_file(input_path, output_path, key)
+}
+
+pub fn process_stream<R: Read, W: Write>(mut reader: R, mut writer: W, key: u8) -> io::Result<()> {
+    let mut buffer = [0u8; 1024];
+    
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        
+        for byte in buffer.iter_mut().take(bytes_read) {
+            *byte ^= key;
+        }
+        
+        writer.write_all(&buffer[..bytes_read])?;
+    }
+    
+    writer.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_encryption_decryption() {
+        let original_data = b"Test data for encryption";
+        let temp_input = NamedTempFile::new().unwrap();
+        let temp_encrypted = NamedTempFile::new().unwrap();
+        let temp_decrypted = NamedTempFile::new().unwrap();
+        
+        fs::write(temp_input.path(), original_data).unwrap();
+        
+        encrypt_file(
+            temp_input.path().to_str().unwrap(),
+            temp_encrypted.path().to_str().unwrap(),
+            Some(0xAA)
+        ).unwrap();
+        
+        decrypt_file(
+            temp_encrypted.path().to_str().unwrap(),
+            temp_decrypted.path().to_str().unwrap(),
+            Some(0xAA)
+        ).unwrap();
+        
+        let decrypted_data = fs::read(temp_decrypted.path()).unwrap();
+        assert_eq!(original_data, decrypted_data.as_slice());
+    }
 }
