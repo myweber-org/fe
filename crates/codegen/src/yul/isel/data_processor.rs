@@ -1,25 +1,26 @@
 
+use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
-use csv::{ReaderBuilder, WriterBuilder};
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Record {
-    pub id: u32,
-    pub name: String,
-    pub value: f64,
-    pub category: String,
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
 }
 
 impl Record {
-    pub fn is_valid(&self) -> bool {
-        !self.name.is_empty() && 
-        self.value >= 0.0 && 
-        !self.category.is_empty()
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.is_empty() {
+            return Err("Name cannot be empty".to_string());
+        }
+        if self.value < 0.0 {
+            return Err("Value must be non-negative".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -35,68 +36,43 @@ impl DataProcessor {
     }
 
     pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        
-        let mut csv_reader = ReaderBuilder::new()
-            .has_headers(true)
-            .from_reader(reader);
-
-        for result in csv_reader.deserialize() {
+        let mut rdr = Reader::from_path(path)?;
+        for result in rdr.deserialize() {
             let record: Record = result?;
-            if record.is_valid() {
-                self.records.push(record);
-            }
+            record.validate()?;
+            self.records.push(record);
         }
-
         Ok(())
     }
 
     pub fn save_to_csv<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn Error>> {
-        let file = File::create(path)?;
-        let writer = BufWriter::new(file);
-        
-        let mut csv_writer = WriterBuilder::new()
-            .has_headers(true)
-            .from_writer(writer);
-
+        let mut wtr = Writer::from_path(path)?;
         for record in &self.records {
-            csv_writer.serialize(record)?;
+            wtr.serialize(record)?;
         }
-
-        csv_writer.flush()?;
+        wtr.flush()?;
         Ok(())
     }
 
-    pub fn filter_by_category(&self, category: &str) -> Vec<Record> {
+    pub fn filter_active(&self) -> Vec<&Record> {
         self.records
             .iter()
-            .filter(|r| r.category == category)
-            .cloned()
+            .filter(|record| record.active)
             .collect()
     }
 
-    pub fn calculate_average(&self) -> f64 {
-        if self.records.is_empty() {
-            return 0.0;
-        }
-        
-        let sum: f64 = self.records.iter().map(|r| r.value).sum();
-        sum / self.records.len() as f64
+    pub fn calculate_total(&self) -> f64 {
+        self.records.iter().map(|record| record.value).sum()
     }
 
-    pub fn add_record(&mut self, record: Record) {
-        if record.is_valid() {
-            self.records.push(record);
-        }
+    pub fn add_record(&mut self, record: Record) -> Result<(), String> {
+        record.validate()?;
+        self.records.push(record);
+        Ok(())
     }
 
-    pub fn get_records(&self) -> &[Record] {
-        &self.records
-    }
-
-    pub fn clear(&mut self) {
-        self.records.clear();
+    pub fn get_record_count(&self) -> usize {
+        self.records.len()
     }
 }
 
@@ -110,68 +86,60 @@ mod tests {
         let valid_record = Record {
             id: 1,
             name: "Test".to_string(),
-            value: 10.5,
-            category: "A".to_string(),
+            value: 100.0,
+            active: true,
         };
-        assert!(valid_record.is_valid());
+        assert!(valid_record.validate().is_ok());
 
         let invalid_record = Record {
             id: 2,
             name: "".to_string(),
-            value: -5.0,
-            category: "B".to_string(),
+            value: -50.0,
+            active: false,
         };
-        assert!(!invalid_record.is_valid());
+        assert!(invalid_record.validate().is_err());
     }
 
     #[test]
-    fn test_data_processor() {
+    fn test_data_processor_operations() {
         let mut processor = DataProcessor::new();
         
         let record = Record {
             id: 1,
-            name: "Item1".to_string(),
-            value: 100.0,
-            category: "Electronics".to_string(),
+            name: "Sample".to_string(),
+            value: 42.5,
+            active: true,
         };
         
-        processor.add_record(record);
-        assert_eq!(processor.get_records().len(), 1);
-        assert_eq!(processor.calculate_average(), 100.0);
+        assert!(processor.add_record(record).is_ok());
+        assert_eq!(processor.get_record_count(), 1);
+        assert_eq!(processor.calculate_total(), 42.5);
+        
+        let active_records = processor.filter_active();
+        assert_eq!(active_records.len(), 1);
     }
 
     #[test]
-    fn test_csv_operations() -> Result<(), Box<dyn Error>> {
+    fn test_csv_roundtrip() {
         let mut processor = DataProcessor::new();
-        
-        let record1 = Record {
-            id: 1,
-            name: "Item1".to_string(),
-            value: 50.0,
-            category: "CategoryA".to_string(),
+        let record = Record {
+            id: 99,
+            name: "Roundtrip".to_string(),
+            value: 3.14,
+            active: false,
         };
         
-        let record2 = Record {
-            id: 2,
-            name: "Item2".to_string(),
-            value: 75.0,
-            category: "CategoryB".to_string(),
-        };
+        processor.add_record(record).unwrap();
         
-        processor.add_record(record1);
-        processor.add_record(record2);
-
-        let temp_file = NamedTempFile::new()?;
+        let temp_file = NamedTempFile::new().unwrap();
         let path = temp_file.path();
         
-        processor.save_to_csv(path)?;
+        processor.save_to_csv(path).unwrap();
         
         let mut new_processor = DataProcessor::new();
-        new_processor.load_from_csv(path)?;
+        new_processor.load_from_csv(path).unwrap();
         
-        assert_eq!(new_processor.get_records().len(), 2);
-        assert_eq!(new_processor.calculate_average(), 62.5);
-        
-        Ok(())
+        assert_eq!(new_processor.get_record_count(), 1);
+        assert_eq!(new_processor.calculate_total(), 3.14);
     }
 }
