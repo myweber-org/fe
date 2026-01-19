@@ -121,4 +121,62 @@ mod tests {
         let result = ParsedUrl::new(url);
         assert!(result.is_err());
     }
+}use std::collections::HashMap;
+
+pub struct UrlParser {
+    url: String,
+}
+
+impl UrlParser {
+    pub fn new(url: &str) -> Self {
+        UrlParser {
+            url: url.to_string(),
+        }
+    }
+
+    pub fn parse_query_params(&self) -> HashMap<String, String> {
+        let mut params = HashMap::new();
+        
+        if let Some(query_start) = self.url.find('?') {
+            let query_string = &self.url[query_start + 1..];
+            
+            for pair in query_string.split('&') {
+                let mut parts = pair.split('=');
+                if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                    params.insert(key.to_string(), value.to_string());
+                }
+            }
+        }
+        
+        params
+    }
+
+    pub fn get_domain(&self) -> Option<&str> {
+        let url_without_protocol = self.url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+        
+        url_without_protocol.split('/').next()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_query_parsing() {
+        let parser = UrlParser::new("https://example.com/search?q=rust&lang=en&page=2");
+        let params = parser.parse_query_params();
+        
+        assert_eq!(params.get("q"), Some(&"rust".to_string()));
+        assert_eq!(params.get("lang"), Some(&"en".to_string()));
+        assert_eq!(params.get("page"), Some(&"2".to_string()));
+    }
+
+    #[test]
+    fn test_domain_extraction() {
+        let parser = UrlParser::new("https://api.github.com/users/rust-lang/repos");
+        assert_eq!(parser.get_domain(), Some("api.github.com"));
+    }
 }
