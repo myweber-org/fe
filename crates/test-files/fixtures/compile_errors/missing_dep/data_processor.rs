@@ -508,3 +508,202 @@ mod tests {
         assert_eq!(stats, (10.0, 30.0, 20.0));
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum DataError {
+    #[error("Invalid data format")]
+    InvalidFormat,
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+    #[error("Validation failed: {0}")]
+    ValidationFailed(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: HashMap<String, f64>,
+    pub tags: Vec<String>,
+}
+
+impl DataRecord {
+    pub fn validate(&self) -> Result<(), DataError> {
+        if self.id == 0 {
+            return Err(DataError::ValidationFailed("ID cannot be zero".into()));
+        }
+        
+        if self.timestamp <= 0 {
+            return Err(DataError::ValidationFailed("Timestamp must be positive".into()));
+        }
+        
+        if self.values.is_empty() {
+            return Err(DataError::ValidationFailed("Values cannot be empty".into()));
+        }
+        
+        for (key, value) in &self.values {
+            if key.trim().is_empty() {
+                return Err(DataError::ValidationFailed("Key cannot be empty".into()));
+            }
+            if !value.is_finite() {
+                return Err(DataError::ValidationFailed("Value must be finite".into()));
+            }
+        }
+        
+        Ok(())
+    }
+    
+    pub fn transform(&mut self, multiplier: f64) -> Result<(), DataError> {
+        if !multiplier.is_finite() || multiplier <= 0.0 {
+            return Err(DataError::ValidationFailed("Multiplier must be positive finite".into()));
+        }
+        
+        for value in self.values.values_mut() {
+            *value *= multiplier;
+        }
+        
+        Ok(())
+    }
+    
+    pub fn calculate_statistics(&self) -> HashMap<String, f64> {
+        let mut stats = HashMap::new();
+        
+        if self.values.is_empty() {
+            return stats;
+        }
+        
+        let values: Vec<f64> = self.values.values().copied().collect();
+        let count = values.len() as f64;
+        let sum: f64 = values.iter().sum();
+        let mean = sum / count;
+        
+        let variance: f64 = values.iter()
+            .map(|v| (v - mean).powi(2))
+            .sum::<f64>() / count;
+        
+        stats.insert("count".to_string(), count);
+        stats.insert("sum".to_string(), sum);
+        stats.insert("mean".to_string(), mean);
+        stats.insert("variance".to_string(), variance);
+        stats.insert("std_dev".to_string(), variance.sqrt());
+        
+        if let Some(&min) = values.iter().min_by(|a, b| a.partial_cmp(b).unwrap()) {
+            stats.insert("min".to_string(), min);
+        }
+        
+        if let Some(&max) = values.iter().max_by(|a, b| a.partial_cmp(b).unwrap()) {
+            stats.insert("max".to_string(), max);
+        }
+        
+        stats
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+    
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), DataError> {
+        record.validate()?;
+        self.records.push(record);
+        Ok(())
+    }
+    
+    pub fn process_all(&mut self, multiplier: f64) -> Result<(), DataError> {
+        for record in &mut self.records {
+            record.transform(multiplier)?;
+        }
+        Ok(())
+    }
+    
+    pub fn get_statistics(&self) -> HashMap<String, HashMap<String, f64>> {
+        let mut all_stats = HashMap::new();
+        
+        for (index, record) in self.records.iter().enumerate() {
+            let stats = record.calculate_statistics();
+            all_stats.insert(format!("record_{}", index), stats);
+        }
+        
+        all_stats
+    }
+    
+    pub fn filter_by_tag(&self, tag: &str) -> Vec<&DataRecord> {
+        self.records.iter()
+            .filter(|record| record.tags.contains(&tag.to_string()))
+            .collect()
+    }
+    
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
+    
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+    
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_record_validation() {
+        let mut record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: HashMap::from([("temp".to_string(), 25.5)]),
+            tags: vec!["sensor".to_string()],
+        };
+        
+        assert!(record.validate().is_ok());
+        
+        record.id = 0;
+        assert!(record.validate().is_err());
+    }
+    
+    #[test]
+    fn test_transform() {
+        let mut record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: HashMap::from([("value".to_string(), 10.0)]),
+            tags: vec![],
+        };
+        
+        assert!(record.transform(2.0).is_ok());
+        assert_eq!(record.values.get("value"), Some(&20.0));
+    }
+    
+    #[test]
+    fn test_statistics() {
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: HashMap::from([
+                ("a".to_string(), 1.0),
+                ("b".to_string(), 2.0),
+                ("c".to_string(), 3.0),
+            ]),
+            tags: vec![],
+        };
+        
+        let stats = record.calculate_statistics();
+        assert_eq!(stats.get("count"), Some(&3.0));
+        assert_eq!(stats.get("sum"), Some(&6.0));
+        assert_eq!(stats.get("mean"), Some(&2.0));
+    }
+}
