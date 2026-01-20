@@ -97,3 +97,170 @@ mod tests {
         assert_eq!(processor.cache_stats().0, 1);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum DataError {
+    InvalidId,
+    InvalidName,
+    InvalidValue,
+    EmptyTags,
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataError::InvalidId => write!(f, "ID must be greater than 0"),
+            DataError::InvalidName => write!(f, "Name cannot be empty"),
+            DataError::InvalidValue => write!(f, "Value must be between 0.0 and 1000.0"),
+            DataError::EmptyTags => write!(f, "Record must have at least one tag"),
+        }
+    }
+}
+
+impl Error for DataError {}
+
+impl DataRecord {
+    pub fn validate(&self) -> Result<(), DataError> {
+        if self.id == 0 {
+            return Err(DataError::InvalidId);
+        }
+        
+        if self.name.trim().is_empty() {
+            return Err(DataError::InvalidName);
+        }
+        
+        if !(0.0..=1000.0).contains(&self.value) {
+            return Err(DataError::InvalidValue);
+        }
+        
+        if self.tags.is_empty() {
+            return Err(DataError::EmptyTags);
+        }
+        
+        Ok(())
+    }
+    
+    pub fn transform(&mut self, multiplier: f64) {
+        self.value *= multiplier;
+        self.name = self.name.to_uppercase();
+    }
+}
+
+pub struct DataProcessor {
+    records: HashMap<u32, DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: HashMap::new(),
+        }
+    }
+    
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), DataError> {
+        record.validate()?;
+        self.records.insert(record.id, record);
+        Ok(())
+    }
+    
+    pub fn get_record(&self, id: u32) -> Option<&DataRecord> {
+        self.records.get(&id)
+    }
+    
+    pub fn process_all(&mut self, multiplier: f64) {
+        for record in self.records.values_mut() {
+            record.transform(multiplier);
+        }
+    }
+    
+    pub fn calculate_statistics(&self) -> (f64, f64, f64) {
+        let count = self.records.len() as f64;
+        if count == 0.0 {
+            return (0.0, 0.0, 0.0);
+        }
+        
+        let sum: f64 = self.records.values().map(|r| r.value).sum();
+        let avg = sum / count;
+        
+        let variance: f64 = self.records.values()
+            .map(|r| (r.value - avg).powi(2))
+            .sum::<f64>() / count;
+        
+        let std_dev = variance.sqrt();
+        
+        (sum, avg, std_dev)
+    }
+    
+    pub fn filter_by_tag(&self, tag: &str) -> Vec<&DataRecord> {
+        self.records.values()
+            .filter(|record| record.tags.iter().any(|t| t == tag))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_valid_record() {
+        let record = DataRecord {
+            id: 1,
+            name: "Test".to_string(),
+            value: 100.0,
+            tags: vec!["important".to_string()],
+        };
+        
+        assert!(record.validate().is_ok());
+    }
+    
+    #[test]
+    fn test_invalid_id() {
+        let record = DataRecord {
+            id: 0,
+            name: "Test".to_string(),
+            value: 100.0,
+            tags: vec!["important".to_string()],
+        };
+        
+        assert!(matches!(record.validate(), Err(DataError::InvalidId)));
+    }
+    
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        
+        let record = DataRecord {
+            id: 1,
+            name: "sample".to_string(),
+            value: 50.0,
+            tags: vec!["test".to_string(), "data".to_string()],
+        };
+        
+        assert!(processor.add_record(record).is_ok());
+        assert_eq!(processor.records.len(), 1);
+        
+        processor.process_all(2.0);
+        
+        if let Some(record) = processor.get_record(1) {
+            assert_eq!(record.value, 100.0);
+            assert_eq!(record.name, "SAMPLE");
+        }
+        
+        let stats = processor.calculate_statistics();
+        assert_eq!(stats.0, 100.0);
+        assert_eq!(stats.1, 100.0);
+        assert_eq!(stats.2, 0.0);
+    }
+}
