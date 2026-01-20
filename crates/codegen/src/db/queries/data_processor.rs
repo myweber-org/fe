@@ -775,4 +775,97 @@ mod tests {
         
         assert!(processor.validate_dataset("invalid_data").is_err());
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub struct DataProcessor {
+    data: Vec<f64>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor { data: Vec::new() }
+    }
+
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            if let Ok(value) = line.trim().parse::<f64>() {
+                self.data.push(value);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.data.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.data.iter().sum();
+        Some(sum / self.data.len() as f64)
+    }
+
+    pub fn calculate_standard_deviation(&self) -> Option<f64> {
+        if self.data.len() < 2 {
+            return None;
+        }
+
+        let mean = self.calculate_mean()?;
+        let variance: f64 = self.data
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / (self.data.len() - 1) as f64;
+
+        Some(variance.sqrt())
+    }
+
+    pub fn get_data_summary(&self) -> DataSummary {
+        DataSummary {
+            count: self.data.len(),
+            mean: self.calculate_mean(),
+            std_dev: self.calculate_standard_deviation(),
+            min: self.data.iter().copied().reduce(f64::min),
+            max: self.data.iter().copied().reduce(f64::max),
+        }
+    }
+
+    pub fn filter_outliers(&self, threshold: f64) -> Vec<f64> {
+        if let (Some(mean), Some(std_dev)) = (self.calculate_mean(), self.calculate_standard_deviation()) {
+            let lower_bound = mean - threshold * std_dev;
+            let upper_bound = mean + threshold * std_dev;
+
+            self.data
+                .iter()
+                .filter(|&&x| x >= lower_bound && x <= upper_bound)
+                .copied()
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+pub struct DataSummary {
+    pub count: usize,
+    pub mean: Option<f64>,
+    pub std_dev: Option<f64>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+impl std::fmt::Display for DataSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Data Summary:")?;
+        writeln!(f, "  Count: {}", self.count)?;
+        writeln!(f, "  Mean: {:.4}", self.mean.unwrap_or(f64::NAN))?;
+        writeln!(f, "  Std Dev: {:.4}", self.std_dev.unwrap_or(f64::NAN))?;
+        writeln!(f, "  Min: {:.4}", self.min.unwrap_or(f64::NAN))?;
+        write!(f, "  Max: {:.4}", self.max.unwrap_or(f64::NAN))
+    }
 }
