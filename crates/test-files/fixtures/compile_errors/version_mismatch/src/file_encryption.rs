@@ -266,3 +266,73 @@ pub fn decrypt_file(input_path: &str, output_path: &str, key_hex: &str) -> io::R
     println!("Decryption successful.");
     Ok(())
 }
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+const NONCE_SIZE: usize = 12;
+
+pub fn encrypt_file(input_path: &Path, output_path: &Path, password: &str) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
+    let mut plaintext = Vec::new();
+    file.read_to_end(&mut plaintext)?;
+
+    let key = derive_key(password);
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = generate_nonce();
+
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext.as_ref())
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&nonce)?;
+    output_file.write_all(&ciphertext)?;
+
+    Ok(())
+}
+
+pub fn decrypt_file(input_path: &Path, output_path: &Path, password: &str) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
+
+    if data.len() < NONCE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "File too short to contain nonce",
+        ));
+    }
+
+    let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let key = derive_key(password);
+    let cipher = Aes256Gcm::new(&key);
+
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&plaintext)?;
+
+    Ok(())
+}
+
+fn derive_key(password: &str) -> Key<Aes256Gcm> {
+    let mut key = [0u8; 32];
+    let password_bytes = password.as_bytes();
+    let len = password_bytes.len().min(32);
+    key[..len].copy_from_slice(&password_bytes[..len]);
+    *Key::<Aes256Gcm>::from_slice(&key)
+}
+
+fn generate_nonce() -> Nonce {
+    let mut nonce = [0u8; NONCE_SIZE];
+    OsRng.fill_bytes(&mut nonce);
+    Nonce::from_slice(&nonce).clone()
+}
