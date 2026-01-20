@@ -1,107 +1,120 @@
 
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
+    data: HashMap<String, Vec<f64>>,
 }
 
 impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
+    pub fn new() -> Self {
         DataProcessor {
-            delimiter,
-            has_header,
+            data: HashMap::new(),
         }
     }
 
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        let mut lines = reader.lines();
-
-        if self.has_header {
-            lines.next();
+    pub fn add_dataset(&mut self, key: String, values: Vec<f64>) -> Result<(), String> {
+        if values.is_empty() {
+            return Err("Dataset cannot be empty".to_string());
         }
 
-        for line_result in lines {
-            let line = line_result?;
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
+        if values.iter().any(|&x| x.is_nan() || x.is_infinite()) {
+            return Err("Dataset contains invalid numeric values".to_string());
+        }
+
+        self.data.insert(key, values);
+        Ok(())
+    }
+
+    pub fn calculate_statistics(&self, key: &str) -> Option<Statistics> {
+        self.data.get(key).map(|values| {
+            let count = values.len();
+            let sum: f64 = values.iter().sum();
+            let mean = sum / count as f64;
             
-            if !fields.is_empty() && !fields.iter().all(|f| f.is_empty()) {
-                records.push(fields);
+            let variance: f64 = values.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / count as f64;
+            
+            let std_dev = variance.sqrt();
+
+            Statistics {
+                count,
+                sum,
+                mean,
+                variance,
+                std_dev,
             }
-        }
-
-        Ok(records)
+        })
     }
 
-    pub fn validate_records(&self, records: &[Vec<String>]) -> Vec<bool> {
-        records
-            .iter()
-            .map(|record| !record.is_empty() && record.iter().all(|field| !field.is_empty()))
-            .collect()
+    pub fn normalize_data(&self, key: &str) -> Option<Vec<f64>> {
+        self.data.get(key).map(|values| {
+            let stats = self.calculate_statistics(key).unwrap();
+            values.iter()
+                .map(|&x| (x - stats.mean) / stats.std_dev)
+                .collect()
+        })
     }
 
-    pub fn extract_column(&self, records: &[Vec<String>], column_index: usize) -> Vec<String> {
-        records
-            .iter()
-            .filter_map(|record| record.get(column_index).cloned())
-            .collect()
+    pub fn get_keys(&self) -> Vec<String> {
+        self.data.keys().cloned().collect()
+    }
+}
+
+pub struct Statistics {
+    pub count: usize,
+    pub sum: f64,
+    pub mean: f64,
+    pub variance: f64,
+    pub std_dev: f64,
+}
+
+impl std::fmt::Display for Statistics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Count: {}, Sum: {:.2}, Mean: {:.2}, Variance: {:.2}, Std Dev: {:.2}",
+            self.count, self.sum, self.mean, self.variance, self.std_dev
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_csv() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "Alice,30,New York").unwrap();
-        writeln!(temp_file, "Bob,25,London").unwrap();
-
-        let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path()).unwrap();
-        
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["Alice", "30", "New York"]);
-        assert_eq!(result[1], vec!["Bob", "25", "London"]);
+    fn test_add_valid_dataset() {
+        let mut processor = DataProcessor::new();
+        let result = processor.add_dataset("test".to_string(), vec![1.0, 2.0, 3.0]);
+        assert!(result.is_ok());
+        assert_eq!(processor.get_keys(), vec!["test"]);
     }
 
     #[test]
-    fn test_validate_records() {
-        let records = vec![
-            vec!["data1".to_string(), "data2".to_string()],
-            vec!["".to_string(), "data4".to_string()],
-            vec![],
-        ];
-        
-        let processor = DataProcessor::new(',', false);
-        let validation = processor.validate_records(&records);
-        
-        assert_eq!(validation, vec![true, false, false]);
+    fn test_add_invalid_dataset() {
+        let mut processor = DataProcessor::new();
+        let result = processor.add_dataset("test".to_string(), vec![]);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_extract_column() {
-        let records = vec![
-            vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            vec!["d".to_string(), "e".to_string(), "f".to_string()],
-        ];
+    fn test_calculate_statistics() {
+        let mut processor = DataProcessor::new();
+        processor.add_dataset("test".to_string(), vec![1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
         
-        let processor = DataProcessor::new(',', false);
-        let column = processor.extract_column(&records, 1);
+        let stats = processor.calculate_statistics("test").unwrap();
+        assert_eq!(stats.count, 5);
+        assert_eq!(stats.sum, 15.0);
+        assert_eq!(stats.mean, 3.0);
+    }
+
+    #[test]
+    fn test_normalize_data() {
+        let mut processor = DataProcessor::new();
+        processor.add_dataset("test".to_string(), vec![1.0, 2.0, 3.0]).unwrap();
         
-        assert_eq!(column, vec!["b".to_string(), "e".to_string()]);
+        let normalized = processor.normalize_data("test").unwrap();
+        assert_eq!(normalized.len(), 3);
     }
 }
