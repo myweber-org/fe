@@ -137,3 +137,104 @@ mod tests {
         assert_eq!(processor.get_records_count(), 0);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::path::Path;
+
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut content = String::new();
+        reader.read_to_string(&mut content)?;
+
+        let mut count = 0;
+        for line in content.lines().skip(1) {
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() == 3 {
+                let id = parts[0].parse::<u32>()?;
+                let value = parts[1].parse::<f64>()?;
+                let category = parts[2].to_string();
+
+                if value >= 0.0 {
+                    self.records.push(DataRecord { id, value, category });
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
+    }
+
+    pub fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.category == category)
+            .collect()
+    }
+
+    pub fn get_statistics(&self) -> (f64, f64, f64) {
+        let values: Vec<f64> = self.records.iter().map(|r| r.value).collect();
+        let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let avg = self.calculate_average().unwrap_or(0.0);
+        (min, max, avg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,value,category").unwrap();
+        writeln!(temp_file, "1,10.5,category_a").unwrap();
+        writeln!(temp_file, "2,20.3,category_b").unwrap();
+        writeln!(temp_file, "3,15.7,category_a").unwrap();
+        
+        let count = processor.load_from_csv(temp_file.path()).unwrap();
+        assert_eq!(count, 3);
+        
+        let avg = processor.calculate_average().unwrap();
+        assert!((avg - 15.5).abs() < 0.1);
+        
+        let filtered = processor.filter_by_category("category_a");
+        assert_eq!(filtered.len(), 2);
+        
+        let (min, max, avg_stat) = processor.get_statistics();
+        assert_eq!(min, 10.5);
+        assert_eq!(max, 20.3);
+        assert!((avg_stat - 15.5).abs() < 0.1);
+    }
+}
