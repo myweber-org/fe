@@ -1,138 +1,91 @@
+use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
 
-use std::collections::HashMap;
-
-pub struct DataProcessor {
-    cache: HashMap<String, Vec<f64>>,
-    validation_rules: Vec<ValidationRule>,
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
 }
 
-pub struct ValidationRule {
-    field_name: String,
-    min_value: f64,
-    max_value: f64,
-    required: bool,
+struct DataProcessor {
+    records: Vec<Record>,
 }
 
 impl DataProcessor {
-    pub fn new() -> Self {
+    fn new() -> Self {
         DataProcessor {
-            cache: HashMap::new(),
-            validation_rules: Vec::new(),
+            records: Vec::new(),
         }
     }
 
-    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
-        self.validation_rules.push(rule);
-    }
-
-    pub fn process_dataset(&mut self, dataset_name: &str, data: &[f64]) -> Result<Vec<f64>, String> {
-        if data.is_empty() {
-            return Err("Dataset cannot be empty".to_string());
-        }
-
-        for rule in &self.validation_rules {
-            if rule.required && data.iter().any(|&x| x.is_nan()) {
-                return Err(format!("Field '{}' contains invalid values", rule.field_name));
-            }
-        }
-
-        let processed_data: Vec<f64> = data
-            .iter()
-            .map(|&value| {
-                let mut transformed = value;
-                
-                for rule in &self.validation_rules {
-                    if value < rule.min_value {
-                        transformed = rule.min_value;
-                    } else if value > rule.max_value {
-                        transformed = rule.max_value;
-                    }
-                }
-                
-                transformed * 1.05
-            })
-            .collect();
-
-        self.cache.insert(dataset_name.to_string(), processed_data.clone());
+    fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
         
-        Ok(processed_data)
+        for result in rdr.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
+        }
+        
+        Ok(())
     }
 
-    pub fn get_cached_data(&self, dataset_name: &str) -> Option<&Vec<f64>> {
-        self.cache.get(dataset_name)
+    fn filter_by_category(&self, category: &str) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|record| record.category == category)
+            .collect()
     }
 
-    pub fn calculate_statistics(&self, dataset_name: &str) -> Option<DatasetStats> {
-        self.cache.get(dataset_name).map(|data| {
-            let sum: f64 = data.iter().sum();
-            let count = data.len() as f64;
-            let mean = sum / count;
-            
-            let variance: f64 = data.iter()
-                .map(|&value| {
-                    let diff = mean - value;
-                    diff * diff
-                })
-                .sum::<f64>() / count;
-            
-            DatasetStats {
-                mean,
-                variance,
-                min: *data.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
-                max: *data.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
-                count: data.len(),
-            }
+    fn calculate_average(&self) -> f64 {
+        if self.records.is_empty() {
+            return 0.0;
+        }
+        
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        sum / self.records.len() as f64
+    }
+
+    fn save_filtered_to_csv(&self, category: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+        let filtered = self.filter_by_category(category);
+        let file = File::create(output_path)?;
+        let mut wtr = WriterBuilder::new().has_headers(true).from_writer(file);
+        
+        for record in filtered {
+            wtr.serialize(record)?;
+        }
+        
+        wtr.flush()?;
+        Ok(())
+    }
+
+    fn find_max_value(&self) -> Option<&Record> {
+        self.records.iter().max_by(|a, b| {
+            a.value.partial_cmp(&b.value).unwrap_or(std::cmp::Ordering::Equal)
         })
     }
 }
 
-pub struct DatasetStats {
-    pub mean: f64,
-    pub variance: f64,
-    pub min: f64,
-    pub max: f64,
-    pub count: usize,
-}
-
-impl ValidationRule {
-    pub fn new(field_name: &str, min_value: f64, max_value: f64, required: bool) -> Self {
-        ValidationRule {
-            field_name: field_name.to_string(),
-            min_value,
-            max_value,
-            required,
-        }
+fn process_data_sample() -> Result<(), Box<dyn Error>> {
+    let mut processor = DataProcessor::new();
+    
+    processor.load_from_csv("input_data.csv")?;
+    
+    println!("Total records loaded: {}", processor.records.len());
+    println!("Average value: {:.2}", processor.calculate_average());
+    
+    if let Some(max_record) = processor.find_max_value() {
+        println!("Record with maximum value: {:?}", max_record);
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_data_processing() {
-        let mut processor = DataProcessor::new();
-        
-        let rule = ValidationRule::new("temperature", -50.0, 150.0, true);
-        processor.add_validation_rule(rule);
-        
-        let test_data = vec![25.0, 30.0, 35.0, 40.0];
-        let result = processor.process_dataset("test_set", &test_data);
-        
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 4);
-    }
-
-    #[test]
-    fn test_invalid_data() {
-        let mut processor = DataProcessor::new();
-        
-        let rule = ValidationRule::new("pressure", 0.0, 100.0, true);
-        processor.add_validation_rule(rule);
-        
-        let test_data = vec![];
-        let result = processor.process_dataset("empty_set", &test_data);
-        
-        assert!(result.is_err());
-    }
+    
+    let filtered = processor.filter_by_category("premium");
+    println!("Premium category records: {}", filtered.len());
+    
+    processor.save_filtered_to_csv("premium", "premium_records.csv")?;
+    
+    Ok(())
 }
