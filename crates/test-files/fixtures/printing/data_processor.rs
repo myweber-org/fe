@@ -314,3 +314,145 @@ fn main() {
         eprintln!("Error processing data: {}", e);
     }
 }
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+}
+
+#[derive(Debug)]
+pub enum DataError {
+    InvalidId,
+    InvalidValue,
+    EmptyCategory,
+    TransformationError(String),
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataError::InvalidId => write!(f, "ID must be greater than 0"),
+            DataError::InvalidValue => write!(f, "Value must be between 0.0 and 1000.0"),
+            DataError::EmptyCategory => write!(f, "Category cannot be empty"),
+            DataError::TransformationError(msg) => write!(f, "Transformation failed: {}", msg),
+        }
+    }
+}
+
+impl Error for DataError {}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Result<Self, DataError> {
+        if id == 0 {
+            return Err(DataError::InvalidId);
+        }
+        
+        if value < 0.0 || value > 1000.0 {
+            return Err(DataError::InvalidValue);
+        }
+        
+        if category.trim().is_empty() {
+            return Err(DataError::EmptyCategory);
+        }
+        
+        Ok(Self {
+            id,
+            value,
+            category: category.trim().to_string(),
+        })
+    }
+    
+    pub fn transform(&self, multiplier: f64) -> Result<Self, DataError> {
+        if multiplier <= 0.0 {
+            return Err(DataError::TransformationError(
+                "Multiplier must be positive".to_string()
+            ));
+        }
+        
+        let new_value = self.value * multiplier;
+        
+        if new_value > 1000.0 {
+            return Err(DataError::TransformationError(
+                format!("Transformed value {} exceeds maximum limit", new_value)
+            ));
+        }
+        
+        Ok(Self {
+            id: self.id,
+            value: new_value,
+            category: self.category.clone(),
+        })
+    }
+    
+    pub fn normalize(&self, max_value: f64) -> Result<f64, DataError> {
+        if max_value <= 0.0 {
+            return Err(DataError::TransformationError(
+                "Maximum value must be positive".to_string()
+            ));
+        }
+        
+        if self.value > max_value {
+            return Err(DataError::TransformationError(
+                format!("Value {} exceeds normalization maximum {}", self.value, max_value)
+            ));
+        }
+        
+        Ok(self.value / max_value)
+    }
+}
+
+pub fn process_records(records: &[DataRecord]) -> Vec<Result<DataRecord, DataError>> {
+    records
+        .iter()
+        .map(|record| record.transform(1.5))
+        .collect()
+}
+
+pub fn filter_valid_records(records: &[DataRecord]) -> Vec<&DataRecord> {
+    records
+        .iter()
+        .filter(|record| record.value >= 50.0 && record.value <= 500.0)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(1, 100.0, "test".to_string());
+        assert!(record.is_ok());
+        
+        let record = record.unwrap();
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 100.0);
+        assert_eq!(record.category, "test");
+    }
+    
+    #[test]
+    fn test_invalid_id() {
+        let record = DataRecord::new(0, 100.0, "test".to_string());
+        assert!(matches!(record, Err(DataError::InvalidId)));
+    }
+    
+    #[test]
+    fn test_transform_record() {
+        let record = DataRecord::new(1, 100.0, "test".to_string()).unwrap();
+        let transformed = record.transform(2.0);
+        assert!(transformed.is_ok());
+        assert_eq!(transformed.unwrap().value, 200.0);
+    }
+    
+    #[test]
+    fn test_normalize() {
+        let record = DataRecord::new(1, 75.0, "test".to_string()).unwrap();
+        let normalized = record.normalize(150.0);
+        assert!(normalized.is_ok());
+        assert_eq!(normalized.unwrap(), 0.5);
+    }
+}
