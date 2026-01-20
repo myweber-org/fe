@@ -1,89 +1,86 @@
+
 use std::error::Error;
 use std::fs::File;
-use std::io::{self, BufRead, Write};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-pub struct CsvProcessor {
-    input_path: String,
-    output_path: String,
-    filter_column: usize,
-    filter_value: String,
-    transform_column: usize,
-    transform_fn: Box<dyn Fn(&str) -> String>,
+pub struct CsvFilter {
+    delimiter: char,
+    has_header: bool,
 }
 
-impl CsvProcessor {
-    pub fn new(
-        input_path: String,
-        output_path: String,
-        filter_column: usize,
-        filter_value: String,
-        transform_column: usize,
-        transform_fn: Box<dyn Fn(&str) -> String>,
-    ) -> Self {
-        CsvProcessor {
-            input_path,
-            output_path,
-            filter_column,
-            filter_value,
-            transform_column,
-            transform_fn,
+impl CsvFilter {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        CsvFilter {
+            delimiter,
+            has_header,
         }
     }
 
-    pub fn process(&self) -> Result<(), Box<dyn Error>> {
-        let input_file = File::open(&self.input_path)?;
-        let reader = io::BufReader::new(input_file);
-        let mut output_file = File::create(&self.output_path)?;
+    pub fn filter_rows<P: AsRef<Path>>(
+        &self,
+        file_path: P,
+        predicate: impl Fn(&[String]) -> bool,
+    ) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
 
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line?;
-            let parts: Vec<&str> = line.split(',').collect();
+        if self.has_header {
+            lines.next();
+        }
 
-            if parts.len() <= self.filter_column.max(self.transform_column) {
-                eprintln!("Warning: Line {} has insufficient columns", line_num + 1);
-                continue;
-            }
+        let mut filtered_rows = Vec::new();
 
-            if parts[self.filter_column] == self.filter_value {
-                let mut transformed_parts = parts.clone();
-                transformed_parts[self.transform_column] = &(self.transform_fn)(parts[self.transform_column]);
-                writeln!(output_file, "{}", transformed_parts.join(","))?;
+        for line_result in lines {
+            let line = line_result?;
+            let columns: Vec<String> = line
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if predicate(&columns) {
+                filtered_rows.push(columns);
             }
         }
 
-        Ok(())
+        Ok(filtered_rows)
+    }
+
+    pub fn extract_column(&self, rows: &[Vec<String>], column_index: usize) -> Vec<String> {
+        rows.iter()
+            .filter_map(|row| row.get(column_index).cloned())
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_csv_processing() {
-        let test_input = "test_input.csv";
-        let test_output = "test_output.csv";
-        let test_data = "id,name,value\n1,test,100\n2,other,200\n3,test,300\n";
+    fn test_filter_and_extract() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "Alice,30,London").unwrap();
+        writeln!(temp_file, "Bob,25,Paris").unwrap();
+        writeln!(temp_file, "Charlie,35,Tokyo").unwrap();
 
-        fs::write(test_input, test_data).unwrap();
+        let filter = CsvFilter::new(',', true);
+        let filtered = filter
+            .filter_rows(temp_file.path(), |row| {
+                row.get(1)
+                    .and_then(|age_str| age_str.parse::<u32>().ok())
+                    .map_or(false, |age| age >= 30)
+            })
+            .unwrap();
 
-        let processor = CsvProcessor::new(
-            test_input.to_string(),
-            test_output.to_string(),
-            1,
-            "test".to_string(),
-            2,
-            Box::new(|val| format!("{}_modified", val)),
-        );
-
-        processor.process().unwrap();
-
-        let output = fs::read_to_string(test_output).unwrap();
-        assert_eq!(output, "1,test,100_modified\n3,test,300_modified\n");
-
-        fs::remove_file(test_input).unwrap();
-        fs::remove_file(test_output).unwrap();
+        assert_eq!(filtered.len(), 2);
+        
+        let names = filter.extract_column(&filtered, 0);
+        assert!(names.contains(&"Alice".to_string()));
+        assert!(names.contains(&"Charlie".to_string()));
     }
 }
