@@ -70,4 +70,76 @@ mod tests {
         assert_eq!(result["id"], 2);
         assert_eq!(result["value"], "new");
     }
+}use serde_json::{json, Value};
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::path::Path;
+
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], deduplicate_by_key: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut merged_array = Vec::new();
+    let mut seen_keys = HashSet::new();
+
+    for path in paths {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents)?;
+
+        let json_value: Value = serde_json::from_str(&contents)?;
+
+        match json_value {
+            Value::Array(arr) => {
+                for item in arr {
+                    if let Some(key) = deduplicate_by_key {
+                        if let Some(obj) = item.as_object() {
+                            if let Some(key_value) = obj.get(key) {
+                                let key_str = key_value.to_string();
+                                if !seen_keys.contains(&key_str) {
+                                    seen_keys.insert(key_str);
+                                    merged_array.push(item);
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    merged_array.push(item);
+                }
+            }
+            _ => merged_array.push(json_value),
+        }
+    }
+
+    Ok(json!(merged_array))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_basic() {
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
+
+        writeln!(file1, r#"[{"id": 1, "name": "Alice"}]"#).unwrap();
+        writeln!(file2, r#"[{"id": 2, "name": "Bob"}]"#).unwrap();
+
+        let result = merge_json_files(&[file1.path(), file2.path()], None).unwrap();
+        assert_eq!(result.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_deduplication() {
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
+
+        writeln!(file1, r#"[{"id": 1, "name": "Alice"}]"#).unwrap();
+        writeln!(file2, r#"[{"id": 1, "name": "Alice"}, {"id": 3, "name": "Charlie"}]"#).unwrap();
+
+        let result = merge_json_files(&[file1.path(), file2.path()], Some("id")).unwrap();
+        assert_eq!(result.as_array().unwrap().len(), 2);
+    }
 }
