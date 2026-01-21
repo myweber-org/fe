@@ -1,138 +1,164 @@
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use thiserror::Error;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
 pub struct DataRecord {
-    pub id: u64,
-    pub timestamp: i64,
-    pub values: Vec<f64>,
-    pub metadata: HashMap<String, String>,
+    id: u32,
+    name: String,
+    value: f64,
+    tags: Vec<String>,
 }
 
-#[derive(Debug, Error)]
-pub enum ProcessingError {
-    #[error("Invalid data format")]
-    InvalidFormat,
-    #[error("Data validation failed: {0}")]
-    ValidationFailed(String),
-    #[error("Transformation error: {0}")]
-    TransformationError(String),
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    EmptyName,
+    NegativeValue,
+    DuplicateTag,
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "ID must be greater than zero"),
+            ValidationError::EmptyName => write!(f, "Name cannot be empty"),
+            ValidationError::NegativeValue => write!(f, "Value must be non-negative"),
+            ValidationError::DuplicateTag => write!(f, "Duplicate tags are not allowed"),
+        }
+    }
+}
+
+impl Error for ValidationError {}
+
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64, tags: Vec<String>) -> Self {
+        DataRecord {
+            id,
+            name,
+            value,
+            tags,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.id == 0 {
+            return Err(ValidationError::InvalidId);
+        }
+        
+        if self.name.trim().is_empty() {
+            return Err(ValidationError::EmptyName);
+        }
+        
+        if self.value < 0.0 {
+            return Err(ValidationError::NegativeValue);
+        }
+        
+        let mut seen_tags = std::collections::HashSet::new();
+        for tag in &self.tags {
+            if !seen_tags.insert(tag) {
+                return Err(ValidationError::DuplicateTag);
+            }
+        }
+        
+        Ok(())
+    }
+
+    pub fn transform(&mut self, multiplier: f64) {
+        self.value *= multiplier;
+        self.name = self.name.to_uppercase();
+    }
+
+    pub fn add_tag(&mut self, tag: String) {
+        if !self.tags.contains(&tag) {
+            self.tags.push(tag);
+        }
+    }
 }
 
 pub struct DataProcessor {
-    validation_threshold: f64,
-    transformation_factor: f64,
+    records: HashMap<u32, DataRecord>,
+    statistics: ProcessingStats,
+}
+
+#[derive(Debug, Default)]
+pub struct ProcessingStats {
+    pub total_records: usize,
+    pub valid_records: usize,
+    pub total_value: f64,
+    pub average_value: f64,
 }
 
 impl DataProcessor {
-    pub fn new(validation_threshold: f64, transformation_factor: f64) -> Self {
-        Self {
-            validation_threshold,
-            transformation_factor,
+    pub fn new() -> Self {
+        DataProcessor {
+            records: HashMap::new(),
+            statistics: ProcessingStats::default(),
         }
     }
 
-    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
-        if record.values.is_empty() {
-            return Err(ProcessingError::ValidationFailed(
-                "Empty values array".to_string(),
-            ));
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), ValidationError> {
+        record.validate()?;
+        
+        if self.records.contains_key(&record.id) {
+            return Err(ValidationError::InvalidId);
         }
-
-        let max_value = record
-            .values
-            .iter()
-            .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-
-        if max_value > self.validation_threshold {
-            return Err(ProcessingError::ValidationFailed(format!(
-                "Value {} exceeds threshold {}",
-                max_value, self.validation_threshold
-            )));
-        }
-
+        
+        self.records.insert(record.id, record.clone());
+        self.update_statistics(&record);
         Ok(())
     }
 
-    pub fn transform_record(&self, record: &mut DataRecord) -> Result<(), ProcessingError> {
-        if record.values.iter().any(|&v| v.is_nan() || v.is_infinite()) {
-            return Err(ProcessingError::TransformationError(
-                "Invalid numeric values detected".to_string(),
-            ));
+    pub fn process_records(&mut self, multiplier: f64) {
+        for record in self.records.values_mut() {
+            record.transform(multiplier);
         }
-
-        for value in &mut record.values {
-            *value *= self.transformation_factor;
-        }
-
-        record.metadata.insert(
-            "processed".to_string(),
-            chrono::Utc::now().to_rfc3339(),
-        );
-
-        Ok(())
+        self.recalculate_statistics();
     }
 
-    pub fn process_records(
-        &self,
-        records: &mut [DataRecord],
-    ) -> Result<Vec<DataRecord>, ProcessingError> {
-        let mut processed = Vec::with_capacity(records.len());
+    pub fn get_record(&self, id: u32) -> Option<&DataRecord> {
+        self.records.get(&id)
+    }
 
-        for record in records {
-            self.validate_record(record)?;
-            let mut processed_record = record.clone();
-            self.transform_record(&mut processed_record)?;
-            processed.push(processed_record);
+    pub fn remove_record(&mut self, id: u32) -> Option<DataRecord> {
+        let removed = self.records.remove(&id);
+        if removed.is_some() {
+            self.recalculate_statistics();
         }
+        removed
+    }
 
-        Ok(processed)
+    pub fn filter_by_min_value(&self, min_value: f64) -> Vec<&DataRecord> {
+        self.records
+            .values()
+            .filter(|record| record.value >= min_value)
+            .collect()
+    }
+
+    pub fn get_statistics(&self) -> &ProcessingStats {
+        &self.statistics
+    }
+
+    fn update_statistics(&mut self, record: &DataRecord) {
+        self.statistics.total_records += 1;
+        self.statistics.valid_records += 1;
+        self.statistics.total_value += record.value;
+        self.statistics.average_value = self.statistics.total_value / self.statistics.valid_records as f64;
+    }
+
+    fn recalculate_statistics(&mut self) {
+        self.statistics = ProcessingStats::default();
+        for record in self.records.values() {
+            self.update_statistics(record);
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_validation_success() {
-        let processor = DataProcessor::new(100.0, 2.0);
-        let record = DataRecord {
-            id: 1,
-            timestamp: 1234567890,
-            values: vec![10.0, 20.0, 30.0],
-            metadata: HashMap::new(),
-        };
-
-        assert!(processor.validate_record(&record).is_ok());
-    }
-
-    #[test]
-    fn test_validation_failure() {
-        let processor = DataProcessor::new(50.0, 2.0);
-        let record = DataRecord {
-            id: 1,
-            timestamp: 1234567890,
-            values: vec![10.0, 60.0, 30.0],
-            metadata: HashMap::new(),
-        };
-
-        assert!(processor.validate_record(&record).is_err());
-    }
-
-    #[test]
-    fn test_transformation() {
-        let processor = DataProcessor::new(100.0, 3.0);
-        let mut record = DataRecord {
-            id: 1,
-            timestamp: 1234567890,
-            values: vec![1.0, 2.0, 3.0],
-            metadata: HashMap::new(),
-        };
-
-        processor.transform_record(&mut record).unwrap();
-        assert_eq!(record.values, vec![3.0, 6.0, 9.0]);
-        assert!(record.metadata.contains_key("processed"));
-    }
+pub fn create_sample_data() -> Vec<DataRecord> {
+    vec![
+        DataRecord::new(1, "alpha".to_string(), 10.5, vec!["tag1".to_string(), "tag2".to_string()]),
+        DataRecord::new(2, "beta".to_string(), 20.0, vec!["tag3".to_string()]),
+        DataRecord::new(3, "gamma".to_string(), 15.75, vec!["tag1".to_string(), "tag4".to_string()]),
+    ]
 }
