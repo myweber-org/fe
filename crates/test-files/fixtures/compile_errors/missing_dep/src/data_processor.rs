@@ -363,4 +363,105 @@ mod tests {
         assert!(new_processor.load_from_csv(path).is_ok());
         assert_eq!(new_processor.get_record_count(), 3);
     }
+}use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
+}
+
+struct DataProcessor {
+    records: Vec<Record>,
+}
+
+impl DataProcessor {
+    fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    fn load_from_csv(&mut self, path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(path)?;
+        let mut rdr = Reader::from_reader(file);
+        
+        for result in rdr.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
+        }
+        
+        Ok(())
+    }
+
+    fn filter_by_category(&self, category: &str) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|record| record.category == category)
+            .collect()
+    }
+
+    fn calculate_average(&self) -> f64 {
+        if self.records.is_empty() {
+            return 0.0;
+        }
+        
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        sum / self.records.len() as f64
+    }
+
+    fn save_filtered_to_csv(&self, category: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+        let filtered = self.filter_by_category(category);
+        let mut wtr = Writer::from_path(output_path)?;
+        
+        for record in filtered {
+            wtr.serialize(record)?;
+        }
+        
+        wtr.flush()?;
+        Ok(())
+    }
+
+    fn add_record(&mut self, id: u32, name: String, value: f64, category: String) {
+        self.records.push(Record {
+            id,
+            name,
+            value,
+            category,
+        });
+    }
+
+    fn remove_record(&mut self, id: u32) -> bool {
+        let initial_len = self.records.len();
+        self.records.retain(|record| record.id != id);
+        self.records.len() < initial_len
+    }
+}
+
+fn process_data_sample() -> Result<(), Box<dyn Error>> {
+    let mut processor = DataProcessor::new();
+    
+    processor.add_record(1, "ItemA".to_string(), 25.5, "Category1".to_string());
+    processor.add_record(2, "ItemB".to_string(), 30.0, "Category2".to_string());
+    processor.add_record(3, "ItemC".to_string(), 15.75, "Category1".to_string());
+    
+    println!("Total records: {}", processor.records.len());
+    println!("Average value: {:.2}", processor.calculate_average());
+    
+    let category1_items = processor.filter_by_category("Category1");
+    println!("Category1 items: {}", category1_items.len());
+    
+    for item in category1_items {
+        println!("  - {}: {}", item.name, item.value);
+    }
+    
+    processor.remove_record(2);
+    println!("After removal: {} records", processor.records.len());
+    
+    Ok(())
 }
