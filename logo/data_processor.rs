@@ -259,4 +259,106 @@ mod tests {
         let score = record.calculate_score();
         assert_eq!(score, 1005.0);
     }
+}use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub timestamp: i64,
+}
+
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    InvalidValue,
+    InvalidTimestamp,
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "Invalid record ID"),
+            ValidationError::InvalidValue => write!(f, "Invalid value field"),
+            ValidationError::InvalidTimestamp => write!(f, "Invalid timestamp"),
+        }
+    }
+}
+
+impl Error for ValidationError {}
+
+pub fn validate_record(record: &DataRecord) -> Result<(), ValidationError> {
+    if record.id == 0 {
+        return Err(ValidationError::InvalidId);
+    }
+    
+    if !record.value.is_finite() {
+        return Err(ValidationError::InvalidValue);
+    }
+    
+    if record.timestamp < 0 {
+        return Err(ValidationError::InvalidTimestamp);
+    }
+    
+    Ok(())
+}
+
+pub fn transform_record(record: &DataRecord, multiplier: f64) -> DataRecord {
+    DataRecord {
+        id: record.id,
+        value: record.value * multiplier,
+        timestamp: record.timestamp,
+    }
+}
+
+pub fn process_records(records: &[DataRecord], multiplier: f64) -> Vec<Result<DataRecord, ValidationError>> {
+    records
+        .iter()
+        .map(|record| {
+            validate_record(record)?;
+            Ok(transform_record(record, multiplier))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record() {
+        let record = DataRecord {
+            id: 1,
+            value: 42.5,
+            timestamp: 1633046400,
+        };
+        
+        assert!(validate_record(&record).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_id() {
+        let record = DataRecord {
+            id: 0,
+            value: 42.5,
+            timestamp: 1633046400,
+        };
+        
+        assert!(matches!(validate_record(&record), Err(ValidationError::InvalidId)));
+    }
+
+    #[test]
+    fn test_transform_record() {
+        let record = DataRecord {
+            id: 1,
+            value: 10.0,
+            timestamp: 1633046400,
+        };
+        
+        let transformed = transform_record(&record, 2.5);
+        assert_eq!(transformed.value, 25.0);
+        assert_eq!(transformed.id, record.id);
+        assert_eq!(transformed.timestamp, record.timestamp);
+    }
 }
