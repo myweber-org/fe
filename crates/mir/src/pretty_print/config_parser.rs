@@ -1,71 +1,94 @@
-use std::env;
+use serde::{Deserialize, Serialize};
 use std::fs;
-use std::collections::HashMap;
+use std::path::Path;
 
-pub struct Config {
-    pub settings: HashMap<String, String>,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub server_host: String,
+    pub server_port: u16,
+    pub max_connections: u32,
+    pub enable_logging: bool,
+    pub log_level: String,
 }
 
-impl Config {
-    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = fs::read_to_string(path)?;
-        let mut settings = HashMap::new();
-
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-
-            if let Some((key, value)) = trimmed.split_once('=') {
-                let key = key.trim().to_string();
-                let mut value = value.trim().to_string();
-
-                if value.starts_with("${") && value.ends_with('}') {
-                    let var_name = &value[2..value.len() - 1];
-                    if let Ok(env_value) = env::var(var_name) {
-                        value = env_value;
-                    }
-                }
-
-                settings.insert(key, value);
-            }
+impl Default for AppConfig {
+    fn default() -> Self {
+        AppConfig {
+            server_host: String::from("127.0.0.1"),
+            server_port: 8080,
+            max_connections: 100,
+            enable_logging: true,
+            log_level: String::from("info"),
         }
+    }
+}
 
-        Ok(Config { settings })
+impl AppConfig {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = fs::read_to_string(path)?;
+        let config: AppConfig = toml::from_str(&content)?;
+        config.validate()?;
+        Ok(config)
     }
 
-    pub fn get(&self, key: &str) -> Option<&String> {
-        self.settings.get(key)
+    pub fn validate(&self) -> Result<(), String> {
+        if self.server_port == 0 {
+            return Err(String::from("Server port cannot be zero"));
+        }
+        if self.max_connections == 0 {
+            return Err(String::from("Max connections must be greater than zero"));
+        }
+        let valid_log_levels = ["error", "warn", "info", "debug", "trace"];
+        if !valid_log_levels.contains(&self.log_level.as_str()) {
+            return Err(format!("Invalid log level: {}", self.log_level));
+        }
+        Ok(())
+    }
+
+    pub fn to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let toml_string = toml::to_string_pretty(self)?;
+        fs::write(path, toml_string)?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_basic_parsing() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "DATABASE_URL=postgres://localhost").unwrap();
-        writeln!(file, "# This is a comment").unwrap();
-        writeln!(file, "PORT=8080").unwrap();
-
-        let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("DATABASE_URL"), Some(&"postgres://localhost".to_string()));
-        assert_eq!(config.get("PORT"), Some(&"8080".to_string()));
+    fn test_default_config() {
+        let config = AppConfig::default();
+        assert_eq!(config.server_host, "127.0.0.1");
+        assert_eq!(config.server_port, 8080);
+        assert_eq!(config.max_connections, 100);
+        assert!(config.enable_logging);
+        assert_eq!(config.log_level, "info");
     }
 
     #[test]
-    fn test_env_variable_substitution() {
-        env::set_var("SECRET_KEY", "my_secret_value");
-        
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "API_KEY=${SECRET_KEY}").unwrap();
+    fn test_config_validation() {
+        let mut config = AppConfig::default();
+        config.server_port = 0;
+        assert!(config.validate().is_err());
 
-        let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("API_KEY"), Some(&"my_secret_value".to_string()));
+        let mut config = AppConfig::default();
+        config.log_level = String::from("invalid");
+        assert!(config.validate().is_err());
+
+        let config = AppConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_serialization() {
+        let config = AppConfig::default();
+        let temp_file = NamedTempFile::new().unwrap();
+        config.to_file(temp_file.path()).unwrap();
+
+        let loaded_config = AppConfig::from_file(temp_file.path()).unwrap();
+        assert_eq!(config.server_host, loaded_config.server_host);
+        assert_eq!(config.server_port, loaded_config.server_port);
     }
 }
