@@ -634,3 +634,115 @@ mod tests {
         assert_eq!(invalid, vec![1]);
     }
 }
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidInput(String),
+    TransformationFailed(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
+            ProcessingError::TransformationFailed(msg) => write!(f, "Transformation failed: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    validation_rules: Vec<Box<dyn Fn(&str) -> bool>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            validation_rules: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule<F>(&mut self, rule: F)
+    where
+        F: Fn(&str) -> bool + 'static,
+    {
+        self.validation_rules.push(Box::new(rule));
+    }
+
+    pub fn process_data(&self, input: &str) -> Result<String, ProcessingError> {
+        if input.trim().is_empty() {
+            return Err(ProcessingError::InvalidInput("Input cannot be empty".to_string()));
+        }
+
+        for rule in &self.validation_rules {
+            if !rule(input) {
+                return Err(ProcessingError::InvalidInput(
+                    "Input failed validation rules".to_string(),
+                ));
+            }
+        }
+
+        let transformed = self.transform_data(input)?;
+        Ok(transformed)
+    }
+
+    fn transform_data(&self, input: &str) -> Result<String, ProcessingError> {
+        let normalized = input.trim().to_lowercase();
+        
+        if normalized.len() > 100 {
+            return Err(ProcessingError::TransformationFailed(
+                "Input too long after transformation".to_string(),
+            ));
+        }
+
+        let processed = normalized
+            .chars()
+            .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<&str>>()
+            .join("_");
+
+        Ok(processed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_process_valid_data() {
+        let mut processor = DataProcessor::new();
+        processor.add_validation_rule(|s| s.len() > 3);
+        
+        let result = processor.process_data("Hello World");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello_world");
+    }
+
+    #[test]
+    fn test_process_empty_input() {
+        let processor = DataProcessor::new();
+        let result = processor.process_data("");
+        assert!(result.is_err());
+        
+        if let Err(ProcessingError::InvalidInput(msg)) = result {
+            assert!(msg.contains("cannot be empty"));
+        } else {
+            panic!("Expected InvalidInput error");
+        }
+    }
+
+    #[test]
+    fn test_process_invalid_data() {
+        let mut processor = DataProcessor::new();
+        processor.add_validation_rule(|s| s.contains('@'));
+        
+        let result = processor.process_data("test data");
+        assert!(result.is_err());
+    }
+}
