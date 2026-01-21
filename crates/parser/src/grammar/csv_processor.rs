@@ -1,88 +1,142 @@
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
-pub struct CsvProcessor {
-    input_path: String,
-    output_path: String,
-    filter_column: usize,
-    filter_value: String,
+#[derive(Debug)]
+pub struct CsvRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub active: bool,
 }
 
-impl CsvProcessor {
-    pub fn new(input_path: &str, output_path: &str, filter_column: usize, filter_value: &str) -> Self {
-        CsvProcessor {
-            input_path: input_path.to_string(),
-            output_path: output_path.to_string(),
-            filter_column,
-            filter_value: filter_value.to_string(),
+#[derive(Debug)]
+pub enum CsvError {
+    IoError(String),
+    ParseError(String),
+    ValidationError(String),
+}
+
+impl std::fmt::Display for CsvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CsvError::IoError(msg) => write!(f, "IO error: {}", msg),
+            CsvError::ParseError(msg) => write!(f, "Parse error: {}", msg),
+            CsvError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
         }
-    }
-
-    pub fn process(&self) -> Result<usize, Box<dyn Error>> {
-        let input_file = File::open(&self.input_path)?;
-        let reader = BufReader::new(input_file);
-        let mut output_file = File::create(&self.output_path)?;
-        let mut processed_count = 0;
-
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line?;
-            let parts: Vec<&str> = line.split(',').collect();
-
-            if line_num == 0 {
-                writeln!(output_file, "{}", line)?;
-                continue;
-            }
-
-            if parts.get(self.filter_column).map(|&v| v.trim()) == Some(self.filter_value.trim()) {
-                let transformed_line = parts.iter()
-                    .map(|field| field.trim().to_uppercase())
-                    .collect::<Vec<String>>()
-                    .join(",");
-                writeln!(output_file, "{}", transformed_line)?;
-                processed_count += 1;
-            }
-        }
-
-        Ok(processed_count)
-    }
-
-    pub fn validate_config(&self) -> Result<(), String> {
-        if self.filter_column > 10 {
-            return Err("Filter column index too large".to_string());
-        }
-        if self.input_path.is_empty() || self.output_path.is_empty() {
-            return Err("File paths cannot be empty".to_string());
-        }
-        Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Read;
+impl Error for CsvError {}
 
-    #[test]
-    fn test_csv_processing() {
-        let test_input = "id,name,status\n1,alice,active\n2,bob,inactive\n3,charlie,active";
-        let temp_input = "test_input.csv";
-        let temp_output = "test_output.csv";
-        
-        std::fs::write(temp_input, test_input).unwrap();
-        
-        let processor = CsvProcessor::new(temp_input, temp_output, 2, "active");
-        processor.validate_config().unwrap();
-        let result = processor.process().unwrap();
-        
-        assert_eq!(result, 2);
-        
-        let mut output_content = String::new();
-        File::open(temp_output).unwrap().read_to_string(&mut output_content).unwrap();
-        assert!(output_content.contains("1,ALICE,ACTIVE"));
-        assert!(output_content.contains("3,CHARLIE,ACTIVE"));
-        
-        std::fs::remove_file(temp_input).unwrap();
-        std::fs::remove_file(temp_output).unwrap();
+pub fn process_csv_file<P: AsRef<Path>>(path: P) -> Result<Vec<CsvRecord>, CsvError> {
+    let file = File::open(&path).map_err(|e| {
+        CsvError::IoError(format!("Failed to open file {}: {}", path.as_ref().display(), e))
+    })?;
+
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    let mut line_number = 0;
+
+    for line in reader.lines() {
+        line_number += 1;
+        let line_content = line.map_err(|e| {
+            CsvError::IoError(format!("Failed to read line {}: {}", line_number, e))
+        })?;
+
+        if line_content.trim().is_empty() || line_content.starts_with('#') {
+            continue;
+        }
+
+        let record = parse_csv_line(&line_content, line_number)?;
+        validate_record(&record, line_number)?;
+        records.push(record);
     }
+
+    if records.is_empty() {
+        return Err(CsvError::ValidationError(
+            "CSV file contains no valid records".to_string(),
+        ));
+    }
+
+    Ok(records)
+}
+
+fn parse_csv_line(line: &str, line_number: usize) -> Result<CsvRecord, CsvError> {
+    let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+
+    if parts.len() != 4 {
+        return Err(CsvError::ParseError(format!(
+            "Line {}: Expected 4 fields, found {}",
+            line_number,
+            parts.len()
+        )));
+    }
+
+    let id = parts[0]
+        .parse::<u32>()
+        .map_err(|e| CsvError::ParseError(format!("Line {}: Invalid ID '{}': {}", line_number, parts[0], e)))?;
+
+    let name = parts[1].to_string();
+    if name.is_empty() {
+        return Err(CsvError::ValidationError(format!(
+            "Line {}: Name cannot be empty",
+            line_number
+        )));
+    }
+
+    let value = parts[2]
+        .parse::<f64>()
+        .map_err(|e| CsvError::ParseError(format!("Line {}: Invalid value '{}': {}", line_number, parts[2], e)))?;
+
+    let active = parts[3]
+        .parse::<bool>()
+        .map_err(|e| CsvError::ParseError(format!("Line {}: Invalid active flag '{}': {}", line_number, parts[3], e)))?;
+
+    Ok(CsvRecord {
+        id,
+        name,
+        value,
+        active,
+    })
+}
+
+fn validate_record(record: &CsvRecord, line_number: usize) -> Result<(), CsvError> {
+    if record.id == 0 {
+        return Err(CsvError::ValidationError(format!(
+            "Line {}: ID must be greater than 0",
+            line_number
+        )));
+    }
+
+    if record.value < 0.0 {
+        return Err(CsvError::ValidationError(format!(
+            "Line {}: Value cannot be negative",
+            line_number
+        )));
+    }
+
+    if record.name.len() > 100 {
+        return Err(CsvError::ValidationError(format!(
+            "Line {}: Name exceeds maximum length of 100 characters",
+            line_number
+        )));
+    }
+
+    Ok(())
+}
+
+pub fn calculate_statistics(records: &[CsvRecord]) -> (f64, f64, usize) {
+    if records.is_empty() {
+        return (0.0, 0.0, 0);
+    }
+
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let count = records.len();
+    let average = sum / count as f64;
+
+    let active_count = records.iter().filter(|r| r.active).count();
+
+    (sum, average, active_count)
 }
