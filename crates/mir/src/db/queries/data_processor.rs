@@ -1,121 +1,152 @@
 
+use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::collections::HashMap;
+use std::fmt;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub timestamp: i64,
+    pub category: String,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidValue,
+    InvalidTimestamp,
+    CategoryNotFound,
+    SerializationError(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidValue => write!(f, "Value is outside valid range"),
+            ProcessingError::InvalidTimestamp => write!(f, "Timestamp is invalid"),
+            ProcessingError::CategoryNotFound => write!(f, "Category does not exist"),
+            ProcessingError::SerializationError(msg) => write!(f, "Serialization failed: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
 
 pub struct DataProcessor {
-    data: Vec<f64>,
-    metadata: HashMap<String, String>,
+    valid_categories: Vec<String>,
+    min_value: f64,
+    max_value: f64,
 }
 
 impl DataProcessor {
-    pub fn new() -> Self {
+    pub fn new(valid_categories: Vec<String>, min_value: f64, max_value: f64) -> Self {
         DataProcessor {
-            data: Vec::new(),
-            metadata: HashMap::new(),
+            valid_categories,
+            min_value,
+            max_value,
         }
     }
 
-    pub fn load_from_csv(&mut self, filepath: &str) -> Result<(), Box<dyn Error>> {
-        let file = File::open(filepath)?;
-        let reader = BufReader::new(file);
-        
-        self.data.clear();
-        
-        for (index, line) in reader.lines().enumerate() {
-            let line = line?;
-            if index == 0 {
-                continue;
-            }
-            
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() >= 2 {
-                if let Ok(value) = parts[1].parse::<f64>() {
-                    self.data.push(value);
-                }
-            }
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.value < self.min_value || record.value > self.max_value {
+            return Err(ProcessingError::InvalidValue);
         }
-        
-        self.metadata.insert("source".to_string(), filepath.to_string());
-        self.metadata.insert("loaded_at".to_string(), chrono::Local::now().to_rfc3339());
-        
+
+        if record.timestamp <= 0 {
+            return Err(ProcessingError::InvalidTimestamp);
+        }
+
+        if !self.valid_categories.contains(&record.category) {
+            return Err(ProcessingError::CategoryNotFound);
+        }
+
         Ok(())
     }
 
-    pub fn calculate_statistics(&self) -> HashMap<String, f64> {
-        let mut stats = HashMap::new();
-        
-        if self.data.is_empty() {
-            return stats;
+    pub fn transform_record(&self, record: &DataRecord) -> Result<DataRecord, ProcessingError> {
+        self.validate_record(record)?;
+
+        let transformed_value = if record.value > 100.0 {
+            record.value * 0.9
+        } else {
+            record.value * 1.1
+        };
+
+        let normalized_category = record.category.to_uppercase();
+
+        Ok(DataRecord {
+            id: record.id,
+            value: transformed_value,
+            timestamp: record.timestamp,
+            category: normalized_category,
+        })
+    }
+
+    pub fn process_batch(
+        &self,
+        records: Vec<DataRecord>,
+    ) -> Result<Vec<DataRecord>, ProcessingError> {
+        let mut processed_records = Vec::with_capacity(records.len());
+
+        for record in records {
+            match self.transform_record(&record) {
+                Ok(transformed) => processed_records.push(transformed),
+                Err(e) => return Err(e),
+            }
         }
-        
-        let sum: f64 = self.data.iter().sum();
-        let count = self.data.len() as f64;
-        let mean = sum / count;
-        
-        let variance: f64 = self.data.iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / count;
-        
-        let std_dev = variance.sqrt();
-        
-        let min = self.data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let max = self.data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-        
-        stats.insert("mean".to_string(), mean);
-        stats.insert("std_dev".to_string(), std_dev);
-        stats.insert("min".to_string(), min);
-        stats.insert("max".to_string(), max);
-        stats.insert("count".to_string(), count);
-        
-        stats
+
+        Ok(processed_records)
     }
 
-    pub fn filter_data(&self, threshold: f64) -> Vec<f64> {
-        self.data.iter()
-            .filter(|&&x| x >= threshold)
-            .cloned()
-            .collect()
-    }
-
-    pub fn get_metadata(&self) -> &HashMap<String, String> {
-        &self.metadata
-    }
-
-    pub fn data_count(&self) -> usize {
-        self.data.len()
+    pub fn serialize_records(&self, records: &[DataRecord]) -> Result<String, ProcessingError> {
+        serde_json::to_string(records)
+            .map_err(|e| ProcessingError::SerializationError(e.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_empty_processor() {
-        let processor = DataProcessor::new();
-        assert_eq!(processor.data_count(), 0);
+    fn test_valid_record_processing() {
+        let processor = DataProcessor::new(
+            vec!["temperature".to_string(), "pressure".to_string()],
+            0.0,
+            1000.0,
+        );
+
+        let record = DataRecord {
+            id: 1,
+            value: 50.0,
+            timestamp: 1625097600,
+            category: "temperature".to_string(),
+        };
+
+        let result = processor.transform_record(&record);
+        assert!(result.is_ok());
+
+        let transformed = result.unwrap();
+        assert_eq!(transformed.category, "TEMPERATURE");
+        assert_eq!(transformed.value, 55.0);
     }
 
     #[test]
-    fn test_statistics_calculation() {
-        let mut processor = DataProcessor::new();
-        processor.data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        
-        let stats = processor.calculate_statistics();
-        assert_eq!(stats.get("mean").unwrap(), &3.0);
-        assert_eq!(stats.get("count").unwrap(), &5.0);
-    }
+    fn test_invalid_value() {
+        let processor = DataProcessor::new(
+            vec!["temperature".to_string()],
+            0.0,
+            100.0,
+        );
 
-    #[test]
-    fn test_data_filtering() {
-        let mut processor = DataProcessor::new();
-        processor.data = vec![1.0, 5.0, 3.0, 8.0, 2.0];
-        
-        let filtered = processor.filter_data(3.0);
-        assert_eq!(filtered, vec![5.0, 3.0, 8.0]);
+        let record = DataRecord {
+            id: 1,
+            value: 150.0,
+            timestamp: 1625097600,
+            category: "temperature".to_string(),
+        };
+
+        let result = processor.validate_record(&record);
+        assert!(result.is_err());
     }
 }
