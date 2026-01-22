@@ -340,4 +340,115 @@ mod tests {
         let alpha_records = processor.filter_by_category("alpha");
         assert_eq!(alpha_records.len(), 2);
     }
+}use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+#[derive(Debug)]
+pub struct DataRecord {
+    id: u32,
+    value: f64,
+    category: String,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Result<Self, String> {
+        if value < 0.0 {
+            return Err("Value cannot be negative".to_string());
+        }
+        if category.is_empty() {
+            return Err("Category cannot be empty".to_string());
+        }
+        Ok(Self { id, value, category })
+    }
+
+    pub fn calculate_tax(&self, rate: f64) -> f64 {
+        self.value * rate
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        Self { records: Vec::new() }
+    }
+
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let path = Path::new(file_path);
+        let file = File::open(path)?;
+        let mut rdr = csv::Reader::from_reader(file);
+
+        for result in rdr.deserialize() {
+            let record: DataRecord = result?;
+            self.records.push(record);
+        }
+
+        Ok(())
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.category == category)
+            .collect()
+    }
+
+    pub fn total_value(&self) -> f64 {
+        self.records.iter().map(|record| record.value).sum()
+    }
+
+    pub fn average_value(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            None
+        } else {
+            Some(self.total_value() / self.records.len() as f64)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+
+    #[test]
+    fn test_record_creation() {
+        let record = DataRecord::new(1, 100.0, "A".to_string());
+        assert!(record.is_ok());
+        
+        let record = DataRecord::new(2, -50.0, "B".to_string());
+        assert!(record.is_err());
+    }
+
+    #[test]
+    fn test_tax_calculation() {
+        let record = DataRecord::new(1, 100.0, "Test".to_string()).unwrap();
+        assert_eq!(record.calculate_tax(0.1), 10.0);
+    }
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,value,category").unwrap();
+        writeln!(temp_file, "1,100.0,A").unwrap();
+        writeln!(temp_file, "2,200.0,B").unwrap();
+        writeln!(temp_file, "3,150.0,A").unwrap();
+        
+        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+        assert_eq!(processor.records.len(), 3);
+        assert_eq!(processor.total_value(), 450.0);
+        
+        let filtered = processor.filter_by_category("A");
+        assert_eq!(filtered.len(), 2);
+        
+        let avg = processor.average_value();
+        assert_eq!(avg, Some(150.0));
+    }
 }
