@@ -195,3 +195,113 @@ mod tests {
         assert_eq!(plaintext.to_vec(), decrypted_data);
     }
 }
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+pub struct XorCipher {
+    key: Vec<u8>,
+    key_index: usize,
+}
+
+impl XorCipher {
+    pub fn new(key: &str) -> Self {
+        XorCipher {
+            key: key.as_bytes().to_vec(),
+            key_index: 0,
+        }
+    }
+
+    pub fn encrypt_file(&mut self, source_path: &Path, dest_path: &Path) -> io::Result<()> {
+        self.process_file(source_path, dest_path)
+    }
+
+    pub fn decrypt_file(&mut self, source_path: &Path, dest_path: &Path) -> io::Result<()> {
+        self.process_file(source_path, dest_path)
+    }
+
+    fn process_file(&mut self, source_path: &Path, dest_path: &Path) -> io::Result<()> {
+        let mut source_file = fs::File::open(source_path)?;
+        let mut dest_file = fs::File::create(dest_path)?;
+
+        let mut buffer = [0; 4096];
+        self.key_index = 0;
+
+        loop {
+            let bytes_read = source_file.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+
+            for i in 0..bytes_read {
+                buffer[i] ^= self.key[self.key_index];
+                self.key_index = (self.key_index + 1) % self.key.len();
+            }
+
+            dest_file.write_all(&buffer[..bytes_read])?;
+        }
+
+        dest_file.flush()?;
+        Ok(())
+    }
+}
+
+pub fn calculate_file_hash(path: &Path) -> io::Result<u32> {
+    let mut file = fs::File::open(path)?;
+    let mut buffer = [0; 4096];
+    let mut hash: u32 = 0x811C9DC5;
+
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        for &byte in &buffer[..bytes_read] {
+            hash ^= byte as u32;
+            hash = hash.wrapping_mul(0x01000193);
+        }
+    }
+
+    Ok(hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_xor_cipher() {
+        let key = "secret_key";
+        let mut cipher = XorCipher::new(key);
+
+        let mut source_file = NamedTempFile::new().unwrap();
+        let test_data = b"Hello, World! This is a test message.";
+        source_file.write_all(test_data).unwrap();
+
+        let encrypted_file = NamedTempFile::new().unwrap();
+        cipher
+            .encrypt_file(source_file.path(), encrypted_file.path())
+            .unwrap();
+
+        let mut cipher2 = XorCipher::new(key);
+        let decrypted_file = NamedTempFile::new().unwrap();
+        cipher2
+            .decrypt_file(encrypted_file.path(), decrypted_file.path())
+            .unwrap();
+
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(test_data.to_vec(), decrypted_data);
+    }
+
+    #[test]
+    fn test_file_hash() {
+        let mut test_file = NamedTempFile::new().unwrap();
+        test_file.write_all(b"Test content for hashing").unwrap();
+
+        let hash = calculate_file_hash(test_file.path()).unwrap();
+        assert_ne!(hash, 0);
+    }
+}
