@@ -1,150 +1,125 @@
-
-use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fmt;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataRecord {
-    pub id: u32,
-    pub value: f64,
-    pub timestamp: i64,
+    id: u32,
+    value: f64,
+    category: String,
 }
 
-#[derive(Debug)]
-pub enum ProcessingError {
-    InvalidValue(f64),
-    InvalidTimestamp(i64),
-    ValidationFailed(String),
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Self {
+        DataRecord { id, value, category }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.id > 0 && self.value >= 0.0 && !self.category.is_empty()
+    }
 }
 
-impl fmt::Display for ProcessingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProcessingError::InvalidValue(v) => write!(f, "Invalid value: {}", v),
-            ProcessingError::InvalidTimestamp(t) => write!(f, "Invalid timestamp: {}", t),
-            ProcessingError::ValidationFailed(msg) => write!(f, "Validation failed: {}", msg),
+pub fn process_csv_file(file_path: &str) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+
+    for (line_number, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 3 {
+            return Err(format!("Invalid format at line {}", line_number + 1).into());
+        }
+
+        let id = parts[0].parse::<u32>()?;
+        let value = parts[1].parse::<f64>()?;
+        let category = parts[2].to_string();
+
+        let record = DataRecord::new(id, value, category);
+        if record.is_valid() {
+            records.push(record);
+        } else {
+            eprintln!("Warning: Invalid record at line {}", line_number + 1);
         }
     }
+
+    Ok(records)
 }
 
-impl Error for ProcessingError {}
+pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, usize) {
+    if records.is_empty() {
+        return (0.0, 0.0, 0);
+    }
 
-pub fn validate_record(record: &DataRecord) -> Result<(), ProcessingError> {
-    if record.value < 0.0 || record.value > 1000.0 {
-        return Err(ProcessingError::InvalidValue(record.value));
-    }
-    
-    if record.timestamp < 0 {
-        return Err(ProcessingError::InvalidTimestamp(record.timestamp));
-    }
-    
-    Ok(())
-}
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let mean = sum / records.len() as f64;
+    let count = records.len();
 
-pub fn transform_record(record: &DataRecord) -> DataRecord {
-    DataRecord {
-        id: record.id,
-        value: record.value * 1.1,
-        timestamp: record.timestamp + 3600,
-    }
-}
+    let variance: f64 = records
+        .iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>()
+        / count as f64;
+    let std_dev = variance.sqrt();
 
-pub fn process_records(records: Vec<DataRecord>) -> Result<Vec<DataRecord>, ProcessingError> {
-    let mut processed = Vec::with_capacity(records.len());
-    
-    for record in records {
-        validate_record(&record)?;
-        let transformed = transform_record(&record);
-        processed.push(transformed);
-    }
-    
-    Ok(processed)
+    (mean, std_dev, count)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_validate_record_valid() {
-        let record = DataRecord {
-            id: 1,
-            value: 500.0,
-            timestamp: 1609459200,
-        };
-        assert!(validate_record(&record).is_ok());
+    fn test_valid_record() {
+        let record = DataRecord::new(1, 42.5, "A".to_string());
+        assert!(record.is_valid());
     }
 
     #[test]
-    fn test_validate_record_invalid_value() {
-        let record = DataRecord {
-            id: 1,
-            value: -10.0,
-            timestamp: 1609459200,
-        };
-        assert!(validate_record(&record).is_err());
+    fn test_invalid_record() {
+        let record1 = DataRecord::new(0, 42.5, "A".to_string());
+        assert!(!record1.is_valid());
+
+        let record2 = DataRecord::new(1, -1.0, "A".to_string());
+        assert!(!record2.is_valid());
+
+        let record3 = DataRecord::new(1, 42.5, "".to_string());
+        assert!(!record3.is_valid());
     }
 
     #[test]
-    fn test_transform_record() {
-        let record = DataRecord {
-            id: 1,
-            value: 100.0,
-            timestamp: 1609459200,
-        };
-        let transformed = transform_record(&record);
-        assert_eq!(transformed.value, 110.0);
-        assert_eq!(transformed.timestamp, 1609462800);
+    fn test_process_csv() -> Result<(), Box<dyn Error>> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "1,10.5,Alpha")?;
+        writeln!(temp_file, "2,20.3,Beta")?;
+        writeln!(temp_file, "# Comment line")?;
+        writeln!(temp_file, "3,15.7,Gamma")?;
+
+        let records = process_csv_file(temp_file.path().to_str().unwrap())?;
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].id, 1);
+        assert_eq!(records[1].value, 20.3);
+        assert_eq!(records[2].category, "Gamma");
+
+        Ok(())
     }
-}
-use csv::Reader;
-use serde::Deserialize;
-use std::error::Error;
-use std::fs::File;
 
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
-}
+    #[test]
+    fn test_statistics() {
+        let records = vec![
+            DataRecord::new(1, 10.0, "A".to_string()),
+            DataRecord::new(2, 20.0, "B".to_string()),
+            DataRecord::new(3, 30.0, "C".to_string()),
+        ];
 
-pub fn process_data_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
-    let file = File::open(file_path)?;
-    let mut reader = Reader::from_reader(file);
-    
-    let mut records = Vec::new();
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        if record.value >= 0.0 {
-            records.push(record);
-        }
+        let (mean, std_dev, count) = calculate_statistics(&records);
+        assert_eq!(mean, 20.0);
+        assert!((std_dev - 8.164965).abs() < 0.0001);
+        assert_eq!(count, 3);
     }
-    
-    Ok(records)
-}
-
-pub fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
-    let count = records.len() as f64;
-    if count == 0.0 {
-        return (0.0, 0.0, 0.0);
-    }
-    
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let mean = sum / count;
-    
-    let variance: f64 = records.iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>() / count;
-    
-    let std_dev = variance.sqrt();
-    
-    (sum, mean, std_dev)
-}
-
-pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
-    records.into_iter()
-        .filter(|r| r.category == category)
-        .collect()
 }
