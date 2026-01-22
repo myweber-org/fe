@@ -6,71 +6,75 @@ const DEFAULT_KEY: u8 = 0xAA;
 
 pub fn encrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
     let encryption_key = key.unwrap_or(DEFAULT_KEY);
-    let data = fs::read(input_path)?;
-    
-    let encrypted_data: Vec<u8> = data
-        .iter()
-        .map(|byte| byte ^ encryption_key)
-        .collect();
-    
-    fs::write(output_path, encrypted_data)
+    let mut input_file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    input_file.read_to_end(&mut buffer)?;
+
+    let encrypted_data: Vec<u8> = buffer.iter().map(|&byte| byte ^ encryption_key).collect();
+
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&encrypted_data)?;
+
+    Ok(())
 }
 
 pub fn decrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
     encrypt_file(input_path, output_path, key)
 }
 
-pub fn process_stream<R: Read, W: Write>(mut reader: R, mut writer: W, key: u8) -> io::Result<()> {
-    let mut buffer = [0; 1024];
-    
-    loop {
-        let bytes_read = reader.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-        
-        for byte in buffer[..bytes_read].iter_mut() {
-            *byte ^= key;
-        }
-        
-        writer.write_all(&buffer[..bytes_read])?;
-    }
-    
-    writer.flush()
+pub fn encrypt_string(text: &str, key: Option<u8>) -> Vec<u8> {
+    let encryption_key = key.unwrap_or(DEFAULT_KEY);
+    text.bytes().map(|byte| byte ^ encryption_key).collect()
+}
+
+pub fn decrypt_string(data: &[u8], key: Option<u8>) -> String {
+    let encryption_key = key.unwrap_or(DEFAULT_KEY);
+    data.iter()
+        .map(|&byte| (byte ^ encryption_key) as char)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
-    
+    use tempfile::NamedTempFile;
+
     #[test]
-    fn test_xor_encryption() {
-        let original = b"Hello, World!";
-        let key = 0x55;
+    fn test_string_encryption_decryption() {
+        let original = "Hello, World!";
+        let key = Some(0x55);
         
-        let encrypted: Vec<u8> = original.iter().map(|b| b ^ key).collect();
-        let decrypted: Vec<u8> = encrypted.iter().map(|b| b ^ key).collect();
+        let encrypted = encrypt_string(original, key);
+        let decrypted = decrypt_string(&encrypted, key);
         
-        assert_eq!(original.to_vec(), decrypted);
+        assert_ne!(encrypted, original.as_bytes());
+        assert_eq!(decrypted, original);
     }
-    
+
     #[test]
-    fn test_stream_processing() {
-        let input = b"Test data stream";
-        let key = 0x77;
-        
-        let mut reader = Cursor::new(input.to_vec());
-        let mut writer = Cursor::new(Vec::new());
-        
-        process_stream(&mut reader, &mut writer, key).unwrap();
-        
-        let encrypted = writer.into_inner();
-        let mut reader2 = Cursor::new(encrypted);
-        let mut writer2 = Cursor::new(Vec::new());
-        
-        process_stream(&mut reader2, &mut writer2, key).unwrap();
-        
-        assert_eq!(input.to_vec(), writer2.into_inner());
+    fn test_file_encryption_decryption() -> io::Result<()> {
+        let original_content = b"Test file content";
+        let input_file = NamedTempFile::new()?;
+        let encrypted_file = NamedTempFile::new()?;
+        let decrypted_file = NamedTempFile::new()?;
+
+        fs::write(input_file.path(), original_content)?;
+
+        encrypt_file(
+            input_file.path().to_str().unwrap(),
+            encrypted_file.path().to_str().unwrap(),
+            Some(0x33),
+        )?;
+
+        decrypt_file(
+            encrypted_file.path().to_str().unwrap(),
+            decrypted_file.path().to_str().unwrap(),
+            Some(0x33),
+        )?;
+
+        let decrypted_content = fs::read(decrypted_file.path())?;
+        assert_eq!(decrypted_content, original_content);
+
+        Ok(())
     }
 }
