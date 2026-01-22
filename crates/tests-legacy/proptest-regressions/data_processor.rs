@@ -1,121 +1,52 @@
 
-use std::collections::HashMap;
+use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
 
-pub struct DataProcessor {
-    data: HashMap<String, Vec<f64>>,
-    validation_rules: Vec<ValidationRule>,
+#[derive(Debug, Deserialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
 }
 
-pub struct ValidationRule {
-    field_name: String,
-    min_value: f64,
-    max_value: f64,
-    required: bool,
+pub fn process_data_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let mut rdr = Reader::from_reader(file);
+    let mut records = Vec::new();
+
+    for result in rdr.deserialize() {
+        let record: Record = result?;
+        if record.value >= 0.0 {
+            records.push(record);
+        }
+    }
+
+    Ok(records)
 }
 
-impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor {
-            data: HashMap::new(),
-            validation_rules: Vec::new(),
-        }
+pub fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
+    let count = records.len() as f64;
+    if count == 0.0 {
+        return (0.0, 0.0, 0.0);
     }
 
-    pub fn add_dataset(&mut self, name: String, values: Vec<f64>) {
-        self.data.insert(name, values);
-    }
-
-    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
-        self.validation_rules.push(rule);
-    }
-
-    pub fn validate_all(&self) -> Result<(), Vec<String>> {
-        let mut errors = Vec::new();
-
-        for rule in &self.validation_rules {
-            if let Some(data) = self.data.get(&rule.field_name) {
-                if rule.required && data.is_empty() {
-                    errors.push(format!("Field '{}' is required but empty", rule.field_name));
-                }
-
-                for &value in data {
-                    if value < rule.min_value || value > rule.max_value {
-                        errors.push(format!(
-                            "Value {} in field '{}' is outside valid range [{}, {}]",
-                            value, rule.field_name, rule.min_value, rule.max_value
-                        ));
-                    }
-                }
-            } else if rule.required {
-                errors.push(format!("Required field '{}' not found", rule.field_name));
-            }
-        }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
-    }
-
-    pub fn calculate_statistics(&self, field_name: &str) -> Option<Statistics> {
-        self.data.get(field_name).map(|values| {
-            let sum: f64 = values.iter().sum();
-            let count = values.len();
-            let mean = if count > 0 { sum / count as f64 } else { 0.0 };
-            
-            let variance: f64 = values.iter()
-                .map(|&x| (x - mean).powi(2))
-                .sum::<f64>() / count as f64;
-            
-            Statistics {
-                count,
-                mean,
-                variance,
-                min: values.iter().copied().fold(f64::INFINITY, f64::min),
-                max: values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-            }
-        })
-    }
-
-    pub fn normalize_data(&mut self, field_name: &str) -> Result<(), String> {
-        if let Some(values) = self.data.get_mut(field_name) {
-            if values.is_empty() {
-                return Err("Cannot normalize empty dataset".to_string());
-            }
-
-            let stats = self.calculate_statistics(field_name).unwrap();
-            
-            if stats.variance == 0.0 {
-                return Err("Cannot normalize data with zero variance".to_string());
-            }
-
-            for value in values.iter_mut() {
-                *value = (*value - stats.mean) / stats.variance.sqrt();
-            }
-            
-            Ok(())
-        } else {
-            Err(format!("Field '{}' not found", field_name))
-        }
-    }
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let mean = sum / count;
+    
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (sum, mean, std_dev)
 }
 
-pub struct Statistics {
-    pub count: usize,
-    pub mean: f64,
-    pub variance: f64,
-    pub min: f64,
-    pub max: f64,
-}
-
-impl ValidationRule {
-    pub fn new(field_name: String, min_value: f64, max_value: f64, required: bool) -> Self {
-        ValidationRule {
-            field_name,
-            min_value,
-            max_value,
-            required,
-        }
-    }
+pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
+    records.into_iter()
+        .filter(|r| r.category == category)
+        .collect()
 }
