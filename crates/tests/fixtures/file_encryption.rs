@@ -1,20 +1,21 @@
 
 use std::fs;
 use std::io::{self, Read, Write};
-use std::path::Path;
 
-pub fn xor_cipher(data: &mut [u8], key: &[u8]) {
-    for (i, byte) in data.iter_mut().enumerate() {
-        *byte ^= key[i % key.len()];
+const DEFAULT_KEY: u8 = 0xAA;
+
+fn xor_cipher(data: &mut [u8], key: u8) {
+    for byte in data.iter_mut() {
+        *byte ^= key;
     }
 }
 
-pub fn encrypt_file(input_path: &str, output_path: &str, key: &str) -> io::Result<()> {
-    let mut input_file = fs::File::open(input_path)?;
+fn process_file(input_path: &str, output_path: &str, key: u8) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
     let mut buffer = Vec::new();
-    input_file.read_to_end(&mut buffer)?;
+    file.read_to_end(&mut buffer)?;
     
-    xor_cipher(&mut buffer, key.as_bytes());
+    xor_cipher(&mut buffer, key);
     
     let mut output_file = fs::File::create(output_path)?;
     output_file.write_all(&buffer)?;
@@ -22,56 +23,63 @@ pub fn encrypt_file(input_path: &str, output_path: &str, key: &str) -> io::Resul
     Ok(())
 }
 
-pub fn decrypt_file(input_path: &str, output_path: &str, key: &str) -> io::Result<()> {
-    encrypt_file(input_path, output_path, key)
+fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    
+    if args.len() != 3 {
+        eprintln!("Usage: {} <input_file> <output_file>", args[0]);
+        std::process::exit(1);
+    }
+    
+    let input_path = &args[1];
+    let output_path = &args[2];
+    
+    match process_file(input_path, output_path, DEFAULT_KEY) {
+        Ok(_) => println!("File processed successfully"),
+        Err(e) => eprintln!("Error processing file: {}", e),
+    }
+    
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
+    use std::fs;
     
     #[test]
-    fn test_xor_symmetry() {
-        let key = "secret_key";
-        let original = b"Hello, World!";
-        let mut data = original.to_vec();
+    fn test_xor_cipher() {
+        let mut data = vec![0x00, 0xFF, 0x55, 0xAA];
+        let original = data.clone();
+        let key = 0xAA;
         
-        xor_cipher(&mut data, key.as_bytes());
-        assert_ne!(data.as_slice(), original);
+        xor_cipher(&mut data, key);
+        assert_ne!(data, original);
         
-        xor_cipher(&mut data, key.as_bytes());
-        assert_eq!(data.as_slice(), original);
+        xor_cipher(&mut data, key);
+        assert_eq!(data, original);
     }
     
     #[test]
-    fn test_file_encryption() -> io::Result<()> {
-        let content = "Test data for encryption";
-        let key = "test_key123";
+    fn test_file_processing() -> io::Result<()> {
+        let test_data = b"Test data for encryption";
+        let input_path = "test_input.txt";
+        let output_path = "test_output.txt";
         
-        let input_file = NamedTempFile::new()?;
-        let output_file = NamedTempFile::new()?;
-        let decrypted_file = NamedTempFile::new()?;
+        fs::write(input_path, test_data)?;
         
-        fs::write(input_file.path(), content)?;
+        process_file(input_path, output_path, DEFAULT_KEY)?;
         
-        encrypt_file(
-            input_file.path().to_str().unwrap(),
-            output_file.path().to_str().unwrap(),
-            key,
-        )?;
+        let processed = fs::read(output_path)?;
+        assert_ne!(processed, test_data);
         
-        let encrypted_content = fs::read(output_file.path())?;
-        assert_ne!(encrypted_content, content.as_bytes());
+        process_file(output_path, "test_decrypted.txt", DEFAULT_KEY)?;
+        let decrypted = fs::read("test_decrypted.txt")?;
+        assert_eq!(decrypted, test_data);
         
-        decrypt_file(
-            output_file.path().to_str().unwrap(),
-            decrypted_file.path().to_str().unwrap(),
-            key,
-        )?;
-        
-        let decrypted_content = fs::read_to_string(decrypted_file.path())?;
-        assert_eq!(decrypted_content, content);
+        fs::remove_file(input_path)?;
+        fs::remove_file(output_path)?;
+        fs::remove_file("test_decrypted.txt")?;
         
         Ok(())
     }
