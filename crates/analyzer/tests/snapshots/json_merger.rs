@@ -38,14 +38,17 @@ mod tests {
         writeln!(file1, r#"{"name": "Alice", "age": 30}"#).unwrap();
         writeln!(file2, r#"{"city": "Berlin", "active": true}"#).unwrap();
 
-        let result = merge_json_files(&[
+        let paths = [
             file1.path().to_str().unwrap(),
             file2.path().to_str().unwrap(),
-        ]).unwrap();
+        ];
 
-        assert_eq!(result["name"], "Alice");
-        assert_eq!(result["age"], 30);
-        assert_eq!(result["city"], "Berlin");
-        assert_eq!(result["active"], true);
+        let result = merge_json_files(&paths).unwrap();
+        let obj = result.as_object().unwrap();
+
+        assert_eq!(obj.get("name").unwrap(), "Alice");
+        assert_eq!(obj.get("age").unwrap(), 30);
+        assert_eq!(obj.get("city").unwrap(), "Berlin");
+        assert_eq!(obj.get("active").unwrap(), true);
     }
 }
