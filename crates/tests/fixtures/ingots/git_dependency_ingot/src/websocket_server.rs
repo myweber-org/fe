@@ -1,29 +1,44 @@
+use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::accept_async;
-use futures_util::{SinkExt, StreamExt};
-use std::error::Error;
+use tokio_tungstenite::tungstenite::Message;
 
-pub async fn run_websocket_server(addr: &str) -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let addr = "127.0.0.1:8080";
     let listener = TcpListener::bind(addr).await?;
-    println!("WebSocket server listening on: {}", addr);
+    println!("WebSocket server listening on ws://{}", addr);
 
     while let Ok((stream, _)) = listener.accept().await {
-        let ws_stream = accept_async(stream).await?;
-        let (mut write, mut read) = ws_stream.split();
-
         tokio::spawn(async move {
+            let ws_stream = match accept_async(stream).await {
+                Ok(ws) => ws,
+                Err(e) => {
+                    eprintln!("Error during WebSocket handshake: {}", e);
+                    return;
+                }
+            };
+
+            let (mut write, mut read) = ws_stream.split();
+
             while let Some(msg) = read.next().await {
                 match msg {
-                    Ok(message) => {
-                        if let Err(e) = write.send(message).await {
-                            eprintln!("Error sending message: {}", e);
+                    Ok(Message::Text(text)) => {
+                        println!("Received text message: {}", text);
+                        if let Err(e) = write.send(Message::Text(text)).await {
+                            eprintln!("Error sending echo message: {}", e);
                             break;
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Error receiving message: {}", e);
+                    Ok(Message::Close(_)) => {
+                        println!("Client initiated close");
                         break;
                     }
+                    Err(e) => {
+                        eprintln!("Error reading message: {}", e);
+                        break;
+                    }
+                    _ => {}
                 }
             }
         });
