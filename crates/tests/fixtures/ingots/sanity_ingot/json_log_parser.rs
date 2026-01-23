@@ -1,110 +1,124 @@
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use chrono::{DateTime, Utc};
+use serde_json::Value;
 
-#[derive(Debug, Serialize, Deserialize)]
-struct LogEntry {
-    timestamp: DateTime<Utc>,
+#[derive(Debug)]
+pub struct LogEntry {
+    timestamp: String,
     level: String,
     message: String,
-    #[serde(flatten)]
-    extra: HashMap<String, serde_json::Value>,
+    fields: HashMap<String, Value>,
 }
 
-struct LogParser {
-    min_level: Option<String>,
-    search_term: Option<String>,
+pub struct LogParser {
+    entries: Vec<LogEntry>,
 }
 
 impl LogParser {
-    fn new() -> Self {
+    pub fn new() -> Self {
         LogParser {
-            min_level: None,
-            search_term: None,
+            entries: Vec::new(),
         }
     }
 
-    fn with_min_level(mut self, level: &str) -> Self {
-        self.min_level = Some(level.to_lowercase());
-        self
-    }
-
-    fn with_search(mut self, term: &str) -> Self {
-        self.search_term = Some(term.to_lowercase());
-        self
-    }
-
-    fn parse_file(&self, path: &str) -> Result<Vec<LogEntry>, Box<dyn std::error::Error>> {
+    pub fn load_from_file(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-        let mut entries = Vec::new();
 
         for line in reader.lines() {
             let line = line?;
-            if let Ok(entry) = serde_json::from_str::<LogEntry>(&line) {
-                if self.matches_filter(&entry) {
-                    entries.push(entry);
+            if let Ok(json_value) = serde_json::from_str::<Value>(&line) {
+                let entry = LogEntry {
+                    timestamp: json_value["timestamp"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    level: json_value["level"]
+                        .as_str()
+                        .unwrap_or("INFO")
+                        .to_string(),
+                    message: json_value["message"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    fields: Self::extract_fields(&json_value),
+                };
+                self.entries.push(entry);
+            }
+        }
+        Ok(())
+    }
+
+    fn extract_fields(json: &Value) -> HashMap<String, Value> {
+        let mut fields = HashMap::new();
+        if let Some(obj) = json.as_object() {
+            for (key, value) in obj {
+                if !["timestamp", "level", "message"].contains(&key.as_str()) {
+                    fields.insert(key.clone(), value.clone());
                 }
             }
         }
-
-        Ok(entries)
+        fields
     }
 
-    fn matches_filter(&self, entry: &LogEntry) -> bool {
-        if let Some(min_level) = &self.min_level {
-            let entry_level = entry.level.to_lowercase();
-            let level_priority = |l: &str| match l {
-                "error" => 4,
-                "warn" => 3,
-                "info" => 2,
-                "debug" => 1,
-                _ => 0,
-            };
+    pub fn filter_by_level(&self, level: &str) -> Vec<&LogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.level == level)
+            .collect()
+    }
 
-            if level_priority(&entry_level) < level_priority(min_level) {
-                return false;
-            }
+    pub fn count_by_level(&self) -> HashMap<String, usize> {
+        let mut counts = HashMap::new();
+        for entry in &self.entries {
+            *counts.entry(entry.level.clone()).or_insert(0) += 1;
         }
+        counts
+    }
 
-        if let Some(term) = &self.search_term {
-            if !entry.message.to_lowercase().contains(term) {
-                return false;
-            }
+    pub fn search_messages(&self, keyword: &str) -> Vec<&LogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.message.contains(keyword))
+            .collect()
+    }
+
+    pub fn get_summary(&self) -> String {
+        let total = self.entries.len();
+        let counts = self.count_by_level();
+        let mut summary = format!("Total entries: {}\n", total);
+        for (level, count) in counts {
+            summary.push_str(&format!("{}: {}\n", level, count));
         }
-
-        true
+        summary
     }
 }
 
-fn format_entry(entry: &LogEntry) -> String {
-    let extra_str = if entry.extra.is_empty() {
-        String::new()
-    } else {
-        format!(" | {:?}", entry.extra)
-    };
-    
-    format!(
-        "[{}] {}: {}{}",
-        entry.timestamp.format("%Y-%m-%d %H:%M:%S"),
-        entry.level.to_uppercase(),
-        entry.message,
-        extra_str
-    )
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let parser = LogParser::new()
-        .with_min_level("info")
-        .with_search("connection");
+    #[test]
+    fn test_parser() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let log_data = r#"{"timestamp":"2024-01-15T10:30:00Z","level":"ERROR","message":"Database connection failed","service":"api","error_code":500}
+{"timestamp":"2024-01-15T10:31:00Z","level":"INFO","message":"Request processed","service":"web","duration_ms":45}
+{"timestamp":"2024-01-15T10:32:00Z","level":"WARN","message":"High memory usage","service":"cache","memory_mb":2048}"#;
+        write!(temp_file, "{}", log_data).unwrap();
 
-    let entries = parser.parse_file("app.log")?;
-    
-    for entry in entries {
-        println!("{}", format_entry(&entry));
+        let mut parser = LogParser::new();
+        parser.load_from_file(temp_file.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(parser.entries.len(), 3);
+        assert_eq!(parser.filter_by_level("ERROR").len(), 1);
+        assert_eq!(parser.search_messages("memory").len(), 1);
+        
+        let counts = parser.count_by_level();
+        assert_eq!(counts.get("ERROR"), Some(&1));
+        assert_eq!(counts.get("INFO"), Some(&1));
+        assert_eq!(counts.get("WARN"), Some(&1));
     }
-
-    Ok(())
 }
