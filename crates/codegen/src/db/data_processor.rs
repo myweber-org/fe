@@ -255,4 +255,133 @@ mod tests {
         assert_eq!(variance, 66.66666666666667);
         assert_eq!(std_dev, 8.16496580927726);
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+pub struct DataProcessor {
+    data: Vec<f64>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor { data: Vec::new() }
+    }
+
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            
+            let value: f64 = line.trim().parse()?;
+            self.data.push(value);
+        }
+        
+        Ok(())
+    }
+
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.data.is_empty() {
+            return None;
+        }
+        
+        let sum: f64 = self.data.iter().sum();
+        Some(sum / self.data.len() as f64)
+    }
+
+    pub fn calculate_standard_deviation(&self) -> Option<f64> {
+        if self.data.len() < 2 {
+            return None;
+        }
+        
+        let mean = self.calculate_mean()?;
+        let variance: f64 = self.data
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / (self.data.len() - 1) as f64;
+        
+        Some(variance.sqrt())
+    }
+
+    pub fn get_summary(&self) -> SummaryStatistics {
+        SummaryStatistics {
+            count: self.data.len(),
+            mean: self.calculate_mean(),
+            std_dev: self.calculate_standard_deviation(),
+            min: self.data.iter().copied().reduce(f64::min),
+            max: self.data.iter().copied().reduce(f64::max),
+        }
+    }
+
+    pub fn filter_by_threshold(&self, threshold: f64) -> Vec<f64> {
+        self.data
+            .iter()
+            .filter(|&&x| x >= threshold)
+            .copied()
+            .collect()
+    }
+}
+
+pub struct SummaryStatistics {
+    pub count: usize,
+    pub mean: Option<f64>,
+    pub std_dev: Option<f64>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+impl std::fmt::Display for SummaryStatistics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Data Summary:")?;
+        writeln!(f, "  Count: {}", self.count)?;
+        
+        if let Some(mean) = self.mean {
+            writeln!(f, "  Mean: {:.4}", mean)?;
+        }
+        
+        if let Some(std_dev) = self.std_dev {
+            writeln!(f, "  Standard Deviation: {:.4}", std_dev)?;
+        }
+        
+        if let Some(min) = self.min {
+            writeln!(f, "  Minimum: {:.4}", min)?;
+        }
+        
+        if let Some(max) = self.max {
+            writeln!(f, "  Maximum: {:.4}", max)?;
+        }
+        
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "10.5\n20.3\n15.7\n25.1\n18.9").unwrap();
+        
+        processor.load_from_csv(temp_file.path()).unwrap();
+        
+        let summary = processor.get_summary();
+        assert_eq!(summary.count, 5);
+        assert!(summary.mean.unwrap() > 18.0);
+        assert!(summary.std_dev.unwrap() > 0.0);
+        
+        let filtered = processor.filter_by_threshold(20.0);
+        assert_eq!(filtered.len(), 2);
+    }
 }
