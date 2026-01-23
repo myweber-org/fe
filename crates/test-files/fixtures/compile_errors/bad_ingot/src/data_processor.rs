@@ -341,3 +341,158 @@ mod tests {
         assert!(stats.2 > 0.0);
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    data: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+pub struct ValidationRule {
+    field_name: String,
+    min_value: f64,
+    max_value: f64,
+    required: bool,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            data: HashMap::new(),
+            validation_rules: Vec::new(),
+        }
+    }
+
+    pub fn add_dataset(&mut self, name: String, values: Vec<f64>) -> Result<(), String> {
+        if name.is_empty() {
+            return Err("Dataset name cannot be empty".to_string());
+        }
+        
+        if values.is_empty() {
+            return Err("Dataset values cannot be empty".to_string());
+        }
+
+        self.data.insert(name, values);
+        Ok(())
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn validate_data(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        
+        for rule in &self.validation_rules {
+            if let Some(data_values) = self.data.get(&rule.field_name) {
+                if rule.required && data_values.is_empty() {
+                    errors.push(format!("Field '{}' is required but empty", rule.field_name));
+                    continue;
+                }
+
+                for (index, &value) in data_values.iter().enumerate() {
+                    if value < rule.min_value || value > rule.max_value {
+                        errors.push(format!(
+                            "Value {} at index {} in field '{}' is outside valid range [{}, {}]",
+                            value, index, rule.field_name, rule.min_value, rule.max_value
+                        ));
+                    }
+                }
+            } else if rule.required {
+                errors.push(format!("Required field '{}' not found in dataset", rule.field_name));
+            }
+        }
+        
+        errors
+    }
+
+    pub fn normalize_data(&mut self, field_name: &str) -> Result<Vec<f64>, String> {
+        let values = match self.data.get_mut(field_name) {
+            Some(v) => v,
+            None => return Err(format!("Field '{}' not found in dataset", field_name)),
+        };
+
+        if values.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        
+        if (max - min).abs() < f64::EPSILON {
+            return Ok(vec![0.0; values.len()]);
+        }
+
+        let normalized: Vec<f64> = values
+            .iter()
+            .map(|&v| (v - min) / (max - min))
+            .collect();
+
+        self.data.insert(field_name.to_string(), normalized.clone());
+        Ok(normalized)
+    }
+
+    pub fn calculate_statistics(&self, field_name: &str) -> Result<Statistics, String> {
+        let values = match self.data.get(field_name) {
+            Some(v) => v,
+            None => return Err(format!("Field '{}' not found in dataset", field_name)),
+        };
+
+        if values.is_empty() {
+            return Ok(Statistics::default());
+        }
+
+        let sum: f64 = values.iter().sum();
+        let mean = sum / values.len() as f64;
+        
+        let variance: f64 = values
+            .iter()
+            .map(|&v| (v - mean).powi(2))
+            .sum::<f64>() / values.len() as f64;
+        
+        let std_dev = variance.sqrt();
+        
+        let sorted_values = {
+            let mut sorted = values.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            sorted
+        };
+        
+        let median = if values.len() % 2 == 0 {
+            let mid = values.len() / 2;
+            (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
+        } else {
+            sorted_values[values.len() / 2]
+        };
+
+        Ok(Statistics {
+            mean,
+            median,
+            std_dev,
+            min: *sorted_values.first().unwrap(),
+            max: *sorted_values.last().unwrap(),
+            count: values.len(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Statistics {
+    pub mean: f64,
+    pub median: f64,
+    pub std_dev: f64,
+    pub min: f64,
+    pub max: f64,
+    pub count: usize,
+}
+
+impl ValidationRule {
+    pub fn new(field_name: String, min_value: f64, max_value: f64, required: bool) -> Self {
+        ValidationRule {
+            field_name,
+            min_value,
+            max_value,
+            required,
+        }
+    }
+}
