@@ -1,68 +1,75 @@
+use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
 
-use std::collections::HashSet;
-
-pub struct DataCleaner {
-    processed_items: HashSet<String>,
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    age: u8,
+    email: String,
 }
 
-impl DataCleaner {
-    pub fn new() -> Self {
-        DataCleaner {
-            processed_items: HashSet::new(),
-        }
-    }
+fn clean_email(email: &str) -> String {
+    email.trim().to_lowercase()
+}
 
-    pub fn clean_string(&mut self, input: &str) -> Option<String> {
-        let normalized = input.trim().to_lowercase();
+fn validate_age(age: u8) -> Option<u8> {
+    if age > 0 && age < 120 {
+        Some(age)
+    } else {
+        None
+    }
+}
+
+pub fn clean_csv_data(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(Path::new(input_path))?;
+    let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(input_file);
+    
+    let output_file = File::create(Path::new(output_path))?;
+    let mut wtr = WriterBuilder::new().has_headers(true).from_writer(output_file);
+
+    for result in rdr.deserialize() {
+        let mut record: Record = result?;
         
-        if normalized.is_empty() {
-            return None;
+        record.email = clean_email(&record.email);
+        record.name = record.name.trim().to_string();
+        
+        if let Some(valid_age) = validate_age(record.age) {
+            record.age = valid_age;
+            wtr.serialize(&record)?;
         }
-
-        if self.processed_items.contains(&normalized) {
-            return None;
-        }
-
-        self.processed_items.insert(normalized.clone());
-        Some(normalized)
     }
-
-    pub fn process_batch(&mut self, inputs: &[&str]) -> Vec<String> {
-        inputs
-            .iter()
-            .filter_map(|&input| self.clean_string(input))
-            .collect()
-    }
-
-    pub fn get_unique_count(&self) -> usize {
-        self.processed_items.len()
-    }
-
-    pub fn reset(&mut self) {
-        self.processed_items.clear();
-    }
+    
+    wtr.flush()?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
 
     #[test]
-    fn test_clean_string() {
-        let mut cleaner = DataCleaner::new();
+    fn test_clean_csv_data() {
+        let input_data = "id,name,age,email\n1, John Doe ,25, JOHN@EXAMPLE.COM\n2,Jane Smith,150,jane@example.com\n";
+        let mut input_file = NamedTempFile::new().unwrap();
+        write!(input_file, "{}", input_data).unwrap();
         
-        assert_eq!(cleaner.clean_string("  HELLO  "), Some("hello".to_string()));
-        assert_eq!(cleaner.clean_string("hello"), None);
-        assert_eq!(cleaner.clean_string("   "), None);
-    }
-
-    #[test]
-    fn test_process_batch() {
-        let mut cleaner = DataCleaner::new();
-        let inputs = vec!["Apple", "apple", "BANANA", "  banana  ", ""];
-        let result = cleaner.process_batch(&inputs);
+        let output_file = NamedTempFile::new().unwrap();
         
-        assert_eq!(result.len(), 2);
-        assert_eq!(cleaner.get_unique_count(), 2);
+        let result = clean_csv_data(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap()
+        );
+        
+        assert!(result.is_ok());
+        
+        let output_content = std::fs::read_to_string(output_file.path()).unwrap();
+        assert!(output_content.contains("john@example.com"));
+        assert!(!output_content.contains("150"));
     }
 }
