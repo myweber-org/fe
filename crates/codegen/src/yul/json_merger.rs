@@ -89,3 +89,66 @@ mod tests {
         assert_eq!(parsed["user"]["settings"]["language"], "en");
     }
 }
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::path::Path;
+
+use serde_json::{Map, Value};
+
+pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents)?;
+
+        let json_value: Value = serde_json::from_str(&contents)?;
+
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                merged_map.insert(key, value);
+            }
+        } else {
+            return Err("Each JSON file must contain a JSON object".into());
+        }
+    }
+
+    Ok(Value::Object(merged_map))
+}
+
+pub fn merge_json_with_overwrite(
+    file_paths: &[&str],
+    conflict_resolver: fn(&str, &Value, &Value) -> Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut merged_map: HashMap<String, Value> = HashMap::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents)?;
+
+        let json_value: Value = serde_json::from_str(&contents)?;
+
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                if let Some(existing) = merged_map.get(&key) {
+                    let resolved = conflict_resolver(&key, existing, &value);
+                    merged_map.insert(key, resolved);
+                } else {
+                    merged_map.insert(key, value);
+                }
+            }
+        } else {
+            return Err("Each JSON file must contain a JSON object".into());
+        }
+    }
+
+    let final_map: Map<String, Value> = merged_map.into_iter().collect();
+    Ok(Value::Object(final_map))
+}
