@@ -133,3 +133,65 @@ mod tests {
         assert!(cleaner.validate_all());
     }
 }
+use std::collections::HashSet;
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
+
+pub fn remove_duplicates(input_path: &str, output_path: &str) -> Result<usize, Box<dyn Error>> {
+    let input_file = File::open(Path::new(input_path))?;
+    let reader = BufReader::new(input_file);
+    
+    let mut seen_lines = HashSet::new();
+    let mut unique_lines = Vec::new();
+    let mut duplicate_count = 0;
+    
+    for line_result in reader.lines() {
+        let line = line_result?;
+        
+        if seen_lines.contains(&line) {
+            duplicate_count += 1;
+        } else {
+            seen_lines.insert(line.clone());
+            unique_lines.push(line);
+        }
+    }
+    
+    let mut output_file = File::create(Path::new(output_path))?;
+    
+    for line in unique_lines {
+        writeln!(output_file, "{}", line)?;
+    }
+    
+    Ok(duplicate_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_remove_duplicates() {
+        let input_content = "id,name,value\n1,test,100\n2,example,200\n1,test,100\n3,sample,300\n2,example,200";
+        
+        let input_file = NamedTempFile::new().unwrap();
+        fs::write(input_file.path(), input_content).unwrap();
+        
+        let output_file = NamedTempFile::new().unwrap();
+        
+        let duplicates = remove_duplicates(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap()
+        ).unwrap();
+        
+        assert_eq!(duplicates, 2);
+        
+        let output_content = fs::read_to_string(output_file.path()).unwrap();
+        let expected = "id,name,value\n1,test,100\n2,example,200\n3,sample,300\n";
+        
+        assert_eq!(output_content, expected);
+    }
+}
