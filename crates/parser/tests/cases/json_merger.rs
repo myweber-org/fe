@@ -1,53 +1,50 @@
-use serde_json::{Map, Value};
 
-pub fn merge_json(base: &mut Value, update: &Value) {
-    match (base, update) {
-        (Value::Object(base_map), Value::Object(update_map)) => {
-            for (key, update_value) in update_map {
-                if let Some(base_value) = base_map.get_mut(key) {
-                    merge_json(base_value, update_value);
-                } else {
-                    base_map.insert(key.clone(), update_value.clone());
+use serde_json::{json, Value};
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files(file_paths: &[&str], output_path: &str) -> Result<(), String> {
+    let mut merged_array = Vec::new();
+    let mut seen_ids = HashSet::new();
+
+    for file_path in file_paths {
+        let path = Path::new(file_path);
+        if !path.exists() {
+            return Err(format!("File not found: {}", file_path));
+        }
+
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {}", file_path, e))?;
+
+        let json_value: Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Invalid JSON in {}: {}", file_path, e))?;
+
+        match json_value {
+            Value::Array(arr) => {
+                for item in arr {
+                    if let Some(id) = item.get("id").and_then(Value::as_str) {
+                        if !seen_ids.contains(id) {
+                            seen_ids.insert(id.to_string());
+                            merged_array.push(item);
+                        }
+                    } else {
+                        merged_array.push(item);
+                    }
                 }
             }
-        }
-        (base, update) => {
-            *base = update.clone();
+            Value::Object(obj) => merged_array.push(json!(obj)),
+            _ => return Err(format!("JSON root must be array or object in {}", file_path)),
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
+    let output_json = json!(merged_array);
+    let pretty_json = serde_json::to_string_pretty(&output_json)
+        .map_err(|e| format!("Failed to serialize output JSON: {}", e))?;
 
-    #[test]
-    fn test_merge_json() {
-        let mut base = json!({
-            "name": "Alice",
-            "age": 30,
-            "address": {
-                "city": "London",
-                "postcode": "SW1"
-            }
-        });
+    fs::write(output_path, pretty_json)
+        .map_err(|e| format!("Failed to write output file: {}", e))?;
 
-        let update = json!({
-            "age": 31,
-            "address": {
-                "postcode": "NW1",
-                "country": "UK"
-            },
-            "hobbies": ["reading"]
-        });
-
-        merge_json(&mut base, &update);
-
-        assert_eq!(base["age"], 31);
-        assert_eq!(base["address"]["city"], "London");
-        assert_eq!(base["address"]["postcode"], "NW1");
-        assert_eq!(base["address"]["country"], "UK");
-        assert_eq!(base["hobbies"][0], "reading");
-    }
+    println!("Successfully merged {} files into {}", file_paths.len(), output_path);
+    Ok(())
 }
