@@ -114,4 +114,125 @@ mod tests {
         assert!(found.is_some());
         assert_eq!(found.unwrap().value, 37.8);
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Self {
+        DataRecord { id, value, category }
+    }
+}
+
+pub fn parse_csv_file(file_path: &str) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    let mut line_number = 0;
+
+    for line in reader.lines() {
+        line_number += 1;
+        let line_content = line?;
+        
+        if line_content.trim().is_empty() || line_content.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = line_content.split(',').collect();
+        if parts.len() != 3 {
+            return Err(format!("Invalid format at line {}", line_number).into());
+        }
+
+        let id = parts[0].parse::<u32>()
+            .map_err(|_| format!("Invalid ID at line {}", line_number))?;
+        
+        let value = parts[1].parse::<f64>()
+            .map_err(|_| format!("Invalid value at line {}", line_number))?;
+        
+        let category = parts[2].trim().to_string();
+        
+        if category.is_empty() {
+            return Err(format!("Empty category at line {}", line_number).into());
+        }
+
+        records.push(DataRecord::new(id, value, category));
+    }
+
+    Ok(records)
+}
+
+pub fn validate_records(records: &[DataRecord]) -> Vec<&DataRecord> {
+    records.iter()
+        .filter(|record| record.value >= 0.0 && record.value <= 1000.0)
+        .collect()
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
+    if records.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let count = records.len() as f64;
+    let mean = sum / count;
+
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+
+    let std_dev = variance.sqrt();
+
+    (mean, variance, std_dev)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_parse_valid_csv() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1,100.5,CategoryA").unwrap();
+        writeln!(temp_file, "2,200.3,CategoryB").unwrap();
+        
+        let records = parse_csv_file(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].id, 1);
+        assert_eq!(records[1].category, "CategoryB");
+    }
+
+    #[test]
+    fn test_validate_records() {
+        let records = vec![
+            DataRecord::new(1, 500.0, "Test".to_string()),
+            DataRecord::new(2, 1500.0, "Test".to_string()),
+            DataRecord::new(3, -10.0, "Test".to_string()),
+        ];
+        
+        let valid = validate_records(&records);
+        assert_eq!(valid.len(), 1);
+        assert_eq!(valid[0].id, 1);
+    }
+
+    #[test]
+    fn test_calculate_statistics() {
+        let records = vec![
+            DataRecord::new(1, 10.0, "A".to_string()),
+            DataRecord::new(2, 20.0, "B".to_string()),
+            DataRecord::new(3, 30.0, "C".to_string()),
+        ];
+        
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        assert_eq!(mean, 20.0);
+        assert_eq!(variance, 66.66666666666667);
+        assert_eq!(std_dev, 8.16496580927726);
+    }
 }
