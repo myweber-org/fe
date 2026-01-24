@@ -1,63 +1,116 @@
 
-use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidInput(String),
+    TransformationFailed(String),
+    ValidationError(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
+            ProcessingError::TransformationFailed(msg) => write!(f, "Transformation failed: {}", msg),
+            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
 
 pub struct DataProcessor {
-    cache: HashMap<String, Vec<f64>>,
+    threshold: f64,
+    max_items: usize,
 }
 
 impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor {
-            cache: HashMap::new(),
+    pub fn new(threshold: f64, max_items: usize) -> Result<Self, ProcessingError> {
+        if threshold < 0.0 || threshold > 1.0 {
+            return Err(ProcessingError::InvalidInput(
+                "Threshold must be between 0.0 and 1.0".to_string(),
+            ));
         }
-    }
-
-    pub fn process_numeric_data(&mut self, key: &str, values: &[f64]) -> Result<Vec<f64>, String> {
-        if values.is_empty() {
-            return Err("Empty data provided".to_string());
+        if max_items == 0 {
+            return Err(ProcessingError::InvalidInput(
+                "Max items must be greater than zero".to_string(),
+            ));
         }
-
-        if values.iter().any(|&x| !x.is_finite()) {
-            return Err("Invalid numeric values detected".to_string());
-        }
-
-        let processed: Vec<f64> = values
-            .iter()
-            .map(|&x| x * 2.0)
-            .filter(|&x| x > 0.0)
-            .collect();
-
-        if processed.is_empty() {
-            return Err("All values filtered out".to_string());
-        }
-
-        self.cache.insert(key.to_string(), processed.clone());
-        Ok(processed)
-    }
-
-    pub fn get_cached_data(&self, key: &str) -> Option<&Vec<f64>> {
-        self.cache.get(key)
-    }
-
-    pub fn calculate_statistics(&self, key: &str) -> Option<(f64, f64, f64)> {
-        self.cache.get(key).map(|data| {
-            let sum: f64 = data.iter().sum();
-            let count = data.len() as f64;
-            let mean = sum / count;
-            
-            let variance: f64 = data.iter()
-                .map(|&x| (x - mean).powi(2))
-                .sum::<f64>() / count;
-            
-            let std_dev = variance.sqrt();
-            
-            (mean, variance, std_dev)
+        Ok(Self {
+            threshold,
+            max_items,
         })
     }
-}
 
-pub fn validate_input_range(values: &[f64], min: f64, max: f64) -> bool {
-    values.iter().all(|&x| x >= min && x <= max)
+    pub fn process_data(&self, input: &[f64]) -> Result<Vec<f64>, ProcessingError> {
+        if input.len() > self.max_items {
+            return Err(ProcessingError::ValidationError(format!(
+                "Input length {} exceeds maximum allowed {}",
+                input.len(),
+                self.max_items
+            )));
+        }
+
+        let filtered: Vec<f64> = input
+            .iter()
+            .filter(|&&value| value >= self.threshold)
+            .cloned()
+            .collect();
+
+        if filtered.is_empty() {
+            return Err(ProcessingError::TransformationFailed(
+                "No items passed the threshold filter".to_string(),
+            ));
+        }
+
+        let normalized = self.normalize_values(&filtered)?;
+        Ok(normalized)
+    }
+
+    fn normalize_values(&self, values: &[f64]) -> Result<Vec<f64>, ProcessingError> {
+        let max_value = values
+            .iter()
+            .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+        if max_value <= 0.0 {
+            return Err(ProcessingError::TransformationFailed(
+                "Cannot normalize non-positive values".to_string(),
+            ));
+        }
+
+        let normalized: Vec<f64> = values
+            .iter()
+            .map(|&value| value / max_value)
+            .collect();
+
+        Ok(normalized)
+    }
+
+    pub fn calculate_statistics(&self, data: &[f64]) -> Result<(f64, f64, f64), ProcessingError> {
+        if data.is_empty() {
+            return Err(ProcessingError::InvalidInput(
+                "Cannot calculate statistics for empty dataset".to_string(),
+            ));
+        }
+
+        let sum: f64 = data.iter().sum();
+        let mean = sum / data.len() as f64;
+
+        let variance: f64 = data
+            .iter()
+            .map(|&value| {
+                let diff = value - mean;
+                diff * diff
+            })
+            .sum::<f64>()
+            / data.len() as f64;
+
+        let std_dev = variance.sqrt();
+
+        Ok((mean, variance, std_dev))
+    }
 }
 
 #[cfg(test)]
@@ -65,323 +118,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_data_processing() {
-        let mut processor = DataProcessor::new();
-        let data = vec![1.0, 2.0, 3.0, 4.0];
-        
-        let result = processor.process_numeric_data("test", &data);
-        assert!(result.is_ok());
-        
-        let processed = result.unwrap();
-        assert_eq!(processed, vec![2.0, 4.0, 6.0, 8.0]);
+    fn test_processor_creation() {
+        let processor = DataProcessor::new(0.5, 100).unwrap();
+        assert_eq!(processor.threshold, 0.5);
+        assert_eq!(processor.max_items, 100);
     }
 
     #[test]
-    fn test_invalid_data() {
-        let mut processor = DataProcessor::new();
-        let data = vec![f64::NAN, 1.0];
-        
-        let result = processor.process_numeric_data("invalid", &data);
+    fn test_invalid_threshold() {
+        let result = DataProcessor::new(1.5, 100);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_statistics_calculation() {
-        let mut processor = DataProcessor::new();
-        let data = vec![1.0, 2.0, 3.0, 4.0];
-        
-        processor.process_numeric_data("stats", &data).unwrap();
-        let stats = processor.calculate_statistics("stats");
-        
-        assert!(stats.is_some());
-        let (mean, variance, std_dev) = stats.unwrap();
-        
-        assert!((mean - 5.0).abs() < 0.001);
-        assert!((variance - 5.0).abs() < 0.001);
-        assert!((std_dev - 2.236).abs() < 0.001);
-    }
-}use csv::{Reader, Writer};
-use serde::{Deserialize, Serialize};
-use std::error::Error;
-use std::fs::File;
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    active: bool,
-}
-
-pub fn process_data(input_path: &str, output_path: &str, min_value: f64) -> Result<(), Box<dyn Error>> {
-    let input_file = File::open(input_path)?;
-    let mut reader = Reader::from_reader(input_file);
-    
-    let output_file = File::create(output_path)?;
-    let mut writer = Writer::from_writer(output_file);
-
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        
-        if record.value >= min_value && record.active {
-            writer.serialize(&record)?;
-        }
-    }
-
-    writer.flush()?;
-    Ok(())
-}
-
-pub fn calculate_statistics(path: &str) -> Result<(f64, f64, usize), Box<dyn Error>> {
-    let file = File::open(path)?;
-    let mut reader = Reader::from_reader(file);
-    
-    let mut sum = 0.0;
-    let mut count = 0;
-    let mut max_value = f64::MIN;
-
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        
-        if record.active {
-            sum += record.value;
-            count += 1;
-            max_value = max_value.max(record.value);
-        }
-    }
-
-    let average = if count > 0 { sum / count as f64 } else { 0.0 };
-    Ok((average, max_value, count))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::NamedTempFile;
-
-    #[test]
     fn test_process_data() {
-        let input_data = "id,name,value,active\n1,test1,10.5,true\n2,test2,5.0,false\n3,test3,15.0,true\n";
-        let input_file = NamedTempFile::new().unwrap();
-        std::fs::write(input_file.path(), input_data).unwrap();
-        
-        let output_file = NamedTempFile::new().unwrap();
-        
-        process_data(
-            input_file.path().to_str().unwrap(),
-            output_file.path().to_str().unwrap(),
-            10.0
-        ).unwrap();
-        
-        let output = std::fs::read_to_string(output_file.path()).unwrap();
-        assert!(output.contains("test1"));
-        assert!(!output.contains("test2"));
-        assert!(output.contains("test3"));
-    }
-}use csv::Reader;
-use serde::Deserialize;
-use std::error::Error;
-use std::fs::File;
-
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    active: bool,
-}
-
-pub fn process_data_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
-    let file = File::open(file_path)?;
-    let mut rdr = Reader::from_reader(file);
-    let mut records = Vec::new();
-
-    for result in rdr.deserialize() {
-        let record: Record = result?;
-        if record.value >= 0.0 {
-            records.push(record);
-        }
-    }
-
-    Ok(records)
-}
-
-pub fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
-    let count = records.len() as f64;
-    if count == 0.0 {
-        return (0.0, 0.0, 0.0);
-    }
-
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let mean = sum / count;
-    let variance: f64 = records.iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>() / count;
-    let std_dev = variance.sqrt();
-
-    (mean, variance, std_dev)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::NamedTempFile;
-    use std::io::Write;
-
-    #[test]
-    fn test_process_valid_data() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,name,value,active").unwrap();
-        writeln!(temp_file, "1,Test1,10.5,true").unwrap();
-        writeln!(temp_file, "2,Test2,-5.0,false").unwrap();
-        writeln!(temp_file, "3,Test3,15.0,true").unwrap();
-
-        let records = process_data_file(temp_file.path().to_str().unwrap()).unwrap();
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0].name, "Test1");
-        assert_eq!(records[1].value, 15.0);
+        let processor = DataProcessor::new(0.3, 10).unwrap();
+        let input = vec![0.1, 0.4, 0.5, 0.2, 0.8];
+        let result = processor.process_data(&input).unwrap();
+        assert_eq!(result.len(), 3);
     }
 
     #[test]
     fn test_calculate_statistics() {
-        let records = vec![
-            Record { id: 1, name: "A".to_string(), value: 10.0, active: true },
-            Record { id: 2, name: "B".to_string(), value: 20.0, active: false },
-            Record { id: 3, name: "C".to_string(), value: 30.0, active: true },
-        ];
-
-        let (mean, variance, std_dev) = calculate_statistics(&records);
-        assert_eq!(mean, 20.0);
-        assert_eq!(variance, 66.66666666666667);
-        assert_eq!(std_dev, 8.16496580927726);
-    }
-}use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
-
-pub struct DataProcessor {
-    data: Vec<f64>,
-}
-
-impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor { data: Vec::new() }
-    }
-
-    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            
-            let value: f64 = line.trim().parse()?;
-            self.data.push(value);
-        }
-        
-        Ok(())
-    }
-
-    pub fn calculate_mean(&self) -> Option<f64> {
-        if self.data.is_empty() {
-            return None;
-        }
-        
-        let sum: f64 = self.data.iter().sum();
-        Some(sum / self.data.len() as f64)
-    }
-
-    pub fn calculate_standard_deviation(&self) -> Option<f64> {
-        if self.data.len() < 2 {
-            return None;
-        }
-        
-        let mean = self.calculate_mean()?;
-        let variance: f64 = self.data
-            .iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / (self.data.len() - 1) as f64;
-        
-        Some(variance.sqrt())
-    }
-
-    pub fn get_summary(&self) -> SummaryStatistics {
-        SummaryStatistics {
-            count: self.data.len(),
-            mean: self.calculate_mean(),
-            std_dev: self.calculate_standard_deviation(),
-            min: self.data.iter().copied().reduce(f64::min),
-            max: self.data.iter().copied().reduce(f64::max),
-        }
-    }
-
-    pub fn filter_by_threshold(&self, threshold: f64) -> Vec<f64> {
-        self.data
-            .iter()
-            .filter(|&&x| x >= threshold)
-            .copied()
-            .collect()
-    }
-}
-
-pub struct SummaryStatistics {
-    pub count: usize,
-    pub mean: Option<f64>,
-    pub std_dev: Option<f64>,
-    pub min: Option<f64>,
-    pub max: Option<f64>,
-}
-
-impl std::fmt::Display for SummaryStatistics {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "Data Summary:")?;
-        writeln!(f, "  Count: {}", self.count)?;
-        
-        if let Some(mean) = self.mean {
-            writeln!(f, "  Mean: {:.4}", mean)?;
-        }
-        
-        if let Some(std_dev) = self.std_dev {
-            writeln!(f, "  Standard Deviation: {:.4}", std_dev)?;
-        }
-        
-        if let Some(min) = self.min {
-            writeln!(f, "  Minimum: {:.4}", min)?;
-        }
-        
-        if let Some(max) = self.max {
-            writeln!(f, "  Maximum: {:.4}", max)?;
-        }
-        
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_data_processing() {
-        let mut processor = DataProcessor::new();
-        
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "10.5\n20.3\n15.7\n25.1\n18.9").unwrap();
-        
-        processor.load_from_csv(temp_file.path()).unwrap();
-        
-        let summary = processor.get_summary();
-        assert_eq!(summary.count, 5);
-        assert!(summary.mean.unwrap() > 18.0);
-        assert!(summary.std_dev.unwrap() > 0.0);
-        
-        let filtered = processor.filter_by_threshold(20.0);
-        assert_eq!(filtered.len(), 2);
+        let processor = DataProcessor::new(0.0, 100).unwrap();
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let (mean, variance, std_dev) = processor.calculate_statistics(&data).unwrap();
+        assert_eq!(mean, 3.0);
+        assert_eq!(variance, 2.0);
+        assert_eq!(std_dev, 2.0_f64.sqrt());
     }
 }
