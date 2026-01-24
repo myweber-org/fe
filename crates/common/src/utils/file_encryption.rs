@@ -1,86 +1,73 @@
 
-use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, Key, Nonce
-};
-use argon2::{
-    password_hash::{
-        rand_core::OsRng,
-        PasswordHash, PasswordHasher, PasswordVerifier, SaltString
-    },
-    Argon2
-};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
-const NONCE_SIZE: usize = 12;
-const SALT_SIZE: usize = 16;
-
-pub struct FileEncryptor {
-    cipher: Aes256Gcm,
-}
-
-impl FileEncryptor {
-    pub fn new(password: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
-        
-        let password_hash = argon2.hash_password(password.as_bytes(), &salt)?;
-        let key_bytes = password_hash.hash.unwrap().as_bytes();
-        
-        let key = Key::<Aes256Gcm>::from_slice(&key_bytes[..32]);
-        let cipher = Aes256Gcm::new(key);
-        
-        Ok(FileEncryptor { cipher })
-    }
-
-    pub fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        let mut file = fs::File::open(input_path)?;
-        let mut plaintext = Vec::new();
-        file.read_to_end(&mut plaintext)?;
-
-        let mut nonce_bytes = [0u8; NONCE_SIZE];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-
-        let ciphertext = self.cipher.encrypt(nonce, plaintext.as_ref())
-            .map_err(|e| format!("Encryption failed: {}", e))?;
-
-        let mut output = fs::File::create(output_path)?;
-        output.write_all(&nonce_bytes)?;
-        output.write_all(&ciphertext)?;
-
-        Ok(())
-    }
-
-    pub fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        let mut file = fs::File::open(input_path)?;
-        let mut encrypted_data = Vec::new();
-        file.read_to_end(&mut encrypted_data)?;
-
-        if encrypted_data.len() < NONCE_SIZE {
-            return Err("File too short to contain nonce".into());
-        }
-
-        let nonce = Nonce::from_slice(&encrypted_data[..NONCE_SIZE]);
-        let ciphertext = &encrypted_data[NONCE_SIZE..];
-
-        let plaintext = self.cipher.decrypt(nonce, ciphertext)
-            .map_err(|e| format!("Decryption failed: {}", e))?;
-
-        fs::write(output_path, plaintext)?;
-        Ok(())
+pub fn xor_cipher(data: &mut [u8], key: &[u8]) {
+    for (i, byte) in data.iter_mut().enumerate() {
+        *byte ^= key[i % key.len()];
     }
 }
 
-pub fn generate_key_file(password: &str, output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
+pub fn encrypt_file(input_path: &Path, output_path: &Path, key: &str) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
     
-    let password_hash = argon2.hash_password(password.as_bytes(), &salt)?;
-    let key_material = password_hash.to_string();
+    xor_cipher(&mut buffer, key.as_bytes());
     
-    fs::write(output_path, key_material)?;
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&buffer)?;
+    
     Ok(())
+}
+
+pub fn decrypt_file(input_path: &Path, output_path: &Path, key: &str) -> io::Result<()> {
+    encrypt_file(input_path, output_path, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+
+    #[test]
+    fn test_xor_cipher_symmetry() {
+        let key = "secret_key";
+        let original_data = b"Hello, World!";
+        let mut encrypted = original_data.to_vec();
+        
+        xor_cipher(&mut encrypted, key.as_bytes());
+        assert_ne!(encrypted.as_slice(), original_data);
+        
+        xor_cipher(&mut encrypted, key.as_bytes());
+        assert_eq!(encrypted.as_slice(), original_data);
+    }
+
+    #[test]
+    fn test_file_encryption() -> io::Result<()> {
+        let key = "test_key_123";
+        let original_content = b"Confidential data for encryption test";
+        
+        let mut input_file = NamedTempFile::new()?;
+        input_file.write_all(original_content)?;
+        
+        let output_file = NamedTempFile::new()?;
+        
+        encrypt_file(input_file.path(), output_file.path(), key)?;
+        
+        let mut encrypted_content = Vec::new();
+        fs::File::open(output_file.path())?.read_to_end(&mut encrypted_content)?;
+        assert_ne!(encrypted_content.as_slice(), original_content);
+        
+        let decrypted_file = NamedTempFile::new()?;
+        decrypt_file(output_file.path(), decrypted_file.path(), key)?;
+        
+        let mut decrypted_content = Vec::new();
+        fs::File::open(decrypted_file.path())?.read_to_end(&mut decrypted_content)?;
+        assert_eq!(decrypted_content.as_slice(), original_content);
+        
+        Ok(())
+    }
 }
