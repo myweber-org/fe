@@ -313,4 +313,83 @@ mod tests {
         let result = processor.process_numeric_data("invalid", &invalid_data);
         assert!(result.is_err());
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub struct DataProcessor {
+    pub valid_records: Vec<String>,
+    pub invalid_records: Vec<String>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            valid_records: Vec::new(),
+            invalid_records: Vec::new(),
+        }
+    }
+
+    pub fn process_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+
+        for (line_number, line) in reader.lines().enumerate() {
+            let line = line?;
+            if self.validate_record(&line) {
+                self.valid_records.push(line);
+            } else {
+                self.invalid_records.push(format!("Line {}: {}", line_number + 1, line));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_record(&self, record: &str) -> bool {
+        let fields: Vec<&str> = record.split(',').collect();
+        
+        if fields.len() != 3 {
+            return false;
+        }
+
+        if fields[0].trim().is_empty() {
+            return false;
+        }
+
+        if !fields[1].contains('@') {
+            return false;
+        }
+
+        fields[2].parse::<u32>().is_ok()
+    }
+
+    pub fn get_statistics(&self) -> (usize, usize) {
+        (self.valid_records.len(), self.invalid_records.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "John Doe,john@example.com,30").unwrap();
+        writeln!(temp_file, "Jane Smith,jane@example.com,25").unwrap();
+        writeln!(temp_file, "Invalid Data,invalid-email,not-a-number").unwrap();
+        writeln!(temp_file, "Missing Age,test@example.com,").unwrap();
+        
+        let result = processor.process_csv(temp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+        
+        let stats = processor.get_statistics();
+        assert_eq!(stats.0, 2);
+        assert_eq!(stats.1, 2);
+    }
 }
