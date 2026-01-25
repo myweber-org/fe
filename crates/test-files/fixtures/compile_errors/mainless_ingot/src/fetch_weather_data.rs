@@ -123,4 +123,118 @@ mod tests {
         assert_eq!(data.main.humidity, 65);
         assert_eq!(data.weather[0].description, "clear sky");
     }
+}use reqwest;
+use serde::Deserialize;
+use std::time::Duration;
+use thiserror::Error;
+
+#[derive(Debug, Deserialize)]
+pub struct WeatherData {
+    temperature: f64,
+    humidity: f64,
+    wind_speed: f64,
+    description: String,
+}
+
+#[derive(Error, Debug)]
+pub enum WeatherError {
+    #[error("Network request failed: {0}")]
+    RequestFailed(#[from] reqwest::Error),
+    #[error("API returned error: {0}")]
+    ApiError(String),
+    #[error("Invalid response format")]
+    InvalidFormat,
+}
+
+pub struct WeatherClient {
+    client: reqwest::Client,
+    api_key: String,
+    base_url: String,
+}
+
+impl WeatherClient {
+    pub fn new(api_key: String) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("Failed to create HTTP client");
+        
+        Self {
+            client,
+            api_key,
+            base_url: "https://api.weather.example.com".to_string(),
+        }
+    }
+
+    pub async fn fetch_weather(&self, city: &str, retries: u8) -> Result<WeatherData, WeatherError> {
+        let mut last_error = None;
+        
+        for attempt in 0..=retries {
+            match self.try_fetch(city).await {
+                Ok(data) => return Ok(data),
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < retries {
+                        tokio::time::sleep(Duration::from_millis(200 * 2u64.pow(attempt as u32))).await;
+                        continue;
+                    }
+                }
+            }
+        }
+        
+        Err(last_error.unwrap())
+    }
+
+    async fn try_fetch(&self, city: &str) -> Result<WeatherData, WeatherError> {
+        let url = format!("{}/v1/weather?city={}&api_key={}", self.base_url, city, self.api_key);
+        
+        let response = self.client
+            .get(&url)
+            .send()
+            .await?;
+        
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(WeatherError::ApiError(error_text));
+        }
+        
+        let json: serde_json::Value = response.json().await?;
+        
+        Ok(WeatherData {
+            temperature: json["main"]["temp"].as_f64().ok_or(WeatherError::InvalidFormat)?,
+            humidity: json["main"]["humidity"].as_f64().ok_or(WeatherError::InvalidFormat)?,
+            wind_speed: json["wind"]["speed"].as_f64().ok_or(WeatherError::InvalidFormat)?,
+            description: json["weather"][0]["description"]
+                .as_str()
+                .ok_or(WeatherError::InvalidFormat)?
+                .to_string(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockito::{mock, Matcher};
+
+    #[tokio::test]
+    async fn test_fetch_weather_success() {
+        let _m = mock("GET", "/v1/weather")
+            .match_query(Matcher::Regex(r"city=London&api_key=.+".into()))
+            .with_status(200)
+            .with_body(r#"{
+                "main": {"temp": 15.5, "humidity": 65.0},
+                "wind": {"speed": 5.2},
+                "weather": [{"description": "clear sky"}]
+            }"#)
+            .create();
+        
+        let client = WeatherClient::new("test_key".to_string());
+        let result = client.fetch_weather("London", 3).await;
+        
+        assert!(result.is_ok());
+        let data = result.unwrap();
+        assert_eq!(data.temperature, 15.5);
+        assert_eq!(data.description, "clear sky");
+    }
 }
