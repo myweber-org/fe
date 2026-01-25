@@ -216,3 +216,186 @@ mod tests {
         assert_eq!(processed[1].2, "BETA");
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidData(String),
+    TransformationFailed(String),
+    ValidationError(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
+            ProcessingError::TransformationFailed(msg) => write!(f, "Transformation failed: {}", msg),
+            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    config: ProcessorConfig,
+    cache: HashMap<u32, DataRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessorConfig {
+    pub max_value: f64,
+    pub min_value: f64,
+    pub allowed_tags: Vec<String>,
+}
+
+impl DataProcessor {
+    pub fn new(config: ProcessorConfig) -> Self {
+        DataProcessor {
+            config,
+            cache: HashMap::new(),
+        }
+    }
+
+    pub fn process_record(&mut self, record: DataRecord) -> Result<DataRecord, ProcessingError> {
+        self.validate_record(&record)?;
+        
+        let transformed = self.transform_record(record)?;
+        
+        self.cache.insert(transformed.id, transformed.clone());
+        
+        Ok(transformed)
+    }
+
+    fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.name.is_empty() {
+            return Err(ProcessingError::ValidationError(
+                "Record name cannot be empty".to_string(),
+            ));
+        }
+
+        if record.value < self.config.min_value || record.value > self.config.max_value {
+            return Err(ProcessingError::ValidationError(format!(
+                "Value {} is outside allowed range [{}, {}]",
+                record.value, self.config.min_value, self.config.max_value
+            )));
+        }
+
+        for tag in &record.tags {
+            if !self.config.allowed_tags.contains(tag) {
+                return Err(ProcessingError::ValidationError(format!(
+                    "Tag '{}' is not in allowed tags list",
+                    tag
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn transform_record(&self, mut record: DataRecord) -> Result<DataRecord, ProcessingError> {
+        record.name = record.name.trim().to_string();
+        
+        if record.name.is_empty() {
+            return Err(ProcessingError::TransformationFailed(
+                "Name became empty after trimming".to_string(),
+            ));
+        }
+
+        record.value = (record.value * 100.0).round() / 100.0;
+
+        record.tags.sort();
+        record.tags.dedup();
+
+        Ok(record)
+    }
+
+    pub fn get_cached_record(&self, id: u32) -> Option<&DataRecord> {
+        self.cache.get(&id)
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn cache_size(&self) -> usize {
+        self.cache.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_config() -> ProcessorConfig {
+        ProcessorConfig {
+            max_value: 1000.0,
+            min_value: 0.0,
+            allowed_tags: vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_valid_record_processing() {
+        let config = create_test_config();
+        let mut processor = DataProcessor::new(config);
+
+        let record = DataRecord {
+            id: 1,
+            name: "  Test Record  ".to_string(),
+            value: 123.456,
+            tags: vec!["alpha".to_string(), "beta".to_string()],
+        };
+
+        let result = processor.process_record(record);
+        assert!(result.is_ok());
+
+        let processed = result.unwrap();
+        assert_eq!(processed.name, "Test Record");
+        assert_eq!(processed.value, 123.46);
+        assert_eq!(processed.tags, vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(processor.cache_size(), 1);
+    }
+
+    #[test]
+    fn test_invalid_value() {
+        let config = create_test_config();
+        let mut processor = DataProcessor::new(config);
+
+        let record = DataRecord {
+            id: 2,
+            name: "Invalid Value".to_string(),
+            value: 1500.0,
+            tags: vec!["alpha".to_string()],
+        };
+
+        let result = processor.process_record(record);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_tag() {
+        let config = create_test_config();
+        let mut processor = DataProcessor::new(config);
+
+        let record = DataRecord {
+            id: 3,
+            name: "Invalid Tag".to_string(),
+            value: 500.0,
+            tags: vec!["delta".to_string()],
+        };
+
+        let result = processor.process_record(record);
+        assert!(result.is_err());
+    }
+}
