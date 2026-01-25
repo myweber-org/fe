@@ -40,8 +40,8 @@ impl Config {
         self.values.get(key)
     }
 
-    pub fn get_or_default(&self, key: &str, default: &str) -> String {
-        self.values.get(key).map(|s| s.as_str()).unwrap_or(default).to_string()
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.values.contains_key(key)
     }
 }
 
@@ -54,22 +54,29 @@ mod tests {
     #[test]
     fn test_basic_parsing() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "DATABASE_URL=postgres://localhost/db").unwrap();
-        writeln!(file, "# This is a comment").unwrap();
+        writeln!(file, "HOST=localhost").unwrap();
         writeln!(file, "PORT=8080").unwrap();
+        writeln!(file, "# This is a comment").unwrap();
+        writeln!(file, "").unwrap();
+        writeln!(file, "TIMEOUT=30").unwrap();
 
         let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("DATABASE_URL"), Some(&"postgres://localhost/db".to_string()));
+        assert_eq!(config.get("HOST"), Some(&"localhost".to_string()));
         assert_eq!(config.get("PORT"), Some(&"8080".to_string()));
+        assert_eq!(config.get("TIMEOUT"), Some(&"30".to_string()));
+        assert_eq!(config.get("MISSING"), None);
     }
 
     #[test]
     fn test_env_substitution() {
-        env::set_var("API_KEY", "secret123");
+        env::set_var("DB_PASSWORD", "secret123");
+        
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "KEY=$API_KEY").unwrap();
+        writeln!(file, "PASSWORD=$DB_PASSWORD").unwrap();
+        writeln!(file, "NORMAL=value").unwrap();
 
         let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("KEY"), Some(&"secret123".to_string()));
+        assert_eq!(config.get("PASSWORD"), Some(&"secret123".to_string()));
+        assert_eq!(config.get("NORMAL"), Some(&"value".to_string()));
     }
 }
