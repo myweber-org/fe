@@ -1,211 +1,168 @@
 
-use std::collections::HashMap;
+use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fmt;
+use std::fs::File;
+use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DataRecord {
     pub id: u32,
     pub name: String,
     pub value: f64,
     pub category: String,
+    pub active: bool,
 }
 
-#[derive(Debug)]
-pub enum DataError {
-    InvalidId,
-    InvalidValue,
-    MissingField,
-    DuplicateRecord,
-}
-
-impl fmt::Display for DataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DataError::InvalidId => write!(f, "Invalid record ID"),
-            DataError::InvalidValue => write!(f, "Invalid numeric value"),
-            DataError::MissingField => write!(f, "Required field is missing"),
-            DataError::DuplicateRecord => write!(f, "Duplicate record detected"),
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64, category: String, active: bool) -> Self {
+        Self {
+            id,
+            name,
+            value,
+            category,
+            active,
         }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        !self.name.is_empty() && self.value >= 0.0 && !self.category.is_empty()
+    }
+
+    pub fn format_summary(&self) -> String {
+        format!("ID: {}, Name: {}, Value: {:.2}", self.id, self.name, self.value)
     }
 }
 
-impl Error for DataError {}
-
 pub struct DataProcessor {
-    records: HashMap<u32, DataRecord>,
-    category_stats: HashMap<String, CategoryStats>,
-}
-
-#[derive(Debug, Clone)]
-pub struct CategoryStats {
-    pub total_value: f64,
-    pub record_count: usize,
-    pub average_value: f64,
+    records: Vec<DataRecord>,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
-        DataProcessor {
-            records: HashMap::new(),
-            category_stats: HashMap::new(),
+        Self {
+            records: Vec::new(),
         }
     }
 
-    pub fn add_record(&mut self, record: DataRecord) -> Result<(), DataError> {
-        if record.id == 0 {
-            return Err(DataError::InvalidId);
+    pub fn add_record(&mut self, record: DataRecord) {
+        if record.is_valid() {
+            self.records.push(record);
         }
+    }
 
-        if record.value < 0.0 || record.value.is_nan() || record.value.is_infinite() {
-            return Err(DataError::InvalidValue);
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
+        let file = File::open(path)?;
+        let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+
+        for result in rdr.deserialize() {
+            let record: DataRecord = result?;
+            if record.is_valid() {
+                self.records.push(record);
+            }
         }
-
-        if record.name.trim().is_empty() || record.category.trim().is_empty() {
-            return Err(DataError::MissingField);
-        }
-
-        if self.records.contains_key(&record.id) {
-            return Err(DataError::DuplicateRecord);
-        }
-
-        self.records.insert(record.id, record.clone());
-        self.update_category_stats(&record);
 
         Ok(())
     }
 
-    pub fn get_record(&self, id: u32) -> Option<&DataRecord> {
-        self.records.get(&id)
+    pub fn save_to_csv<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn Error>> {
+        let file = File::create(path)?;
+        let mut wtr = WriterBuilder::new().has_headers(true).from_writer(file);
+
+        for record in &self.records {
+            wtr.serialize(record)?;
+        }
+
+        wtr.flush()?;
+        Ok(())
     }
 
-    pub fn get_category_stats(&self, category: &str) -> Option<&CategoryStats> {
-        self.category_stats.get(category)
-    }
-
-    pub fn calculate_total_value(&self) -> f64 {
-        self.records.values().map(|r| r.value).sum()
-    }
-
-    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+    pub fn filter_by_category(&self, category: &str) -> Vec<DataRecord> {
         self.records
-            .values()
+            .iter()
             .filter(|r| r.category == category)
+            .cloned()
             .collect()
     }
 
-    pub fn transform_values<F>(&mut self, transform_fn: F)
-    where
-        F: Fn(f64) -> f64,
-    {
-        for record in self.records.values_mut() {
-            record.value = transform_fn(record.value);
-        }
-        self.recalculate_stats();
+    pub fn calculate_total_value(&self) -> f64 {
+        self.records.iter().map(|r| r.value).sum()
     }
 
-    fn update_category_stats(&mut self, record: &DataRecord) {
-        let stats = self
-            .category_stats
-            .entry(record.category.clone())
-            .or_insert(CategoryStats {
-                total_value: 0.0,
-                record_count: 0,
-                average_value: 0.0,
-            });
-
-        stats.total_value += record.value;
-        stats.record_count += 1;
-        stats.average_value = stats.total_value / stats.record_count as f64;
+    pub fn get_active_records(&self) -> Vec<&DataRecord> {
+        self.records.iter().filter(|r| r.active).collect()
     }
 
-    fn recalculate_stats(&mut self) {
-        self.category_stats.clear();
-        for record in self.records.values() {
-            self.update_category_stats(record);
-        }
+    pub fn find_by_id(&self, id: u32) -> Option<&DataRecord> {
+        self.records.iter().find(|r| r.id == id)
     }
-}
 
-impl Default for DataProcessor {
-    fn default() -> Self {
-        Self::new()
+    pub fn count_records(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
+
+    pub fn get_records(&self) -> &[DataRecord] {
+        &self.records
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_add_valid_record() {
-        let mut processor = DataProcessor::new();
-        let record = DataRecord {
-            id: 1,
-            name: "Test Record".to_string(),
-            value: 100.0,
-            category: "Test".to_string(),
-        };
+    fn test_record_validation() {
+        let valid_record = DataRecord::new(1, "Test".to_string(), 10.5, "A".to_string(), true);
+        assert!(valid_record.is_valid());
 
-        assert!(processor.add_record(record).is_ok());
-        assert_eq!(processor.records.len(), 1);
+        let invalid_record = DataRecord::new(2, "".to_string(), -5.0, "".to_string(), false);
+        assert!(!invalid_record.is_valid());
     }
 
     #[test]
-    fn test_add_invalid_record() {
-        let mut processor = DataProcessor::new();
-        let record = DataRecord {
-            id: 0,
-            name: "Invalid".to_string(),
-            value: 50.0,
-            category: "Test".to_string(),
-        };
-
-        assert!(processor.add_record(record).is_err());
-    }
-
-    #[test]
-    fn test_category_stats() {
+    fn test_data_processor_operations() {
         let mut processor = DataProcessor::new();
         
-        let record1 = DataRecord {
-            id: 1,
-            name: "Record 1".to_string(),
-            value: 100.0,
-            category: "CategoryA".to_string(),
-        };
-
-        let record2 = DataRecord {
-            id: 2,
-            name: "Record 2".to_string(),
-            value: 200.0,
-            category: "CategoryA".to_string(),
-        };
-
-        processor.add_record(record1).unwrap();
-        processor.add_record(record2).unwrap();
-
-        let stats = processor.get_category_stats("CategoryA").unwrap();
-        assert_eq!(stats.total_value, 300.0);
-        assert_eq!(stats.record_count, 2);
-        assert_eq!(stats.average_value, 150.0);
+        let record1 = DataRecord::new(1, "Item1".to_string(), 100.0, "CategoryA".to_string(), true);
+        let record2 = DataRecord::new(2, "Item2".to_string(), 200.0, "CategoryB".to_string(), false);
+        
+        processor.add_record(record1.clone());
+        processor.add_record(record2.clone());
+        
+        assert_eq!(processor.count_records(), 2);
+        assert_eq!(processor.calculate_total_value(), 300.0);
+        
+        let active_records = processor.get_active_records();
+        assert_eq!(active_records.len(), 1);
+        assert_eq!(active_records[0].id, 1);
+        
+        let found = processor.find_by_id(1);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "Item1");
     }
 
     #[test]
-    fn test_value_transformation() {
+    fn test_csv_operations() -> Result<(), Box<dyn Error>> {
         let mut processor = DataProcessor::new();
+        let record = DataRecord::new(1, "TestItem".to_string(), 50.0, "TestCat".to_string(), true);
+        processor.add_record(record);
         
-        let record = DataRecord {
-            id: 1,
-            name: "Test".to_string(),
-            value: 10.0,
-            category: "Test".to_string(),
-        };
-
-        processor.add_record(record).unwrap();
-        processor.transform_values(|v| v * 2.0);
-
-        let updated = processor.get_record(1).unwrap();
-        assert_eq!(updated.value, 20.0);
+        let temp_file = NamedTempFile::new()?;
+        let path = temp_file.path();
+        
+        processor.save_to_csv(path)?;
+        
+        let mut new_processor = DataProcessor::new();
+        new_processor.load_from_csv(path)?;
+        
+        assert_eq!(new_processor.count_records(), 1);
+        assert_eq!(new_processor.calculate_total_value(), 50.0);
+        
+        Ok(())
     }
 }
