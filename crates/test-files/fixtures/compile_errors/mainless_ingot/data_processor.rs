@@ -134,3 +134,158 @@ mod tests {
         assert_eq!(filtered.len(), 2);
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ProcessingError {
+    #[error("Invalid input data: {0}")]
+    InvalidInput(String),
+    #[error("Transformation failed: {0}")]
+    TransformationFailed(String),
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: HashMap<String, f64>,
+    pub metadata: Option<HashMap<String, String>>,
+}
+
+impl DataRecord {
+    pub fn validate(&self) -> Result<(), ProcessingError> {
+        if self.id == 0 {
+            return Err(ProcessingError::ValidationError(
+                "ID cannot be zero".to_string(),
+            ));
+        }
+
+        if self.timestamp < 0 {
+            return Err(ProcessingError::ValidationError(
+                "Timestamp cannot be negative".to_string(),
+            ));
+        }
+
+        if self.values.is_empty() {
+            return Err(ProcessingError::ValidationError(
+                "Values cannot be empty".to_string(),
+            ));
+        }
+
+        for (key, value) in &self.values {
+            if key.trim().is_empty() {
+                return Err(ProcessingError::ValidationError(
+                    "Key cannot be empty".to_string(),
+                ));
+            }
+            if !value.is_finite() {
+                return Err(ProcessingError::ValidationError(format!(
+                    "Value for key '{}' must be finite",
+                    key
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn normalize_values(&mut self) -> Result<(), ProcessingError> {
+        let sum: f64 = self.values.values().sum();
+        if sum == 0.0 {
+            return Err(ProcessingError::TransformationFailed(
+                "Cannot normalize zero sum".to_string(),
+            ));
+        }
+
+        for value in self.values.values_mut() {
+            *value /= sum;
+        }
+
+        Ok(())
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        if self.metadata.is_none() {
+            self.metadata = Some(HashMap::new());
+        }
+        if let Some(metadata) = &mut self.metadata {
+            metadata.insert(key, value);
+        }
+    }
+}
+
+pub fn process_records(
+    records: Vec<DataRecord>,
+) -> Result<Vec<DataRecord>, ProcessingError> {
+    let mut processed = Vec::with_capacity(records.len());
+
+    for mut record in records {
+        record.validate()?;
+        record.normalize_values()?;
+        record.add_metadata(
+            "processed_timestamp".to_string(),
+            chrono::Utc::now().timestamp().to_string(),
+        );
+        processed.push(record);
+    }
+
+    Ok(processed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record() {
+        let mut values = HashMap::new();
+        values.insert("temperature".to_string(), 25.5);
+        values.insert("humidity".to_string(), 60.0);
+
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1625097600,
+            values,
+            metadata: None,
+        };
+
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        let values = HashMap::new();
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1625097600,
+            values,
+            metadata: None,
+        };
+
+        assert!(record.validate().is_err());
+    }
+
+    #[test]
+    fn test_normalization() {
+        let mut values = HashMap::new();
+        values.insert("a".to_string(), 10.0);
+        values.insert("b".to_string(), 20.0);
+        values.insert("c".to_string(), 30.0);
+
+        let mut record = DataRecord {
+            id: 1,
+            timestamp: 1625097600,
+            values,
+            metadata: None,
+        };
+
+        assert!(record.normalize_values().is_ok());
+        
+        let sum: f64 = record.values.values().sum();
+        assert!((sum - 1.0).abs() < 0.0001);
+    }
+}
