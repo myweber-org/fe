@@ -352,4 +352,106 @@ mod tests {
         assert_eq!(stats.1, 1);
         assert_eq!(stats.2, Some(10.5));
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug)]
+pub struct DataRecord {
+    id: u32,
+    value: f64,
+    category: String,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Result<Self, String> {
+        if value < 0.0 {
+            return Err("Value cannot be negative".to_string());
+        }
+        if category.is_empty() {
+            return Err("Category cannot be empty".to_string());
+        }
+        Ok(Self { id, value, category })
+    }
+
+    pub fn calculate_score(&self) -> f64 {
+        self.value * 100.0 / (self.id as f64 + 1.0)
+    }
+}
+
+pub fn process_csv_file(file_path: &Path) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+
+    for (line_num, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 3 {
+            return Err(format!("Invalid format at line {}", line_num + 1).into());
+        }
+
+        let id = parts[0].parse::<u32>()?;
+        let value = parts[1].parse::<f64>()?;
+        let category = parts[2].to_string();
+
+        match DataRecord::new(id, value, category) {
+            Ok(record) => records.push(record),
+            Err(e) => eprintln!("Warning: Skipping line {}: {}", line_num + 1, e),
+        }
+    }
+
+    Ok(records)
+}
+
+pub fn analyze_records(records: &[DataRecord]) -> (f64, f64, usize) {
+    if records.is_empty() {
+        return (0.0, 0.0, 0);
+    }
+
+    let total: f64 = records.iter().map(|r| r.value).sum();
+    let avg = total / records.len() as f64;
+    let max = records.iter().map(|r| r.value).fold(0.0, f64::max);
+    let valid_count = records.iter().filter(|r| r.value > 50.0).count();
+
+    (avg, max, valid_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_record_creation() {
+        let record = DataRecord::new(1, 42.5, "test".to_string()).unwrap();
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 42.5);
+        assert_eq!(record.category, "test");
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        assert!(DataRecord::new(1, -5.0, "test".to_string()).is_err());
+        assert!(DataRecord::new(1, 5.0, "".to_string()).is_err());
+    }
+
+    #[test]
+    fn test_process_csv() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1,100.0,category_a").unwrap();
+        writeln!(temp_file, "2,75.5,category_b").unwrap();
+        writeln!(temp_file, "# Comment line").unwrap();
+        writeln!(temp_file, "3,invalid,category_c").unwrap();
+
+        let records = process_csv_file(temp_file.path()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].category, "category_a");
+    }
 }
