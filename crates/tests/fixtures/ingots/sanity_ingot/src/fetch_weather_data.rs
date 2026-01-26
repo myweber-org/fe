@@ -70,3 +70,56 @@ async fn main() {
         Err(e) => eprintln!("Error: {}", e),
     }
 }
+use reqwest;
+use serde::Deserialize;
+use std::error::Error;
+
+const API_KEY: &str = "YOUR_API_KEY_HERE";
+const BASE_URL: &str = "https://api.openweathermap.org/data/2.5/weather";
+
+#[derive(Debug, Deserialize)]
+pub struct WeatherData {
+    name: String,
+    main: MainData,
+    weather: Vec<WeatherInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MainData {
+    temp: f64,
+    feels_like: f64,
+    humidity: u8,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WeatherInfo {
+    description: String,
+}
+
+pub async fn get_weather(city: &str) -> Result<WeatherData, Box<dyn Error>> {
+    let url = format!("{}?q={}&appid={}&units=metric", BASE_URL, city, API_KEY);
+    let response = reqwest::get(&url).await?;
+    
+    if response.status().is_success() {
+        let weather_data: WeatherData = response.json().await?;
+        Ok(weather_data)
+    } else {
+        Err(format!("Failed to fetch weather data: {}", response.status()).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[tokio::test]
+    async fn test_weather_fetch() {
+        let result = get_weather("London").await;
+        assert!(result.is_ok());
+        
+        if let Ok(data) = result {
+            assert!(!data.name.is_empty());
+            assert!(!data.weather.is_empty());
+        }
+    }
+}
