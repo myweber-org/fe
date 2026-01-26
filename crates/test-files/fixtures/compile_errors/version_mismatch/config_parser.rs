@@ -127,4 +127,80 @@ mod tests {
         let loaded_config = AppConfig::load_from_file(temp_file.path()).unwrap();
         assert_eq!(loaded_config.server.port, 8080);
     }
+}use std::collections::HashMap;
+use std::env;
+use regex::Regex;
+
+pub struct Config {
+    values: HashMap<String, String>,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        Config {
+            values: HashMap::new(),
+        }
+    }
+
+    pub fn load_from_str(&mut self, content: &str) -> Result<(), String> {
+        let env_var_regex = Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
+        
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            
+            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
+            if parts.len() != 2 {
+                return Err(format!("Invalid line format: {}", line));
+            }
+            
+            let key = parts[0].trim().to_string();
+            let mut value = parts[1].trim().to_string();
+            
+            // Replace environment variable placeholders
+            value = env_var_regex.replace_all(&value, |caps: &regex::Captures| {
+                let var_name = &caps[1];
+                env::var(var_name).unwrap_or_else(|_| String::new())
+            }).to_string();
+            
+            self.values.insert(key, value);
+        }
+        
+        Ok(())
+    }
+    
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.values.get(key)
+    }
+    
+    pub fn get_with_default(&self, key: &str, default: &str) -> String {
+        self.values.get(key).map(|s| s.as_str()).unwrap_or(default).to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_basic_parsing() {
+        let mut config = Config::new();
+        let content = "host=localhost\nport=8080\n";
+        config.load_from_str(content).unwrap();
+        
+        assert_eq!(config.get("host"), Some(&"localhost".to_string()));
+        assert_eq!(config.get("port"), Some(&"8080".to_string()));
+    }
+    
+    #[test]
+    fn test_env_substitution() {
+        env::set_var("DB_HOST", "postgresql");
+        let mut config = Config::new();
+        let content = "database=${DB_HOST}://localhost";
+        config.load_from_str(content).unwrap();
+        
+        assert_eq!(config.get("database"), Some(&"postgresql://localhost".to_string()));
+    }
 }
