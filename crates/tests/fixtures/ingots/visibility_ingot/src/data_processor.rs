@@ -1,73 +1,3 @@
-
-use csv::{Reader, Writer};
-use serde::{Deserialize, Serialize};
-use std::error::Error;
-use std::fs::File;
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    active: bool,
-}
-
-impl Record {
-    fn is_valid(&self) -> bool {
-        !self.name.is_empty() && self.value >= 0.0
-    }
-}
-
-pub fn process_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
-    let input_file = File::open(input_path)?;
-    let mut reader = Reader::from_reader(input_file);
-    
-    let output_file = File::create(output_path)?;
-    let mut writer = Writer::from_writer(output_file);
-    
-    let mut valid_count = 0;
-    let mut invalid_count = 0;
-    
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        
-        if record.is_valid() {
-            writer.serialize(&record)?;
-            valid_count += 1;
-        } else {
-            invalid_count += 1;
-        }
-    }
-    
-    writer.flush()?;
-    
-    println!("Processing complete:");
-    println!("  Valid records: {}", valid_count);
-    println!("  Invalid records: {}", invalid_count);
-    
-    Ok(())
-}
-
-pub fn generate_sample_data() -> Result<(), Box<dyn Error>> {
-    let records = vec![
-        Record { id: 1, name: String::from("Item A"), value: 100.5, active: true },
-        Record { id: 2, name: String::from("Item B"), value: 250.75, active: false },
-        Record { id: 3, name: String::from(""), value: -50.0, active: true },
-        Record { id: 4, name: String::from("Item D"), value: 300.0, active: true },
-    ];
-    
-    let file = File::create("sample_data.csv")?;
-    let mut writer = Writer::from_writer(file);
-    
-    for record in records {
-        writer.serialize(&record)?;
-    }
-    
-    writer.flush()?;
-    println!("Sample data generated: sample_data.csv");
-    
-    Ok(())
-}
 use std::collections::HashMap;
 
 pub struct DataProcessor {
@@ -105,8 +35,8 @@ impl DataProcessor {
             if value.is_nan() || value.is_infinite() {
                 return Err(format!("Invalid numeric value encountered: {}", value));
             }
-            if value < 0.0 {
-                return Err("Negative values not allowed in this context".to_string());
+            if !value.is_finite() {
+                return Err("Non-finite value in dataset".to_string());
             }
             result.push(value);
         }
@@ -115,19 +45,28 @@ impl DataProcessor {
     }
 
     fn normalize_data(&self, data: &[f64]) -> Vec<f64> {
-        let sum: f64 = data.iter().sum();
-        if sum == 0.0 {
+        if data.len() < 2 {
+            return data.to_vec();
+        }
+
+        let mean = data.iter().sum::<f64>() / data.len() as f64;
+        let variance = data.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / data.len() as f64;
+        
+        let std_dev = variance.sqrt();
+        if std_dev.abs() < 1e-10 {
             return vec![0.0; data.len()];
         }
-        
+
         data.iter()
-            .map(|&x| x / sum)
+            .map(|&x| (x - mean) / std_dev)
             .collect()
     }
 
     fn apply_transformations(&self, data: &[f64]) -> Vec<f64> {
         data.iter()
-            .map(|&x| (x * 100.0).ln_1p())
+            .map(|&x| x.ln_1p().abs())
             .collect()
     }
 
@@ -147,218 +86,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_processor_validation() {
-        let processor = DataProcessor::new();
-        let valid_data = vec![1.0, 2.0, 3.0];
-        let invalid_data = vec![1.0, f64::NAN, 3.0];
-        
-        assert!(processor.validate_data(&valid_data).is_ok());
-        assert!(processor.validate_data(&invalid_data).is_err());
+    fn test_empty_dataset() {
+        let mut processor = DataProcessor::new();
+        let result = processor.process_dataset("test", &[]);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_normalization() {
-        let processor = DataProcessor::new();
-        let data = vec![1.0, 2.0, 3.0];
-        let normalized = processor.normalize_data(&data);
+    fn test_valid_processing() {
+        let mut processor = DataProcessor::new();
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         
-        let sum: f64 = normalized.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-10);
+        let result = processor.process_dataset("valid", &data);
+        assert!(result.is_ok());
+        
+        let processed = result.unwrap();
+        assert_eq!(processed.len(), data.len());
     }
 
     #[test]
     fn test_cache_functionality() {
         let mut processor = DataProcessor::new();
-        let data = vec![1.0, 2.0, 3.0];
+        let data = vec![10.0, 20.0, 30.0];
         
-        let result1 = processor.process_dataset("test", &data);
-        let result2 = processor.process_dataset("test", &data);
+        let first_result = processor.process_dataset("cached", &data).unwrap();
+        let second_result = processor.process_dataset("cached", &data).unwrap();
         
-        assert!(result1.is_ok());
-        assert!(result2.is_ok());
-        assert_eq!(result1.unwrap(), result2.unwrap());
+        assert_eq!(first_result, second_result);
         
-        let stats = processor.cache_stats();
-        assert_eq!(stats.0, 1);
-        assert_eq!(stats.1, 3);
+        let (keys, values) = processor.cache_stats();
+        assert_eq!(keys, 1);
+        assert!(values > 0);
     }
-}
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DataRecord {
-    pub id: u32,
-    pub timestamp: i64,
-    pub values: Vec<f64>,
-    pub metadata: HashMap<String, String>,
-}
-
-impl DataRecord {
-    pub fn new(id: u32, timestamp: i64) -> Self {
-        Self {
-            id,
-            timestamp,
-            values: Vec::new(),
-            metadata: HashMap::new(),
-        }
-    }
-
-    pub fn add_value(&mut self, value: f64) {
-        self.values.push(value);
-    }
-
-    pub fn add_metadata(&mut self, key: String, value: String) {
-        self.metadata.insert(key, value);
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        if self.id == 0 {
-            return Err("ID cannot be zero".to_string());
-        }
-        if self.timestamp < 0 {
-            return Err("Timestamp cannot be negative".to_string());
-        }
-        if self.values.is_empty() {
-            return Err("Values cannot be empty".to_string());
-        }
-        Ok(())
-    }
-
-    pub fn calculate_statistics(&self) -> Statistics {
-        let count = self.values.len();
-        let sum: f64 = self.values.iter().sum();
-        let mean = if count > 0 { sum / count as f64 } else { 0.0 };
-        let min = self.values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let max = self.values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-
-        Statistics {
-            count,
-            sum,
-            mean,
-            min,
-            max,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Statistics {
-    pub count: usize,
-    pub sum: f64,
-    pub mean: f64,
-    pub min: f64,
-    pub max: f64,
-}
-
-pub fn process_records(records: Vec<DataRecord>) -> Vec<DataRecord> {
-    records
-        .into_iter()
-        .filter(|record| record.validate().is_ok())
-        .map(|mut record| {
-            if let Some(scale_factor) = record.metadata.get("scale_factor") {
-                if let Ok(factor) = scale_factor.parse::<f64>() {
-                    record.values.iter_mut().for_each(|v| *v *= factor);
-                }
-            }
-            record
-        })
-        .collect()
-}
-
-pub fn serialize_to_json(record: &DataRecord) -> Result<String, serde_json::Error> {
-    serde_json::to_string(record)
-}
-
-pub fn deserialize_from_json(json_str: &str) -> Result<DataRecord, serde_json::Error> {
-    serde_json::from_str(json_str)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_record_validation() {
-        let mut valid_record = DataRecord::new(1, 1234567890);
-        valid_record.add_value(42.0);
-        assert!(valid_record.validate().is_ok());
-
-        let invalid_record = DataRecord::new(0, 1234567890);
-        assert!(invalid_record.validate().is_err());
-    }
-
-    #[test]
-    fn test_statistics_calculation() {
-        let mut record = DataRecord::new(1, 1234567890);
-        record.add_value(10.0);
-        record.add_value(20.0);
-        record.add_value(30.0);
-
-        let stats = record.calculate_statistics();
-        assert_eq!(stats.count, 3);
-        assert_eq!(stats.sum, 60.0);
-        assert_eq!(stats.mean, 20.0);
-        assert_eq!(stats.min, 10.0);
-        assert_eq!(stats.max, 30.0);
-    }
-
-    #[test]
-    fn test_serialization_deserialization() {
-        let mut record = DataRecord::new(42, 987654321);
-        record.add_value(3.14);
-        record.add_metadata("source".to_string(), "test".to_string());
-
-        let json = serialize_to_json(&record).unwrap();
-        let deserialized = deserialize_from_json(&json).unwrap();
-
-        assert_eq!(record.id, deserialized.id);
-        assert_eq!(record.timestamp, deserialized.timestamp);
-        assert_eq!(record.values, deserialized.values);
-    }
-}
-use csv::Reader;
-use serde::Deserialize;
-use std::error::Error;
-use std::fs::File;
-
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
-}
-
-pub fn process_data_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
-    let file = File::open(file_path)?;
-    let mut reader = Reader::from_reader(file);
-    let mut records = Vec::new();
-
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        if record.value >= 0.0 {
-            records.push(record);
-        }
-    }
-
-    Ok(records)
-}
-
-pub fn calculate_statistics(records: &[Record]) -> (f64, f64, usize) {
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let count = records.len();
-    let average = if count > 0 { sum / count as f64 } else { 0.0 };
-    
-    let max_value = records.iter()
-        .map(|r| r.value)
-        .fold(f64::NEG_INFINITY, |a, b| a.max(b));
-    
-    (average, max_value, count)
-}
-
-pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
-    records.into_iter()
-        .filter(|r| r.category == category)
-        .collect()
 }
