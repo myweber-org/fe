@@ -782,4 +782,103 @@ mod tests {
         assert_eq!(top_categories[0].0, "category_a");
         assert_eq!(top_categories[0].1, 2);
     }
+}use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+impl Record {
+    fn validate(&self) -> Result<(), String> {
+        if self.name.is_empty() {
+            return Err("Name cannot be empty".to_string());
+        }
+        if self.value < 0.0 {
+            return Err("Value must be non-negative".to_string());
+        }
+        Ok(())
+    }
+}
+
+pub fn process_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let path = Path::new(input_path);
+    if !path.exists() {
+        return Err("Input file does not exist".into());
+    }
+
+    let mut reader = Reader::from_path(input_path)?;
+    let mut writer = Writer::from_path(output_path)?;
+
+    let mut valid_count = 0;
+    let mut invalid_count = 0;
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        match record.validate() {
+            Ok(_) => {
+                writer.serialize(&record)?;
+                valid_count += 1;
+            }
+            Err(err) => {
+                eprintln!("Invalid record {}: {}", record.id, err);
+                invalid_count += 1;
+            }
+        }
+    }
+
+    writer.flush()?;
+    
+    println!("Processing complete:");
+    println!("  Valid records: {}", valid_count);
+    println!("  Invalid records: {}", invalid_count);
+    
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = Record {
+            id: 1,
+            name: "Test".to_string(),
+            value: 10.5,
+            active: true,
+        };
+        assert!(valid_record.validate().is_ok());
+
+        let invalid_record = Record {
+            id: 2,
+            name: "".to_string(),
+            value: -5.0,
+            active: false,
+        };
+        assert!(invalid_record.validate().is_err());
+    }
+
+    #[test]
+    fn test_csv_processing() {
+        let test_input = "test_input.csv";
+        let test_output = "test_output.csv";
+        
+        let csv_data = "id,name,value,active\n1,Alice,100.5,true\n2,Bob,-50.0,false\n3,,75.0,true\n";
+        fs::write(test_input, csv_data).unwrap();
+
+        let result = process_csv(test_input, test_output);
+        assert!(result.is_ok());
+
+        fs::remove_file(test_input).unwrap();
+        fs::remove_file(test_output).unwrap();
+    }
 }
