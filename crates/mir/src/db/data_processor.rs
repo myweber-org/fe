@@ -1,99 +1,110 @@
 
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    data: Vec<f64>,
+    validators: HashMap<String, Box<dyn Fn(&str) -> bool>>,
+    transformers: HashMap<String, Box<dyn Fn(String) -> String>>,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
-        DataProcessor { data: Vec::new() }
+        DataProcessor {
+            validators: HashMap::new(),
+            transformers: HashMap::new(),
+        }
     }
 
-    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
+    pub fn register_validator(&mut self, name: &str, validator: Box<dyn Fn(&str) -> bool>) {
+        self.validators.insert(name.to_string(), validator);
+    }
 
-        for line in reader.lines() {
-            let line = line?;
-            if let Ok(value) = line.trim().parse::<f64>() {
-                self.data.push(value);
+    pub fn register_transformer(&mut self, name: &str, transformer: Box<dyn Fn(String) -> String>) {
+        self.transformers.insert(name.to_string(), transformer);
+    }
+
+    pub fn validate(&self, name: &str, data: &str) -> bool {
+        self.validators
+            .get(name)
+            .map(|validator| validator(data))
+            .unwrap_or(false)
+    }
+
+    pub fn transform(&self, name: &str, data: String) -> Option<String> {
+        self.transformers
+            .get(name)
+            .map(|transformer| transformer(data))
+    }
+
+    pub fn process_pipeline(&self, data: String, steps: Vec<(&str, &str)>) -> Result<String, String> {
+        let mut current_data = data;
+
+        for (operation, name) in steps {
+            match operation {
+                "validate" => {
+                    if !self.validate(name, &current_data) {
+                        return Err(format!("Validation '{}' failed for data: {}", name, current_data));
+                    }
+                }
+                "transform" => {
+                    current_data = self.transform(name, current_data)
+                        .ok_or_else(|| format!("Transformer '{}' not found", name))?;
+                }
+                _ => return Err(format!("Unknown operation: {}", operation)),
             }
         }
 
-        Ok(())
+        Ok(current_data)
     }
+}
 
-    pub fn calculate_mean(&self) -> Option<f64> {
-        if self.data.is_empty() {
-            return None;
-        }
+pub fn create_default_processor() -> DataProcessor {
+    let mut processor = DataProcessor::new();
 
-        let sum: f64 = self.data.iter().sum();
-        Some(sum / self.data.len() as f64)
-    }
+    processor.register_validator("non_empty", Box::new(|s| !s.trim().is_empty()));
+    processor.register_validator("is_numeric", Box::new(|s| s.chars().all(|c| c.is_ascii_digit())));
+    processor.register_validator("is_alpha", Box::new(|s| s.chars().all(|c| c.is_ascii_alphabetic())));
 
-    pub fn calculate_standard_deviation(&self) -> Option<f64> {
-        if self.data.len() < 2 {
-            return None;
-        }
+    processor.register_transformer("to_uppercase", Box::new(|s| s.to_uppercase()));
+    processor.register_transformer("to_lowercase", Box::new(|s| s.to_lowercase()));
+    processor.register_transformer("trim_spaces", Box::new(|s| s.trim().to_string()));
+    processor.register_transformer("reverse_string", Box::new(|s| s.chars().rev().collect()));
 
-        let mean = self.calculate_mean()?;
-        let variance: f64 = self.data
-            .iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / (self.data.len() - 1) as f64;
-
-        Some(variance.sqrt())
-    }
-
-    pub fn get_data_count(&self) -> usize {
-        self.data.len()
-    }
-
-    pub fn add_data_point(&mut self, value: f64) {
-        self.data.push(value);
-    }
-
-    pub fn clear_data(&mut self) {
-        self.data.clear();
-    }
+    processor
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_data_processor() {
-        let mut processor = DataProcessor::new();
-        
-        processor.add_data_point(10.0);
-        processor.add_data_point(20.0);
-        processor.add_data_point(30.0);
-        
-        assert_eq!(processor.get_data_count(), 3);
-        assert_eq!(processor.calculate_mean(), Some(20.0));
-        
-        let std_dev = processor.calculate_standard_deviation();
-        assert!(std_dev.is_some());
-        assert!((std_dev.unwrap() - 10.0).abs() < 0.0001);
+    fn test_validation() {
+        let processor = create_default_processor();
+        assert!(processor.validate("non_empty", "test"));
+        assert!(!processor.validate("non_empty", "   "));
+        assert!(processor.validate("is_numeric", "12345"));
+        assert!(!processor.validate("is_numeric", "123a"));
     }
 
     #[test]
-    fn test_csv_loading() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "15.5\n25.5\n35.5").unwrap();
+    fn test_transformation() {
+        let processor = create_default_processor();
+        assert_eq!(processor.transform("to_uppercase", "hello".to_string()), Some("HELLO".to_string()));
+        assert_eq!(processor.transform("reverse_string", "abc".to_string()), Some("cba".to_string()));
+    }
+
+    #[test]
+    fn test_pipeline() {
+        let processor = create_default_processor();
+        let steps = vec![
+            ("validate", "non_empty"),
+            ("transform", "to_uppercase"),
+            ("transform", "reverse_string"),
+        ];
         
-        let mut processor = DataProcessor::new();
-        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
+        let result = processor.process_pipeline("hello".to_string(), steps);
+        assert_eq!(result, Ok("OLLEH".to_string()));
         
-        assert!(result.is_ok());
-        assert_eq!(processor.get_data_count(), 3);
-        assert_eq!(processor.calculate_mean(), Some(25.5));
+        let invalid_result = processor.process_pipeline("   ".to_string(), vec![("validate", "non_empty")]);
+        assert!(invalid_result.is_err());
     }
 }
