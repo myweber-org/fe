@@ -1,129 +1,137 @@
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
 
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
 pub struct DataRecord {
     pub id: u32,
-    pub value: f64,
-    pub category: String,
+    pub timestamp: i64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
 }
 
-pub struct DataProcessor {
-    records: Vec<DataRecord>,
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    InvalidTimestamp,
+    EmptyValues,
+    MetadataKeyTooLong,
 }
 
-impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor {
-            records: Vec::new(),
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "ID must be greater than zero"),
+            ValidationError::InvalidTimestamp => write!(f, "Timestamp cannot be negative"),
+            ValidationError::EmptyValues => write!(f, "Values array cannot be empty"),
+            ValidationError::MetadataKeyTooLong => write!(f, "Metadata key exceeds maximum length"),
         }
     }
+}
 
-    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let mut count = 0;
+impl Error for ValidationError {}
 
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line?;
-            
-            if line_num == 0 {
-                continue;
-            }
-
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() != 3 {
-                continue;
-            }
-
-            let id = match parts[0].parse::<u32>() {
-                Ok(id) => id,
-                Err(_) => continue,
-            };
-
-            let value = match parts[1].parse::<f64>() {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-
-            let category = parts[2].trim().to_string();
-            
-            if category.is_empty() {
-                continue;
-            }
-
-            self.records.push(DataRecord {
-                id,
-                value,
-                category,
-            });
-            
-            count += 1;
+impl DataRecord {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.id == 0 {
+            return Err(ValidationError::InvalidId);
         }
-
-        Ok(count)
-    }
-
-    pub fn calculate_average(&self) -> Option<f64> {
-        if self.records.is_empty() {
-            return None;
+        
+        if self.timestamp < 0 {
+            return Err(ValidationError::InvalidTimestamp);
         }
-
-        let sum: f64 = self.records.iter().map(|r| r.value).sum();
-        Some(sum / self.records.len() as f64)
+        
+        if self.values.is_empty() {
+            return Err(ValidationError::EmptyValues);
+        }
+        
+        for key in self.metadata.keys() {
+            if key.len() > 50 {
+                return Err(ValidationError::MetadataKeyTooLong);
+            }
+        }
+        
+        Ok(())
     }
-
-    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
-        self.records
-            .iter()
-            .filter(|record| record.category == category)
-            .collect()
+    
+    pub fn transform_values(&mut self, transformer: fn(f64) -> f64) {
+        self.values = self.values.iter().map(|&v| transformer(v)).collect();
     }
-
-    pub fn get_max_value(&self) -> Option<&DataRecord> {
-        self.records.iter().max_by(|a, b| {
-            a.value.partial_cmp(&b.value).unwrap_or(std::cmp::Ordering::Equal)
-        })
+    
+    pub fn calculate_statistics(&self) -> (f64, f64, f64) {
+        let count = self.values.len() as f64;
+        let sum: f64 = self.values.iter().sum();
+        let mean = sum / count;
+        
+        let variance: f64 = self.values.iter()
+            .map(|&v| (v - mean).powi(2))
+            .sum::<f64>() / count;
+        
+        let std_dev = variance.sqrt();
+        
+        (mean, variance, std_dev)
     }
+}
 
-    pub fn record_count(&self) -> usize {
-        self.records.len()
+pub fn normalize_value(value: f64, min: f64, max: f64) -> f64 {
+    if max == min {
+        return 0.0;
     }
+    (value - min) / (max - min)
+}
 
-    pub fn clear(&mut self) {
-        self.records.clear();
+pub fn process_records(records: &mut [DataRecord]) -> Result<Vec<DataRecord>, ValidationError> {
+    let mut processed = Vec::with_capacity(records.len());
+    
+    for record in records {
+        record.validate()?;
+        let mut processed_record = record.clone();
+        processed_record.transform_values(|v| v * 2.0);
+        processed.push(processed_record);
     }
+    
+    Ok(processed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
+    
     #[test]
-    fn test_data_processor() {
-        let mut processor = DataProcessor::new();
+    fn test_record_validation() {
+        let valid_record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0],
+            metadata: HashMap::new(),
+        };
         
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,value,category").unwrap();
-        writeln!(temp_file, "1,10.5,TypeA").unwrap();
-        writeln!(temp_file, "2,20.3,TypeB").unwrap();
-        writeln!(temp_file, "3,15.7,TypeA").unwrap();
+        assert!(valid_record.validate().is_ok());
         
-        let count = processor.load_from_csv(temp_file.path()).unwrap();
-        assert_eq!(count, 3);
-        assert_eq!(processor.record_count(), 3);
+        let invalid_record = DataRecord {
+            id: 0,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0],
+            metadata: HashMap::new(),
+        };
         
-        let avg = processor.calculate_average().unwrap();
-        assert!((avg - 15.5).abs() < 0.01);
+        assert!(invalid_record.validate().is_err());
+    }
+    
+    #[test]
+    fn test_statistics_calculation() {
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            metadata: HashMap::new(),
+        };
         
-        let type_a_records = processor.filter_by_category("TypeA");
-        assert_eq!(type_a_records.len(), 2);
+        let (mean, variance, std_dev) = record.calculate_statistics();
         
-        let max_record = processor.get_max_value().unwrap();
-        assert_eq!(max_record.id, 2);
-        assert!((max_record.value - 20.3).abs() < 0.01);
+        assert_eq!(mean, 3.0);
+        assert_eq!(variance, 2.0);
+        assert_eq!(std_dev, 2.0_f64.sqrt());
     }
 }
