@@ -120,3 +120,136 @@ mod tests {
         assert!((std_dev - 1.41421356237).abs() < 0.0001);
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidationRule {
+    pub field_name: String,
+    pub min_value: f64,
+    pub max_value: f64,
+    pub required: bool,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
+            validation_rules: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn process_dataset(&mut self, dataset_name: &str, data: &[f64]) -> Result<Vec<f64>, String> {
+        if data.is_empty() {
+            return Err("Dataset cannot be empty".to_string());
+        }
+
+        for rule in &self.validation_rules {
+            if rule.required && data.iter().any(|&x| x.is_nan()) {
+                return Err(format!("Field '{}' contains invalid NaN values", rule.field_name));
+            }
+
+            if let Some(&value) = data.iter().find(|&&x| x < rule.min_value || x > rule.max_value) {
+                return Err(format!(
+                    "Value {} for field '{}' is outside allowed range [{}, {}]",
+                    value, rule.field_name, rule.min_value, rule.max_value
+                ));
+            }
+        }
+
+        let processed_data: Vec<f64> = data
+            .iter()
+            .map(|&x| x * 2.0)
+            .filter(|&x| x > 0.0)
+            .collect();
+
+        self.cache.insert(dataset_name.to_string(), processed_data.clone());
+
+        Ok(processed_data)
+    }
+
+    pub fn get_cached_result(&self, dataset_name: &str) -> Option<&Vec<f64>> {
+        self.cache.get(dataset_name)
+    }
+
+    pub fn calculate_statistics(&self, dataset_name: &str) -> Option<Statistics> {
+        self.cache.get(dataset_name).map(|data| {
+            let count = data.len();
+            let sum: f64 = data.iter().sum();
+            let mean = if count > 0 { sum / count as f64 } else { 0.0 };
+            let variance: f64 = data.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / count as f64;
+
+            Statistics {
+                count,
+                sum,
+                mean,
+                variance,
+                std_dev: variance.sqrt(),
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Statistics {
+    pub count: usize,
+    pub sum: f64,
+    pub mean: f64,
+    pub variance: f64,
+    pub std_dev: f64,
+}
+
+pub fn normalize_data(data: &[f64]) -> Vec<f64> {
+    if data.is_empty() {
+        return Vec::new();
+    }
+
+    let min = data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let max = data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    let range = max - min;
+
+    if range == 0.0 {
+        return vec![0.5; data.len()];
+    }
+
+    data.iter()
+        .map(|&x| (x - min) / range)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        let test_data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+
+        let result = processor.process_dataset("test", &test_data);
+        assert!(result.is_ok());
+
+        let processed = result.unwrap();
+        assert_eq!(processed.len(), 5);
+        assert!(processed.iter().all(|&x| x > 0.0));
+    }
+
+    #[test]
+    fn test_normalization() {
+        let data = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+        let normalized = normalize_data(&data);
+
+        assert_eq!(normalized.len(), 5);
+        assert_eq!(normalized[0], 0.0);
+        assert_eq!(normalized[4], 1.0);
+        assert!(normalized.iter().all(|&x| x >= 0.0 && x <= 1.0));
+    }
+}
