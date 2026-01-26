@@ -100,4 +100,67 @@ mod tests {
         assert!(processor.validate_record(&valid_record));
         assert!(!processor.validate_record(&invalid_record));
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub struct DataProcessor {
+    file_path: String,
+    filter_column: usize,
+    filter_value: String,
+}
+
+impl DataProcessor {
+    pub fn new(file_path: &str, filter_column: usize, filter_value: &str) -> Self {
+        DataProcessor {
+            file_path: file_path.to_string(),
+            filter_column,
+            filter_value: filter_value.to_string(),
+        }
+    }
+
+    pub fn process(&self) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(&self.file_path)?;
+        let reader = BufReader::new(file);
+        let mut results = Vec::new();
+
+        for line in reader.lines() {
+            let line = line?;
+            let columns: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
+            
+            if columns.get(self.filter_column) == Some(&self.filter_value) {
+                results.push(columns);
+            }
+        }
+
+        Ok(results)
+    }
+
+    pub fn count_matches(&self) -> Result<usize, Box<dyn Error>> {
+        let matches = self.process()?;
+        Ok(matches.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processor() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,name,status").unwrap();
+        writeln!(temp_file, "1,Alice,active").unwrap();
+        writeln!(temp_file, "2,Bob,inactive").unwrap();
+        writeln!(temp_file, "3,Charlie,active").unwrap();
+
+        let processor = DataProcessor::new(temp_file.path().to_str().unwrap(), 2, "active");
+        let results = processor.process().unwrap();
+        
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0][1], "Alice");
+        assert_eq!(results[1][1], "Charlie");
+    }
 }
