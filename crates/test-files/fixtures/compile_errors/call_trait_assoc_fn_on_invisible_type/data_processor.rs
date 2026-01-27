@@ -134,4 +134,111 @@ mod tests {
         assert_eq!(variance, 2.0);
         assert_eq!(std_dev, 2.0_f64.sqrt());
     }
+}use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+use std::path::Path;
+
+#[derive(Debug, Deserialize)]
+pub struct Record {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub category: String,
+}
+
+pub struct DataProcessor {
+    records: Vec<Record>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
+        let mut reader = Reader::from_path(path)?;
+        for result in reader.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
+        }
+        Ok(())
+    }
+
+    pub fn validate_records(&self) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|r| r.value >= 0.0 && !r.name.is_empty())
+            .collect()
+    }
+
+    pub fn calculate_total(&self) -> f64 {
+        self.records.iter().map(|r| r.value).sum()
+    }
+
+    pub fn group_by_category(&self) -> std::collections::HashMap<String, Vec<&Record>> {
+        let mut map = std::collections::HashMap::new();
+        for record in &self.records {
+            map.entry(record.category.clone())
+                .or_insert_with(Vec::new)
+                .push(record);
+        }
+        map
+    }
+
+    pub fn get_statistics(&self) -> (f64, f64, f64) {
+        let values: Vec<f64> = self.records.iter().map(|r| r.value).collect();
+        let count = values.len() as f64;
+        if count == 0.0 {
+            return (0.0, 0.0, 0.0);
+        }
+
+        let sum: f64 = values.iter().sum();
+        let mean = sum / count;
+
+        let variance: f64 = values
+            .iter()
+            .map(|&v| (v - mean).powi(2))
+            .sum::<f64>()
+            / count;
+
+        let std_dev = variance.sqrt();
+
+        (mean, variance, std_dev)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,name,value,category").unwrap();
+        writeln!(temp_file, "1,ItemA,42.5,Alpha").unwrap();
+        writeln!(temp_file, "2,ItemB,17.3,Beta").unwrap();
+        writeln!(temp_file, "3,ItemC,89.1,Alpha").unwrap();
+
+        processor.load_from_csv(temp_file.path()).unwrap();
+
+        assert_eq!(processor.records.len(), 3);
+        assert_eq!(processor.calculate_total(), 148.9);
+
+        let valid = processor.validate_records();
+        assert_eq!(valid.len(), 3);
+
+        let groups = processor.group_by_category();
+        assert_eq!(groups.get("Alpha").unwrap().len(), 2);
+        assert_eq!(groups.get("Beta").unwrap().len(), 1);
+
+        let stats = processor.get_statistics();
+        assert!((stats.0 - 49.6333).abs() < 0.001);
+    }
 }
