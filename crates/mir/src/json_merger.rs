@@ -78,3 +78,47 @@ mod tests {
         assert_eq!(result_obj.get("tag").unwrap().as_str().unwrap(), "new");
     }
 }
+use serde_json::{Value, Map};
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut result = Map::new();
+
+    for path in paths {
+        let content = fs::read_to_string(path)?;
+        let json: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(obj) = json {
+            merge_objects(&mut result, obj);
+        }
+    }
+
+    Ok(Value::Object(result))
+}
+
+fn merge_objects(target: &mut Map<String, Value>, source: Map<String, Value>) {
+    for (key, source_value) in source {
+        match target.get_mut(&key) {
+            Some(target_value) => {
+                if let (Value::Object(mut target_obj), Value::Object(source_obj)) = (target_value.clone(), source_value.clone()) {
+                    merge_objects(&mut target_obj, source_obj);
+                    target.insert(key, Value::Object(target_obj));
+                } else if target_value != &source_value {
+                    let merged_array = match (target_value, &source_value) {
+                        (Value::Array(arr), Value::Array(src_arr)) => {
+                            let mut combined = arr.clone();
+                            combined.extend(src_arr.clone());
+                            Value::Array(combined)
+                        }
+                        _ => source_value,
+                    };
+                    target.insert(key, merged_array);
+                }
+            }
+            None => {
+                target.insert(key, source_value);
+            }
+        }
+    }
+}
