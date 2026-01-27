@@ -1,64 +1,89 @@
 
-use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, Key, Nonce,
-};
-use std::error::Error;
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
 
-pub fn encrypt_data(plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-    let key = Aes256Gcm::generate_key(&mut OsRng);
-    let cipher = Aes256Gcm::new(&key);
-    let nonce = Nonce::from_slice(b"unique_nonce_");
-    
-    let ciphertext = cipher.encrypt(nonce, plaintext)
-        .map_err(|e| format!("Encryption failed: {}", e))?;
-    
-    let mut result = Vec::new();
-    result.extend_from_slice(&key);
-    result.extend_from_slice(nonce);
-    result.extend_from_slice(&ciphertext);
-    
-    Ok(result)
+const DEFAULT_KEY: u8 = 0x55;
+
+fn xor_cipher(data: &mut [u8], key: u8) {
+    for byte in data.iter_mut() {
+        *byte ^= key;
+    }
 }
 
-pub fn decrypt_data(ciphertext_with_metadata: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-    if ciphertext_with_metadata.len() < 48 {
-        return Err("Invalid ciphertext length".into());
+fn process_file(input_path: &str, output_path: &str, key: u8) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    
+    xor_cipher(&mut buffer, key);
+    
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&buffer)?;
+    
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    
+    if args.len() != 3 {
+        eprintln!("Usage: {} <input_file> <output_file>", args[0]);
+        std::process::exit(1);
     }
     
-    let key = Key::<Aes256Gcm>::from_slice(&ciphertext_with_metadata[..32]);
-    let nonce = Nonce::from_slice(&ciphertext_with_metadata[32..44]);
-    let ciphertext = &ciphertext_with_metadata[44..];
+    let input_path = &args[1];
+    let output_path = &args[2];
     
-    let cipher = Aes256Gcm::new(key);
-    let plaintext = cipher.decrypt(nonce, ciphertext)
-        .map_err(|e| format!("Decryption failed: {}", e))?;
+    if !Path::new(input_path).exists() {
+        eprintln!("Error: Input file '{}' does not exist", input_path);
+        std::process::exit(1);
+    }
     
-    Ok(plaintext)
+    match process_file(input_path, output_path, DEFAULT_KEY) {
+        Ok(_) => println!("File processed successfully"),
+        Err(e) => eprintln!("Error processing file: {}", e),
+    }
+    
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use std::fs;
+    
     #[test]
-    fn test_encryption_roundtrip() {
-        let original_data = b"Secret message for encryption test";
+    fn test_xor_cipher() {
+        let mut data = vec![0x00, 0xFF, 0x55, 0xAA];
+        let original = data.clone();
+        let key = 0x55;
         
-        let encrypted = encrypt_data(original_data).unwrap();
-        let decrypted = decrypt_data(&encrypted).unwrap();
+        xor_cipher(&mut data, key);
+        assert_ne!(data, original);
         
-        assert_eq!(original_data.to_vec(), decrypted);
+        xor_cipher(&mut data, key);
+        assert_eq!(data, original);
     }
     
     #[test]
-    fn test_tampered_data() {
-        let original_data = b"Another secret message";
-        let mut encrypted = encrypt_data(original_data).unwrap();
+    fn test_file_encryption() {
+        let test_data = b"Hello, World!";
+        let input_path = "test_input.txt";
+        let output_path = "test_output.txt";
         
-        encrypted[50] ^= 0xFF;
+        fs::write(input_path, test_data).unwrap();
         
-        let result = decrypt_data(&encrypted);
-        assert!(result.is_err());
+        process_file(input_path, output_path, DEFAULT_KEY).unwrap();
+        let encrypted = fs::read(output_path).unwrap();
+        assert_ne!(encrypted, test_data);
+        
+        process_file(output_path, "test_decrypted.txt", DEFAULT_KEY).unwrap();
+        let decrypted = fs::read("test_decrypted.txt").unwrap();
+        assert_eq!(decrypted, test_data);
+        
+        fs::remove_file(input_path).unwrap();
+        fs::remove_file(output_path).unwrap();
+        fs::remove_file("test_decrypted.txt").unwrap();
     }
 }
