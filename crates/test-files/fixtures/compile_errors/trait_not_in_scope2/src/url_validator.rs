@@ -6,7 +6,7 @@ pub struct UrlValidator {
 
 impl UrlValidator {
     pub fn new() -> Self {
-        let pattern = Regex::new(r"^https?://(?:[-\w]+\.)+[-\w]+(?:/[-\w\./?%&=]*)?$").unwrap();
+        let pattern = Regex::new(r"^https?://[^\s/$.?#].[^\s]*$").unwrap();
         UrlValidator { pattern }
     }
 
@@ -23,8 +23,8 @@ mod tests {
     fn test_valid_urls() {
         let validator = UrlValidator::new();
         assert!(validator.is_valid("http://example.com"));
-        assert!(validator.is_valid("https://sub.example.com/path"));
-        assert!(validator.is_valid("http://localhost:8080/api"));
+        assert!(validator.is_valid("https://www.example.com/path"));
+        assert!(validator.is_valid("https://sub.domain.co.uk/page?query=value"));
     }
 
     #[test]
@@ -33,5 +33,6 @@ mod tests {
         assert!(!validator.is_valid("not-a-url"));
         assert!(!validator.is_valid("ftp://example.com"));
         assert!(!validator.is_valid("http://"));
+        assert!(!validator.is_valid("https://example com"));
     }
 }
