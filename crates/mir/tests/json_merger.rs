@@ -1,44 +1,31 @@
-
-use serde_json::{Value, Map};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-pub fn merge_json_files<P: AsRef<Path>>(paths: &[P]) -> Result<Value, Box<dyn std::error::Error>> {
-    let mut merged = Map::new();
-    
-    for path in paths {
+pub fn merge_json_files(file_paths: &[&str]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut merged_map = HashMap::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            continue;
+        }
+
         let content = fs::read_to_string(path)?;
-        let json: Value = serde_json::from_str(&content)?;
-        
-        if let Value::Object(obj) = json {
+        let json_value: serde_json::Value = serde_json::from_str(&content)?;
+
+        if let Some(obj) = json_value.as_object() {
             for (key, value) in obj {
-                merge_value(&mut merged, key, value);
+                merged_map.insert(key.clone(), value.clone());
             }
         }
     }
-    
-    Ok(Value::Object(merged))
+
+    Ok(serde_json::Value::Object(merged_map.into_iter().collect()))
 }
 
-fn merge_value(map: &mut Map<String, Value>, key: String, new_value: Value) {
-    match map.get_mut(&key) {
-        Some(existing) => {
-            if let (Value::Object(existing_obj), Value::Object(new_obj)) = (existing, &new_value) {
-                let mut existing_obj = existing_obj.clone();
-                for (k, v) in new_obj {
-                    merge_value(&mut existing_obj, k.clone(), v.clone());
-                }
-                map.insert(key, Value::Object(existing_obj));
-            } else if let (Value::Array(existing_arr), Value::Array(new_arr)) = (existing, &new_value) {
-                let mut combined = existing_arr.clone();
-                combined.extend(new_arr.clone());
-                map.insert(key, Value::Array(combined));
-            } else {
-                map.insert(key, new_value);
-            }
-        }
-        None => {
-            map.insert(key, new_value);
-        }
-    }
+pub fn write_merged_json(output_path: &str, value: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+    let json_string = serde_json::to_string_pretty(value)?;
+    fs::write(output_path, json_string)?;
+    Ok(())
 }
