@@ -17,7 +17,7 @@ pub fn validate_json(schema: &str, data: &str) -> Result<(), Vec<String>> {
         Ok(_) => Ok(()),
         Err(errors) => {
             let error_messages: Vec<String> = errors
-                .map(|e| format!("Validation error: {}", e))
+                .map(|error| format!("Validation error: {}", error))
                 .collect();
             Err(error_messages)
         }
@@ -41,8 +41,9 @@ mod tests {
         }
         "#;
 
-        let valid_data = r#"{"name": "Alice", "age": 30}"#;
-        assert!(validate_json(schema, valid_data).is_ok());
+        let data = r#"{"name": "Alice", "age": 30}"#;
+        
+        assert!(validate_json(schema, data).is_ok());
     }
 
     #[test]
@@ -57,7 +58,8 @@ mod tests {
         }
         "#;
 
-        let invalid_data = r#"{"age": 30}"#;
-        assert!(validate_json(schema, invalid_data).is_err());
+        let data = r#"{"age": 30}"#;
+        
+        assert!(validate_json(schema, data).is_err());
     }
 }
