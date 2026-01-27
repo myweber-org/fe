@@ -69,4 +69,66 @@ mod tests {
         assert!(result.contains(&"banana".to_string()));
         assert!(result.contains(&"cherry".to_string()));
     }
+}use std::collections::HashSet;
+use std::iter::FromIterator;
+
+pub struct DataCleaner {
+    data: Vec<String>,
+}
+
+impl DataCleaner {
+    pub fn new(raw_data: Vec<String>) -> Self {
+        DataCleaner { data: raw_data }
+    }
+
+    pub fn deduplicate(&mut self) -> &mut Self {
+        let unique_set: HashSet<String> = HashSet::from_iter(self.data.drain(..));
+        self.data = Vec::from_iter(unique_set.into_iter());
+        self
+    }
+
+    pub fn normalize(&mut self) -> &mut Self {
+        self.data = self.data
+            .iter()
+            .map(|s| s.trim().to_lowercase())
+            .collect();
+        self
+    }
+
+    pub fn sort_alphabetically(&mut self) -> &mut Self {
+        self.data.sort();
+        self
+    }
+
+    pub fn get_cleaned_data(&self) -> &Vec<String> {
+        &self.data
+    }
+
+    pub fn process(&mut self) -> &Vec<String> {
+        self.deduplicate()
+            .normalize()
+            .sort_alphabetically()
+            .get_cleaned_data()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_cleaning_pipeline() {
+        let raw_data = vec![
+            "  Apple ".to_string(),
+            "banana".to_string(),
+            "Apple".to_string(),
+            "  BANANA  ".to_string(),
+            "Cherry".to_string(),
+        ];
+        
+        let mut cleaner = DataCleaner::new(raw_data);
+        let result = cleaner.process();
+        
+        assert_eq!(result, &vec!["apple", "banana", "cherry"]);
+    }
 }
