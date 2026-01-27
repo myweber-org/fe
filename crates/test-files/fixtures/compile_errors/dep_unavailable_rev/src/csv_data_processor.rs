@@ -1,171 +1,152 @@
 
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
-use csv::{ReaderBuilder, WriterBuilder};
+use std::io::{BufRead, BufReader};
 
 #[derive(Debug, Clone)]
-struct DataRecord {
+struct Record {
     id: u32,
+    name: String,
     category: String,
     value: f64,
-    timestamp: String,
+    active: bool,
 }
 
-impl DataRecord {
-    fn new(id: u32, category: String, value: f64, timestamp: String) -> Self {
-        Self {
-            id,
-            category,
-            value,
-            timestamp,
+impl Record {
+    fn from_csv_line(line: &str) -> Result<Self, Box<dyn Error>> {
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 5 {
+            return Err("Invalid CSV format".into());
         }
+
+        Ok(Record {
+            id: parts[0].parse()?,
+            name: parts[1].to_string(),
+            category: parts[2].to_string(),
+            value: parts[3].parse()?,
+            active: parts[4].parse()?,
+        })
     }
 }
 
 struct DataProcessor {
-    records: Vec<DataRecord>,
+    records: Vec<Record>,
 }
 
 impl DataProcessor {
     fn new() -> Self {
-        Self {
+        DataProcessor {
             records: Vec::new(),
         }
     }
 
-    fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
-        let file = File::open(file_path)?;
+    fn load_from_file(&mut self, path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(path)?;
         let reader = BufReader::new(file);
-        let mut csv_reader = ReaderBuilder::new()
-            .has_headers(true)
-            .from_reader(reader);
 
-        for result in csv_reader.records() {
-            let record = result?;
-            if record.len() >= 4 {
-                let id: u32 = record[0].parse().unwrap_or(0);
-                let category = record[1].to_string();
-                let value: f64 = record[2].parse().unwrap_or(0.0);
-                let timestamp = record[3].to_string();
-
-                self.records.push(DataRecord::new(id, category, value, timestamp));
+        for (index, line) in reader.lines().enumerate() {
+            let line = line?;
+            if index == 0 {
+                continue;
             }
+
+            let record = Record::from_csv_line(&line)?;
+            self.records.push(record);
         }
 
         Ok(())
     }
 
-    fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+    fn filter_by_category(&self, category: &str) -> Vec<&Record> {
         self.records
             .iter()
             .filter(|record| record.category == category)
             .collect()
     }
 
-    fn calculate_average(&self, category: Option<&str>) -> f64 {
-        let filtered_records: Vec<&DataRecord> = match category {
-            Some(cat) => self.filter_by_category(cat),
-            None => self.records.iter().collect(),
-        };
+    fn filter_active(&self) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|record| record.active)
+            .collect()
+    }
 
-        if filtered_records.is_empty() {
+    fn calculate_total_value(&self) -> f64 {
+        self.records.iter().map(|record| record.value).sum()
+    }
+
+    fn calculate_average_value(&self) -> f64 {
+        if self.records.is_empty() {
             return 0.0;
         }
-
-        let sum: f64 = filtered_records.iter().map(|r| r.value).sum();
-        sum / filtered_records.len() as f64
+        self.calculate_total_value() / self.records.len() as f64
     }
 
-    fn save_filtered_to_csv(&self, category: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
-        let filtered = self.filter_by_category(category);
+    fn find_max_value(&self) -> Option<&Record> {
+        self.records.iter().max_by(|a, b| {
+            a.value
+                .partial_cmp(&b.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    }
+
+    fn group_by_category(&self) -> std::collections::HashMap<String, Vec<&Record>> {
+        let mut groups = std::collections::HashMap::new();
         
-        let file = File::create(output_path)?;
-        let writer = BufWriter::new(file);
-        let mut csv_writer = WriterBuilder::new()
-            .has_headers(true)
-            .from_writer(writer);
-
-        csv_writer.write_record(&["ID", "Category", "Value", "Timestamp"])?;
-
-        for record in filtered {
-            csv_writer.write_record(&[
-                record.id.to_string(),
-                record.category.clone(),
-                record.value.to_string(),
-                record.timestamp.clone(),
-            ])?;
+        for record in &self.records {
+            groups
+                .entry(record.category.clone())
+                .or_insert_with(Vec::new)
+                .push(record);
         }
-
-        csv_writer.flush()?;
-        Ok(())
-    }
-
-    fn get_summary(&self) -> String {
-        let total_records = self.records.len();
-        let categories: Vec<String> = self.records
-            .iter()
-            .map(|r| r.category.clone())
-            .collect();
         
-        let unique_categories: std::collections::HashSet<String> = categories.into_iter().collect();
-        
-        format!(
-            "Total records: {}, Unique categories: {}, Overall average: {:.2}",
-            total_records,
-            unique_categories.len(),
-            self.calculate_average(None)
-        )
+        groups
     }
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn process_data_sample() -> Result<(), Box<dyn Error>> {
     let mut processor = DataProcessor::new();
     
-    match processor.load_from_csv("input_data.csv") {
-        Ok(_) => println!("Data loaded successfully"),
-        Err(e) => eprintln!("Error loading data: {}", e),
+    let sample_data = "id,name,category,value,active\n\
+                       1,ItemA,Electronics,250.50,true\n\
+                       2,ItemB,Furniture,150.75,true\n\
+                       3,ItemC,Electronics,99.99,false\n\
+                       4,ItemD,Books,45.25,true\n\
+                       5,ItemE,Electronics,300.00,true";
+    
+    let temp_file = "temp_sample.csv";
+    std::fs::write(temp_file, sample_data)?;
+    
+    processor.load_from_file(temp_file)?;
+    std::fs::remove_file(temp_file)?;
+    
+    let electronics = processor.filter_by_category("Electronics");
+    println!("Electronics items: {}", electronics.len());
+    
+    let active_items = processor.filter_active();
+    println!("Active items: {}", active_items.len());
+    
+    let total_value = processor.calculate_total_value();
+    println!("Total value: {:.2}", total_value);
+    
+    let avg_value = processor.calculate_average_value();
+    println!("Average value: {:.2}", avg_value);
+    
+    if let Some(max_record) = processor.find_max_value() {
+        println!("Most valuable item: {} (${})", max_record.name, max_record.value);
     }
-
-    println!("{}", processor.get_summary());
-
-    let tech_records = processor.filter_by_category("Technology");
-    println!("Technology records: {}", tech_records.len());
-
-    let tech_avg = processor.calculate_average(Some("Technology"));
-    println!("Technology average value: {:.2}", tech_avg);
-
-    processor.save_filtered_to_csv("Technology", "tech_data.csv")?;
-    println!("Filtered data saved to tech_data.csv");
-
+    
+    let groups = processor.group_by_category();
+    for (category, items) in groups {
+        println!("Category '{}' has {} items", category, items.len());
+    }
+    
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_data_record_creation() {
-        let record = DataRecord::new(1, "Test".to_string(), 100.0, "2024-01-01".to_string());
-        assert_eq!(record.id, 1);
-        assert_eq!(record.category, "Test");
-        assert_eq!(record.value, 100.0);
-    }
-
-    #[test]
-    fn test_empty_processor() {
-        let processor = DataProcessor::new();
-        assert_eq!(processor.records.len(), 0);
-    }
-
-    #[test]
-    fn test_average_calculation() {
-        let mut processor = DataProcessor::new();
-        processor.records.push(DataRecord::new(1, "A".to_string(), 10.0, "".to_string()));
-        processor.records.push(DataRecord::new(2, "A".to_string(), 20.0, "".to_string()));
-        
-        let avg = processor.calculate_average(Some("A"));
-        assert_eq!(avg, 15.0);
+fn main() {
+    if let Err(e) = process_data_sample() {
+        eprintln!("Error processing data: {}", e);
+        std::process::exit(1);
     }
 }
