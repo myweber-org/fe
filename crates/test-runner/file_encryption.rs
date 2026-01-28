@@ -1,109 +1,38 @@
-
-use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
-use pbkdf2::pbkdf2_hmac;
-use rand::RngCore;
-use sha2::Sha256;
 use std::fs;
-use std::io::{Read, Write};
-use std::path::Path;
+use std::io::{self, Read, Write};
 
-type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
-type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
-
-const SALT_LEN: usize = 16;
-const IV_LEN: usize = 16;
-const KEY_ITERATIONS: u32 = 100_000;
-const KEY_LEN: usize = 32;
-
-pub struct FileCipher {
-    key: [u8; KEY_LEN],
-}
-
-impl FileCipher {
-    pub fn new(password: &str, salt: &[u8; SALT_LEN]) -> Self {
-        let mut key = [0u8; KEY_LEN];
-        pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, KEY_ITERATIONS, &mut key);
-        FileCipher { key }
-    }
-
-    pub fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), String> {
-        let mut input_file = fs::File::open(input_path)
-            .map_err(|e| format!("Failed to open input file: {}", e))?;
-        
-        let mut plaintext = Vec::new();
-        input_file.read_to_end(&mut plaintext)
-            .map_err(|e| format!("Failed to read input file: {}", e))?;
-
-        let mut iv = [0u8; IV_LEN];
-        rand::thread_rng().fill_bytes(&mut iv);
-
-        let cipher = Aes256CbcEnc::new(&self.key.into(), &iv.into());
-        let ciphertext = cipher.encrypt_padded_vec_mut::<Pkcs7>(&plaintext);
-
-        let mut output_file = fs::File::create(output_path)
-            .map_err(|e| format!("Failed to create output file: {}", e))?;
-
-        output_file.write_all(&iv)
-            .map_err(|e| format!("Failed to write IV: {}", e))?;
-        output_file.write_all(&ciphertext)
-            .map_err(|e| format!("Failed to write ciphertext: {}", e))?;
-
-        Ok(())
-    }
-
-    pub fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), String> {
-        let mut input_file = fs::File::open(input_path)
-            .map_err(|e| format!("Failed to open input file: {}", e))?;
-
-        let mut iv = [0u8; IV_LEN];
-        input_file.read_exact(&mut iv)
-            .map_err(|e| format!("Failed to read IV: {}", e))?;
-
-        let mut ciphertext = Vec::new();
-        input_file.read_to_end(&mut ciphertext)
-            .map_err(|e| format!("Failed to read ciphertext: {}", e))?;
-
-        let cipher = Aes256CbcDec::new(&self.key.into(), &iv.into());
-        let plaintext = cipher.decrypt_padded_vec_mut::<Pkcs7>(&ciphertext)
-            .map_err(|e| format!("Decryption failed: {}", e))?;
-
-        let mut output_file = fs::File::create(output_path)
-            .map_err(|e| format!("Failed to create output file: {}", e))?;
-        output_file.write_all(&plaintext)
-            .map_err(|e| format!("Failed to write plaintext: {}", e))?;
-
-        Ok(())
-    }
-
-    pub fn generate_salt() -> [u8; SALT_LEN] {
-        let mut salt = [0u8; SALT_LEN];
-        rand::thread_rng().fill_bytes(&mut salt);
-        salt
+fn xor_cipher(data: &mut [u8], key: &[u8]) {
+    for (i, byte) in data.iter_mut().enumerate() {
+        *byte ^= key[i % key.len()];
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::NamedTempFile;
+fn process_file(input_path: &str, output_path: &str, key: &str) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
 
-    #[test]
-    fn test_encryption_decryption() {
-        let salt = FileCipher::generate_salt();
-        let cipher = FileCipher::new("test_password", &salt);
-        
-        let original_data = b"Secret data that needs protection";
-        
-        let input_file = NamedTempFile::new().unwrap();
-        let encrypted_file = NamedTempFile::new().unwrap();
-        let decrypted_file = NamedTempFile::new().unwrap();
-        
-        fs::write(input_file.path(), original_data).unwrap();
-        
-        cipher.encrypt_file(input_file.path(), encrypted_file.path()).unwrap();
-        cipher.decrypt_file(encrypted_file.path(), decrypted_file.path()).unwrap();
-        
-        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
-        assert_eq!(original_data.to_vec(), decrypted_data);
+    xor_cipher(&mut buffer, key.as_bytes());
+
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&buffer)?;
+
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 4 {
+        eprintln!("Usage: {} <input> <output> <key>", args[0]);
+        std::process::exit(1);
     }
+
+    let input_path = &args[1];
+    let output_path = &args[2];
+    let key = &args[3];
+
+    process_file(input_path, output_path, key)?;
+    println!("File processed successfully");
+
+    Ok(())
 }
