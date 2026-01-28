@@ -63,4 +63,86 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     println!("Data cleaning completed successfully");
     Ok(())
+}use std::collections::HashSet;
+
+pub struct DataCleaner {
+    deduplication_cache: HashSet<String>,
+}
+
+impl DataCleaner {
+    pub fn new() -> Self {
+        DataCleaner {
+            deduplication_cache: HashSet::new(),
+        }
+    }
+
+    pub fn normalize_text(&self, input: &str) -> String {
+        input.trim().to_lowercase()
+    }
+
+    pub fn deduplicate(&mut self, item: &str) -> bool {
+        let normalized = self.normalize_text(item);
+        if self.deduplication_cache.contains(&normalized) {
+            false
+        } else {
+            self.deduplication_cache.insert(normalized);
+            true
+        }
+    }
+
+    pub fn clean_numeric(&self, input: &str) -> Option<f64> {
+        let cleaned: String = input.chars()
+            .filter(|c| c.is_numeric() || *c == '.' || *c == '-')
+            .collect();
+        
+        cleaned.parse::<f64>().ok()
+    }
+
+    pub fn remove_special_chars(&self, input: &str, keep_chars: &str) -> String {
+        input.chars()
+            .filter(|c| c.is_alphanumeric() || keep_chars.contains(*c))
+            .collect()
+    }
+
+    pub fn get_unique_count(&self) -> usize {
+        self.deduplication_cache.len()
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.deduplication_cache.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalization() {
+        let cleaner = DataCleaner::new();
+        assert_eq!(cleaner.normalize_text("  HELLO World  "), "hello world");
+    }
+
+    #[test]
+    fn test_deduplication() {
+        let mut cleaner = DataCleaner::new();
+        assert!(cleaner.deduplicate("Hello"));
+        assert!(!cleaner.deduplicate("  HELLO  "));
+        assert!(cleaner.deduplicate("World"));
+        assert_eq!(cleaner.get_unique_count(), 2);
+    }
+
+    #[test]
+    fn test_numeric_cleaning() {
+        let cleaner = DataCleaner::new();
+        assert_eq!(cleaner.clean_numeric("$123.45"), Some(123.45));
+        assert_eq!(cleaner.clean_numeric("abc"), None);
+    }
+
+    #[test]
+    fn test_special_char_removal() {
+        let cleaner = DataCleaner::new();
+        let result = cleaner.remove_special_chars("hello@world.com", "@.");
+        assert_eq!(result, "hello@world.com");
+    }
 }
