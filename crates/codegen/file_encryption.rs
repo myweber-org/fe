@@ -173,3 +173,110 @@ mod tests {
         Ok(())
     }
 }
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+const DEFAULT_KEY: u8 = 0xAA;
+
+fn xor_cipher(data: &mut [u8], key: u8) {
+    for byte in data.iter_mut() {
+        *byte ^= key;
+    }
+}
+
+fn process_file(input_path: &str, output_path: &str, key: u8) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+
+    xor_cipher(&mut buffer, key);
+
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&buffer)?;
+
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    
+    if args.len() != 4 {
+        eprintln!("Usage: {} <encrypt|decrypt> <input_file> <output_file>", args[0]);
+        std::process::exit(1);
+    }
+
+    let operation = &args[1];
+    let input_file = &args[2];
+    let output_file = &args[3];
+
+    if !Path::new(input_file).exists() {
+        eprintln!("Error: Input file '{}' does not exist", input_file);
+        std::process::exit(1);
+    }
+
+    let key = match std::env::var("ENCRYPTION_KEY") {
+        Ok(val) => val.parse().unwrap_or(DEFAULT_KEY),
+        Err(_) => DEFAULT_KEY,
+    };
+
+    process_file(input_file, output_file, key)?;
+
+    println!("{} operation completed successfully", operation);
+    println!("Processed '{}' to '{}' with key 0x{:02X}", input_file, output_file, key);
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_xor_cipher_symmetry() {
+        let mut data = vec![0x00, 0xFF, 0x55, 0xAA];
+        let original = data.clone();
+        let key = 0xCC;
+
+        xor_cipher(&mut data, key);
+        assert_ne!(data, original);
+
+        xor_cipher(&mut data, key);
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_file_encryption_decryption() -> io::Result<()> {
+        let original_content = b"Hello, World! This is a test file.";
+        
+        let input_temp = NamedTempFile::new()?;
+        fs::write(input_temp.path(), original_content)?;
+
+        let encrypted_temp = NamedTempFile::new()?;
+        let decrypted_temp = NamedTempFile::new()?;
+
+        let key = 0x7B;
+
+        process_file(
+            input_temp.path().to_str().unwrap(),
+            encrypted_temp.path().to_str().unwrap(),
+            key,
+        )?;
+
+        let encrypted_data = fs::read(encrypted_temp.path())?;
+        assert_ne!(encrypted_data, original_content);
+
+        process_file(
+            encrypted_temp.path().to_str().unwrap(),
+            decrypted_temp.path().to_str().unwrap(),
+            key,
+        )?;
+
+        let decrypted_data = fs::read(decrypted_temp.path())?;
+        assert_eq!(decrypted_data, original_content);
+
+        Ok(())
+    }
+}
