@@ -7,50 +7,57 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_file(path: &str) -> Result<Self, String> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read config file: {}", e))?;
-        
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = fs::read_to_string(path)?;
         let mut values = HashMap::new();
-        
+
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
-            
+
             if let Some((key, value)) = trimmed.split_once('=') {
                 let key = key.trim().to_string();
-                let mut processed_value = value.trim().to_string();
-                
-                processed_value = Self::substitute_env_vars(&processed_value);
+                let processed_value = Self::process_value(value.trim());
                 values.insert(key, processed_value);
             }
         }
-        
+
         Ok(Config { values })
     }
-    
-    fn substitute_env_vars(input: &str) -> String {
-        let mut result = input.to_string();
-        
-        for (key, value) in env::vars() {
-            let placeholder = format!("${}", key);
-            result = result.replace(&placeholder, &value);
+
+    fn process_value(raw: &str) -> String {
+        let mut result = String::new();
+        let mut chars = raw.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '$' && chars.peek() == Some(&'{') {
+                chars.next(); // Skip '{'
+                let mut var_name = String::new();
+                while let Some(ch) = chars.next() {
+                    if ch == '}' {
+                        break;
+                    }
+                    var_name.push(ch);
+                }
+                if let Ok(env_value) = env::var(&var_name) {
+                    result.push_str(&env_value);
+                }
+            } else {
+                result.push(ch);
+            }
         }
-        
+
         result
     }
-    
+
     pub fn get(&self, key: &str) -> Option<&String> {
         self.values.get(key)
     }
-    
-    pub fn get_or_default(&self, key: &str, default: &str) -> String {
-        self.values.get(key)
-            .map(|s| s.as_str())
-            .unwrap_or(default)
-            .to_string()
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.values.contains_key(key)
     }
 }
 
@@ -59,28 +66,31 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
-    
+
     #[test]
     fn test_basic_parsing() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "HOST=localhost\nPORT=8080\n# Comment\nDEBUG=true").unwrap();
-        
+        writeln!(file, "DATABASE_URL=postgres://localhost/db").unwrap();
+        writeln!(file, "# This is a comment").unwrap();
+        writeln!(file, "PORT=8080").unwrap();
+
         let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("HOST"), Some(&"localhost".to_string()));
-        assert_eq!(config.get("PORT"), Some(&"8080".to_string()));
-        assert_eq!(config.get("DEBUG"), Some(&"true".to_string()));
-        assert_eq!(config.get("MISSING"), None);
+        assert_eq!(config.get("DATABASE_URL").unwrap(), "postgres://localhost/db");
+        assert_eq!(config.get("PORT").unwrap(), "8080");
+        assert!(!config.contains_key("NONEXISTENT"));
     }
-    
+
     #[test]
     fn test_env_substitution() {
-        env::set_var("APP_ENV", "production");
+        env::set_var("APP_SECRET", "super-secret-key");
         
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "ENVIRONMENT=${APP_ENV}\nHOST=api.${APP_ENV}.example.com").unwrap();
-        
+        writeln!(file, "SECRET_KEY=${APP_SECRET}").unwrap();
+        writeln!(file, "HOST=localhost:${PORT}").unwrap();
+        writeln!(file, "PORT=3000").unwrap();
+
         let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("ENVIRONMENT"), Some(&"production".to_string()));
-        assert_eq!(config.get("HOST"), Some(&"api.production.example.com".to_string()));
+        assert_eq!(config.get("SECRET_KEY").unwrap(), "super-secret-key");
+        assert_eq!(config.get("HOST").unwrap(), "localhost:3000");
     }
 }
