@@ -1,198 +1,120 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub settings: HashMap<String, String>,
-    pub defaults: HashMap<String, String>,
+    sections: HashMap<String, HashMap<String, String>>,
 }
 
 impl Config {
     pub fn new() -> Self {
         Config {
-            settings: HashMap::new(),
-            defaults: HashMap::new(),
+            sections: HashMap::new(),
         }
     }
 
-    pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<(), String> {
-        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        self.parse_content(&content)
+    pub fn from_file(path: &str) -> Result<Self, String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+        Self::from_str(&content)
     }
 
-    fn parse_content(&mut self, content: &str) -> Result<(), String> {
-        for line in content.lines() {
+    pub fn from_str(content: &str) -> Result<Self, String> {
+        let mut config = Config::new();
+        let mut current_section = String::from("default");
+
+        for (line_num, line) in content.lines().enumerate() {
             let trimmed = line.trim();
+
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
 
-            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
-            if parts.len() != 2 {
-                return Err(format!("Invalid line format: {}", line));
-            }
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                current_section = trimmed[1..trimmed.len() - 1].trim().to_string();
+                if current_section.is_empty() {
+                    return Err(format!("Empty section name at line {}", line_num + 1));
+                }
+                config.sections.entry(current_section.clone()).or_default();
+            } else if let Some(equal_pos) = trimmed.find('=') {
+                let key = trimmed[..equal_pos].trim().to_string();
+                let value = trimmed[equal_pos + 1..].trim().to_string();
 
-            let key = parts[0].trim().to_string();
-            let value = parts[1].trim().to_string();
+                if key.is_empty() {
+                    return Err(format!("Empty key at line {}", line_num + 1));
+                }
 
-            if value.is_empty() {
-                return Err(format!("Empty value for key: {}", key));
-            }
-
-            self.settings.insert(key, value);
-        }
-        Ok(())
-    }
-
-    pub fn set_default(&mut self, key: &str, value: &str) {
-        self.defaults.insert(key.to_string(), value.to_string());
-    }
-
-    pub fn get(&self, key: &str) -> Option<&String> {
-        self.settings.get(key).or_else(|| self.defaults.get(key))
-    }
-
-    pub fn get_or_default(&self, key: &str, default: &str) -> String {
-        self.get(key).cloned().unwrap_or_else(|| default.to_string())
-    }
-
-    pub fn validate_required(&self, keys: &[&str]) -> Result<(), Vec<String>> {
-        let mut missing = Vec::new();
-        for key in keys {
-            if !self.settings.contains_key(*key) && !self.defaults.contains_key(*key) {
-                missing.push(key.to_string());
+                config
+                    .sections
+                    .entry(current_section.clone())
+                    .or_default()
+                    .insert(key, value);
+            } else {
+                return Err(format!("Invalid line format at line {}", line_num + 1));
             }
         }
 
-        if missing.is_empty() {
-            Ok(())
-        } else {
-            Err(missing)
-        }
+        Ok(config)
+    }
+
+    pub fn get(&self, section: &str, key: &str) -> Option<&str> {
+        self.sections
+            .get(section)
+            .and_then(|sec| sec.get(key))
+            .map(|s| s.as_str())
+    }
+
+    pub fn get_section(&self, section: &str) -> Option<&HashMap<String, String>> {
+        self.sections.get(section)
+    }
+
+    pub fn set(&mut self, section: &str, key: &str, value: &str) {
+        self.sections
+            .entry(section.to_string())
+            .or_default()
+            .insert(key.to_string(), value.to_string());
+    }
+
+    pub fn sections(&self) -> Vec<&str> {
+        self.sections.keys().map(|s| s.as_str()).collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_config_loading() {
-        let mut config = Config::new();
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "host=localhost").unwrap();
-        writeln!(temp_file, "port=8080").unwrap();
-        writeln!(temp_file, "# This is a comment").unwrap();
+    fn test_basic_parsing() {
+        let content = r#"
+# Sample config
+[server]
+host = 127.0.0.1
+port = 8080
 
-        config.load_from_file(temp_file.path()).unwrap();
-        assert_eq!(config.get("host"), Some(&"localhost".to_string()));
-        assert_eq!(config.get("port"), Some(&"8080".to_string()));
-    }
+[database]
+url = postgres://localhost/mydb
+"#;
 
-    #[test]
-    fn test_default_values() {
-        let mut config = Config::new();
-        config.set_default("timeout", "30");
-        config.set_default("retries", "3");
-
-        assert_eq!(config.get("timeout"), Some(&"30".to_string()));
-        assert_eq!(config.get("retries"), Some(&"3".to_string()));
-        assert_eq!(config.get("nonexistent"), None);
+        let config = Config::from_str(content).unwrap();
+        assert_eq!(config.get("server", "host"), Some("127.0.0.1"));
+        assert_eq!(config.get("server", "port"), Some("8080"));
+        assert_eq!(config.get("database", "url"), Some("postgres://localhost/mydb"));
     }
 
     #[test]
-    fn test_validation() {
-        let mut config = Config::new();
-        config.settings.insert("host".to_string(), "localhost".to_string());
-        config.set_default("port", "80");
+    fn test_default_section() {
+        let content = r#"key1 = value1
+key2 = value2"#;
 
-        let result = config.validate_required(&["host", "port", "database"]);
-        assert!(result.is_err());
-        let missing = result.unwrap_err();
-        assert_eq!(missing, vec!["database"]);
+        let config = Config::from_str(content).unwrap();
+        assert_eq!(config.get("default", "key1"), Some("value1"));
+        assert_eq!(config.get("default", "key2"), Some("value2"));
     }
-}
-use std::fs;
-use std::collections::HashMap;
-use toml::Value;
-
-pub struct Config {
-    pub settings: HashMap<String, Value>,
-}
-
-impl Config {
-    pub fn new() -> Self {
-        Config {
-            settings: HashMap::new(),
-        }
-    }
-
-    pub fn load_from_file(&mut self, path: &str) -> Result<(), String> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read config file: {}", e))?;
-        
-        let parsed: Value = content.parse()
-            .map_err(|e| format!("Failed to parse TOML: {}", e))?;
-        
-        if let Value::Table(table) = parsed {
-            for (key, value) in table {
-                self.settings.insert(key, value);
-            }
-            Ok(())
-        } else {
-            Err("Config file must contain a TOML table".to_string())
-        }
-    }
-
-    pub fn get_string(&self, key: &str) -> Option<String> {
-        self.settings.get(key)
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    }
-
-    pub fn get_integer(&self, key: &str) -> Option<i64> {
-        self.settings.get(key)
-            .and_then(|v| v.as_integer())
-    }
-
-    pub fn get_boolean(&self, key: &str) -> Option<bool> {
-        self.settings.get(key)
-            .and_then(|v| v.as_bool())
-    }
-
-    pub fn contains_key(&self, key: &str) -> bool {
-        self.settings.contains_key(key)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_config_parsing() {
-        let mut config = Config::new();
-        let mut temp_file = NamedTempFile::new().unwrap();
-        
-        let toml_content = r#"
-            server_port = 8080
-            debug_mode = true
-            hostname = "localhost"
-        "#;
-        
-        write!(temp_file, "{}", toml_content).unwrap();
-        
-        let result = config.load_from_file(temp_file.path().to_str().unwrap());
-        assert!(result.is_ok());
-        
-        assert_eq!(config.get_integer("server_port"), Some(8080));
-        assert_eq!(config.get_boolean("debug_mode"), Some(true));
-        assert_eq!(config.get_string("hostname"), Some("localhost".to_string()));
-        assert!(config.contains_key("server_port"));
+    fn test_invalid_line() {
+        let content = "invalid line without equals";
+        assert!(Config::from_str(content).is_err());
     }
 }
