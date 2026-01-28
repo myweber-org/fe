@@ -96,3 +96,104 @@ mod tests {
         assert_eq!(original_content.to_vec(), decrypted_content);
     }
 }
+use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use pbkdf2::pbkdf2_hmac;
+use rand::RngCore;
+use sha2::Sha256;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+
+type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+
+const SALT_LENGTH: usize = 16;
+const IV_LENGTH: usize = 16;
+const KEY_ITERATIONS: u32 = 100_000;
+const KEY_LENGTH: usize = 32;
+
+pub struct EncryptionResult {
+    pub salt: [u8; SALT_LENGTH],
+    pub iv: [u8; IV_LENGTH],
+    pub ciphertext: Vec<u8>,
+}
+
+pub fn derive_key(password: &str, salt: &[u8]) -> [u8; KEY_LENGTH] {
+    let mut key = [0u8; KEY_LENGTH];
+    pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, KEY_ITERATIONS, &mut key);
+    key
+}
+
+pub fn encrypt_file(password: &str, input_path: &str, output_path: &str) -> Result<(), String> {
+    let mut file = File::open(input_path).map_err(|e| format!("Failed to open input file: {}", e))?;
+    let mut plaintext = Vec::new();
+    file.read_to_end(&mut plaintext)
+        .map_err(|e| format!("Failed to read input file: {}", e))?;
+
+    let mut salt = [0u8; SALT_LENGTH];
+    let mut iv = [0u8; IV_LENGTH];
+    rand::thread_rng().fill_bytes(&mut salt);
+    rand::thread_rng().fill_bytes(&mut iv);
+
+    let key = derive_key(password, &salt);
+    let ciphertext = Aes256CbcEnc::new(&key.into(), &iv.into())
+        .encrypt_padded_vec_mut::<Pkcs7>(&plaintext);
+
+    let result = EncryptionResult { salt, iv, ciphertext };
+
+    let mut output = File::create(output_path).map_err(|e| format!("Failed to create output file: {}", e))?;
+    output.write_all(&result.salt).map_err(|e| format!("Failed to write salt: {}", e))?;
+    output.write_all(&result.iv).map_err(|e| format!("Failed to write IV: {}", e))?;
+    output.write_all(&result.ciphertext).map_err(|e| format!("Failed to write ciphertext: {}", e))?;
+
+    Ok(())
+}
+
+pub fn decrypt_file(password: &str, input_path: &str, output_path: &str) -> Result<(), String> {
+    let mut file = File::open(input_path).map_err(|e| format!("Failed to open input file: {}", e))?;
+    
+    let mut salt = [0u8; SALT_LENGTH];
+    let mut iv = [0u8; IV_LENGTH];
+    file.read_exact(&mut salt).map_err(|e| format!("Failed to read salt: {}", e))?;
+    file.read_exact(&mut iv).map_err(|e| format!("Failed to read IV: {}", e))?;
+    
+    let mut ciphertext = Vec::new();
+    file.read_to_end(&mut ciphertext)
+        .map_err(|e| format!("Failed to read ciphertext: {}", e))?;
+
+    let key = derive_key(password, &salt);
+    let plaintext = Aes256CbcDec::new(&key.into(), &iv.into())
+        .decrypt_padded_vec_mut::<Pkcs7>(&ciphertext)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+
+    let mut output = File::create(output_path).map_err(|e| format!("Failed to create output file: {}", e))?;
+    output.write_all(&plaintext).map_err(|e| format!("Failed to write plaintext: {}", e))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_encryption_decryption() {
+        let password = "secure_password_123";
+        let test_data = b"This is a secret message that needs protection!";
+        
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+        
+        fs::write(input_file.path(), test_data).unwrap();
+        
+        encrypt_file(password, input_file.path().to_str().unwrap(), encrypted_file.path().to_str().unwrap())
+            .expect("Encryption should succeed");
+        
+        decrypt_file(password, encrypted_file.path().to_str().unwrap(), decrypted_file.path().to_str().unwrap())
+            .expect("Decryption should succeed");
+        
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(test_data.to_vec(), decrypted_data);
+    }
+}
