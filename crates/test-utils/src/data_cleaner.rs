@@ -1,58 +1,38 @@
+
 use std::collections::HashSet;
 
 pub struct DataCleaner {
-    records: Vec<String>,
+    unique_items: HashSet<String>,
 }
 
 impl DataCleaner {
     pub fn new() -> Self {
         DataCleaner {
-            records: Vec::new(),
+            unique_items: HashSet::new(),
         }
     }
 
-    pub fn add_record(&mut self, record: String) {
-        self.records.push(record);
+    pub fn add_item(&mut self, item: &str) -> bool {
+        let normalized = Self::normalize_string(item);
+        self.unique_items.insert(normalized)
     }
 
-    pub fn deduplicate(&mut self) -> usize {
-        let mut unique_set = HashSet::new();
-        let mut deduped_records = Vec::new();
-        
-        for record in self.records.drain(..) {
-            if unique_set.insert(record.clone()) {
-                deduped_records.push(record);
-            }
-        }
-        
-        let removed_count = self.records.len() - deduped_records.len();
-        self.records = deduped_records;
-        removed_count
+    pub fn get_unique_items(&self) -> Vec<String> {
+        let mut items: Vec<String> = self.unique_items.iter().cloned().collect();
+        items.sort();
+        items
     }
 
-    pub fn validate_records(&self) -> Vec<bool> {
-        self.records
-            .iter()
-            .map(|record| {
-                !record.trim().is_empty() 
-                && record.len() <= 1000 
-                && !record.contains('\0')
-            })
-            .collect()
+    pub fn clear(&mut self) {
+        self.unique_items.clear();
     }
 
-    pub fn get_valid_records(&self) -> Vec<&String> {
-        let validation_results = self.validate_records();
-        self.records
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| validation_results[*i])
-            .map(|(_, record)| record)
-            .collect()
+    pub fn count(&self) -> usize {
+        self.unique_items.len()
     }
 
-    pub fn record_count(&self) -> usize {
-        self.records.len()
+    fn normalize_string(s: &str) -> String {
+        s.trim().to_lowercase()
     }
 }
 
@@ -61,26 +41,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_deduplication() {
+    fn test_basic_operations() {
         let mut cleaner = DataCleaner::new();
-        cleaner.add_record("test".to_string());
-        cleaner.add_record("test".to_string());
-        cleaner.add_record("unique".to_string());
-        
-        let removed = cleaner.deduplicate();
-        assert_eq!(removed, 1);
-        assert_eq!(cleaner.record_count(), 2);
+        assert_eq!(cleaner.count(), 0);
+
+        assert!(cleaner.add_item("Apple"));
+        assert!(cleaner.add_item("Banana"));
+        assert!(!cleaner.add_item("apple"));
+        assert!(!cleaner.add_item("  APPLE  "));
+
+        assert_eq!(cleaner.count(), 2);
+
+        let items = cleaner.get_unique_items();
+        assert_eq!(items, vec!["apple", "banana"]);
+
+        cleaner.clear();
+        assert_eq!(cleaner.count(), 0);
     }
 
     #[test]
-    fn test_validation() {
+    fn test_normalization() {
         let mut cleaner = DataCleaner::new();
-        cleaner.add_record("valid".to_string());
-        cleaner.add_record("".to_string());
-        cleaner.add_record("x".repeat(1001));
-        
-        let valid_records = cleaner.get_valid_records();
-        assert_eq!(valid_records.len(), 1);
-        assert_eq!(*valid_records[0], "valid");
+        cleaner.add_item("  Mixed CASE  ");
+        cleaner.add_item("MIXED case");
+        cleaner.add_item("mixed case");
+
+        assert_eq!(cleaner.count(), 1);
+        assert_eq!(cleaner.get_unique_items(), vec!["mixed case"]);
     }
 }
