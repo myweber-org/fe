@@ -75,4 +75,114 @@ pub fn load_config_with_fallback(path: &str, fallback_path: &str) -> Result<AppC
         Ok(config) => Ok(config),
         Err(_) => AppConfig::from_file(fallback_path),
     }
+}use std::collections::HashMap;
+use std::fs;
+use std::io;
+
+#[derive(Debug)]
+pub struct Config {
+    values: HashMap<String, String>,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        Config {
+            values: HashMap::new(),
+        }
+    }
+
+    pub fn from_file(path: &str) -> io::Result<Self> {
+        let content = fs::read_to_string(path)?;
+        let mut config = Config::new();
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            if let Some((key, value)) = trimmed.split_once('=') {
+                let key = key.trim().to_string();
+                let value = value.trim().to_string();
+                config.values.insert(key, value);
+            }
+        }
+
+        Ok(config)
+    }
+
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.values.get(key)
+    }
+
+    pub fn set(&mut self, key: &str, value: &str) {
+        self.values.insert(key.to_string(), value.to_string());
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.values.contains_key(key)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_empty_config() {
+        let config = Config::new();
+        assert!(config.is_empty());
+        assert_eq!(config.len(), 0);
+    }
+
+    #[test]
+    fn test_set_and_get() {
+        let mut config = Config::new();
+        config.set("host", "localhost");
+        config.set("port", "8080");
+
+        assert_eq!(config.get("host"), Some(&"localhost".to_string()));
+        assert_eq!(config.get("port"), Some(&"8080".to_string()));
+        assert_eq!(config.get("missing"), None);
+        assert_eq!(config.len(), 2);
+    }
+
+    #[test]
+    fn test_from_file() -> io::Result<()> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "# Sample configuration")?;
+        writeln!(temp_file, "host = localhost")?;
+        writeln!(temp_file, "port = 8080")?;
+        writeln!(temp_file, "")?;
+        writeln!(temp_file, "# Another comment")?;
+        writeln!(temp_file, "timeout = 30")?;
+
+        let config = Config::from_file(temp_file.path().to_str().unwrap())?;
+        
+        assert_eq!(config.get("host"), Some(&"localhost".to_string()));
+        assert_eq!(config.get("port"), Some(&"8080".to_string()));
+        assert_eq!(config.get("timeout"), Some(&"30".to_string()));
+        assert_eq!(config.len(), 3);
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_contains_key() {
+        let mut config = Config::new();
+        config.set("debug", "true");
+        
+        assert!(config.contains_key("debug"));
+        assert!(!config.contains_key("verbose"));
+    }
 }
