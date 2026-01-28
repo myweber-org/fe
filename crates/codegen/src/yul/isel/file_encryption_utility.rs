@@ -189,4 +189,166 @@ mod tests {
         
         assert_eq!(test_data, decrypted.as_slice());
     }
+}use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use chacha20poly1305::{ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce};
+use std::fs;
+use std::io::{self, Write};
+use std::path::Path;
+
+pub struct EncryptionResult {
+    pub ciphertext: Vec<u8>,
+    pub nonce: Vec<u8>,
+}
+
+pub enum Algorithm {
+    Aes256Gcm,
+    ChaCha20Poly1305,
+}
+
+pub struct FileEncryptor {
+    algorithm: Algorithm,
+}
+
+impl FileEncryptor {
+    pub fn new(algorithm: Algorithm) -> Self {
+        Self { algorithm }
+    }
+
+    pub fn generate_key(&self) -> Vec<u8> {
+        match self.algorithm {
+            Algorithm::Aes256Gcm => {
+                let key = Aes256Gcm::generate_key(&mut OsRng);
+                key.as_slice().to_vec()
+            }
+            Algorithm::ChaCha20Poly1305 => {
+                let key = ChaCha20Poly1305::generate_key(&mut OsRng);
+                key.as_slice().to_vec()
+            }
+        }
+    }
+
+    pub fn encrypt_file(&self, input_path: &Path, key: &[u8]) -> io::Result<EncryptionResult> {
+        let plaintext = fs::read(input_path)?;
+        
+        match self.algorithm {
+            Algorithm::Aes256Gcm => {
+                let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+                let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+                let ciphertext = cipher
+                    .encrypt(&nonce, plaintext.as_ref())
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                
+                Ok(EncryptionResult {
+                    ciphertext,
+                    nonce: nonce.to_vec(),
+                })
+            }
+            Algorithm::ChaCha20Poly1305 => {
+                let cipher = ChaCha20Poly1305::new(ChaChaKey::from_slice(key));
+                let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+                let ciphertext = cipher
+                    .encrypt(&nonce, plaintext.as_ref())
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                
+                Ok(EncryptionResult {
+                    ciphertext,
+                    nonce: nonce.to_vec(),
+                })
+            }
+        }
+    }
+
+    pub fn decrypt_file(&self, ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> io::Result<Vec<u8>> {
+        match self.algorithm {
+            Algorithm::Aes256Gcm => {
+                let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+                let nonce = Nonce::from_slice(nonce);
+                cipher
+                    .decrypt(nonce, ciphertext)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            }
+            Algorithm::ChaCha20Poly1305 => {
+                let cipher = ChaCha20Poly1305::new(ChaChaKey::from_slice(key));
+                let nonce = ChaChaNonce::from_slice(nonce);
+                cipher
+                    .decrypt(nonce, ciphertext)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            }
+        }
+    }
+
+    pub fn save_encrypted(&self, result: &EncryptionResult, output_path: &Path) -> io::Result<()> {
+        let mut file = fs::File::create(output_path)?;
+        file.write_all(&result.nonce)?;
+        file.write_all(&result.ciphertext)?;
+        Ok(())
+    }
+
+    pub fn load_encrypted(&self, input_path: &Path) -> io::Result<(Vec<u8>, Vec<u8>)> {
+        let data = fs::read(input_path)?;
+        
+        let nonce_size = match self.algorithm {
+            Algorithm::Aes256Gcm => 12,
+            Algorithm::ChaCha20Poly1305 => 12,
+        };
+        
+        if data.len() < nonce_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "File too small to contain nonce",
+            ));
+        }
+        
+        let nonce = data[..nonce_size].to_vec();
+        let ciphertext = data[nonce_size..].to_vec();
+        
+        Ok((ciphertext, nonce))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_aes_encryption_decryption() {
+        let encryptor = FileEncryptor::new(Algorithm::Aes256Gcm);
+        let key = encryptor.generate_key();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "Test data for encryption").unwrap();
+        
+        let result = encryptor
+            .encrypt_file(temp_file.path(), &key)
+            .unwrap();
+        
+        let decrypted = encryptor
+            .decrypt_file(&result.ciphertext, &key, &result.nonce)
+            .unwrap();
+        
+        assert_eq!(decrypted, b"Test data for encryption\n");
+    }
+
+    #[test]
+    fn test_chacha_encryption_decryption() {
+        let encryptor = FileEncryptor::new(Algorithm::ChaCha20Poly1305);
+        let key = encryptor.generate_key();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "ChaCha test data").unwrap();
+        
+        let result = encryptor
+            .encrypt_file(temp_file.path(), &key)
+            .unwrap();
+        
+        let decrypted = encryptor
+            .decrypt_file(&result.ciphertext, &key, &result.nonce)
+            .unwrap();
+        
+        assert_eq!(decrypted, b"ChaCha test data\n");
+    }
 }
