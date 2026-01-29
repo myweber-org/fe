@@ -1,60 +1,61 @@
-
+use csv::Reader;
+use serde::Deserialize;
 use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, Deserialize)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
+}
 
 pub struct DataProcessor {
-    file_path: String,
-    delimiter: char,
+    records: Vec<Record>,
 }
 
 impl DataProcessor {
-    pub fn new(file_path: &str, delimiter: char) -> Self {
+    pub fn new() -> Self {
         DataProcessor {
-            file_path: file_path.to_string(),
-            delimiter,
+            records: Vec::new(),
         }
     }
 
-    pub fn filter_records(&self, column_index: usize, filter_value: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(&self.file_path)?;
-        let reader = BufReader::new(file);
-        let mut filtered_records = Vec::new();
-
-        for line in reader.lines() {
-            let line = line?;
-            let fields: Vec<String> = line.split(self.delimiter).map(|s| s.to_string()).collect();
-            
-            if fields.len() > column_index && fields[column_index] == filter_value {
-                filtered_records.push(fields);
-            }
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
+        let mut rdr = Reader::from_path(path)?;
+        for result in rdr.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
         }
-
-        Ok(filtered_records)
+        Ok(())
     }
 
-    pub fn count_records(&self) -> Result<usize, Box<dyn Error>> {
-        let file = File::open(&self.file_path)?;
-        let reader = BufReader::new(file);
-        let count = reader.lines().count();
-        Ok(count)
+    pub fn validate_records(&self) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|r| r.value >= 0.0 && !r.name.is_empty())
+            .collect()
     }
 
-    pub fn get_column_values(&self, column_index: usize) -> Result<Vec<String>, Box<dyn Error>> {
-        let file = File::open(&self.file_path)?;
-        let reader = BufReader::new(file);
-        let mut column_values = Vec::new();
-
-        for line in reader.lines() {
-            let line = line?;
-            let fields: Vec<String> = line.split(self.delimiter).map(|s| s.to_string()).collect();
-            
-            if fields.len() > column_index {
-                column_values.push(fields[column_index].clone());
-            }
+    pub fn calculate_average(&self) -> Option<f64> {
+        let valid_records = self.validate_records();
+        if valid_records.is_empty() {
+            return None;
         }
+        let sum: f64 = valid_records.iter().map(|r| r.value).sum();
+        Some(sum / valid_records.len() as f64)
+    }
 
-        Ok(column_values)
+    pub fn group_by_category(&self) -> std::collections::HashMap<String, Vec<&Record>> {
+        let mut groups = std::collections::HashMap::new();
+        for record in &self.records {
+            groups
+                .entry(record.category.clone())
+                .or_insert_with(Vec::new)
+                .push(record);
+        }
+        groups
     }
 }
 
@@ -65,44 +66,23 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_filter_records() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,name,age").unwrap();
-        writeln!(temp_file, "1,alice,30").unwrap();
-        writeln!(temp_file, "2,bob,25").unwrap();
-        writeln!(temp_file, "3,alice,35").unwrap();
+    fn test_data_processing() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "id,name,value,category\n1,ItemA,10.5,Alpha\n2,ItemB,-3.2,Beta\n3,,15.7,Alpha"
+        )
+        .unwrap();
 
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap(), ',');
-        let filtered = processor.filter_records(1, "alice").unwrap();
+        let mut processor = DataProcessor::new();
+        processor.load_from_csv(file.path()).unwrap();
 
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0][0], "1");
-        assert_eq!(filtered[1][0], "3");
-    }
+        assert_eq!(processor.records.len(), 3);
+        assert_eq!(processor.validate_records().len(), 2);
+        assert_eq!(processor.calculate_average(), Some(13.1));
 
-    #[test]
-    fn test_count_records() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "header1,header2").unwrap();
-        writeln!(temp_file, "value1,value2").unwrap();
-        writeln!(temp_file, "value3,value4").unwrap();
-
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap(), ',');
-        let count = processor.count_records().unwrap();
-
-        assert_eq!(count, 3);
-    }
-
-    #[test]
-    fn test_get_column_values() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "a,b,c").unwrap();
-        writeln!(temp_file, "1,2,3").unwrap();
-        writeln!(temp_file, "4,5,6").unwrap();
-
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap(), ',');
-        let column_values = processor.get_column_values(1).unwrap();
-
-        assert_eq!(column_values, vec!["b", "2", "5"]);
+        let groups = processor.group_by_category();
+        assert_eq!(groups.get("Alpha").unwrap().len(), 2);
+        assert_eq!(groups.get("Beta").unwrap().len(), 1);
     }
 }
