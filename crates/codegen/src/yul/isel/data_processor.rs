@@ -1,31 +1,19 @@
 
-use csv::{Reader, Writer};
-use serde::{Deserialize, Serialize};
 use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    active: bool,
-}
-
-impl Record {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.name.is_empty() {
-            return Err("Name cannot be empty".to_string());
-        }
-        if self.value < 0.0 {
-            return Err("Value must be non-negative".to_string());
-        }
-        Ok(())
-    }
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+    pub valid: bool,
 }
 
 pub struct DataProcessor {
-    records: Vec<Record>,
+    records: Vec<DataRecord>,
 }
 
 impl DataProcessor {
@@ -35,43 +23,82 @@ impl DataProcessor {
         }
     }
 
-    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
-        let mut rdr = Reader::from_path(path)?;
-        for result in rdr.deserialize() {
-            let record: Record = result?;
-            record.validate()?;
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if line_num == 0 {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 4 {
+                continue;
+            }
+
+            let id = match parts[0].parse::<u32>() {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+
+            let value = match parts[1].parse::<f64>() {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+
+            let category = parts[2].to_string();
+            let valid = parts[3].parse::<bool>().unwrap_or(false);
+
+            let record = DataRecord {
+                id,
+                value,
+                category,
+                valid,
+            };
+
             self.records.push(record);
+            count += 1;
         }
-        Ok(())
+
+        Ok(count)
     }
 
-    pub fn save_to_csv<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn Error>> {
-        let mut wtr = Writer::from_path(path)?;
-        for record in &self.records {
-            wtr.serialize(record)?;
-        }
-        wtr.flush()?;
-        Ok(())
-    }
-
-    pub fn filter_active(&self) -> Vec<&Record> {
+    pub fn filter_valid(&self) -> Vec<&DataRecord> {
         self.records
             .iter()
-            .filter(|record| record.active)
+            .filter(|record| record.valid)
             .collect()
     }
 
-    pub fn calculate_total(&self) -> f64 {
-        self.records.iter().map(|record| record.value).sum()
+    pub fn average_value(&self) -> Option<f64> {
+        let valid_records: Vec<&DataRecord> = self.filter_valid();
+        
+        if valid_records.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = valid_records.iter().map(|r| r.value).sum();
+        Some(sum / valid_records.len() as f64)
     }
 
-    pub fn add_record(&mut self, record: Record) -> Result<(), String> {
-        record.validate()?;
-        self.records.push(record);
-        Ok(())
+    pub fn group_by_category(&self) -> std::collections::HashMap<String, Vec<&DataRecord>> {
+        let mut groups = std::collections::HashMap::new();
+        
+        for record in &self.records {
+            groups
+                .entry(record.category.clone())
+                .or_insert_with(Vec::new)
+                .push(record);
+        }
+        
+        groups
     }
 
-    pub fn get_record_count(&self) -> usize {
+    pub fn count_records(&self) -> usize {
         self.records.len()
     }
 }
@@ -79,67 +106,33 @@ impl DataProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_record_validation() {
-        let valid_record = Record {
-            id: 1,
-            name: "Test".to_string(),
-            value: 100.0,
-            active: true,
-        };
-        assert!(valid_record.validate().is_ok());
-
-        let invalid_record = Record {
-            id: 2,
-            name: "".to_string(),
-            value: -50.0,
-            active: false,
-        };
-        assert!(invalid_record.validate().is_err());
-    }
-
-    #[test]
-    fn test_data_processor_operations() {
+    fn test_data_processor() {
         let mut processor = DataProcessor::new();
         
-        let record = Record {
-            id: 1,
-            name: "Sample".to_string(),
-            value: 42.5,
-            active: true,
-        };
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,value,category,valid").unwrap();
+        writeln!(temp_file, "1,10.5,category_a,true").unwrap();
+        writeln!(temp_file, "2,20.3,category_b,false").unwrap();
+        writeln!(temp_file, "3,15.7,category_a,true").unwrap();
         
-        assert!(processor.add_record(record).is_ok());
-        assert_eq!(processor.get_record_count(), 1);
-        assert_eq!(processor.calculate_total(), 42.5);
+        let result = processor.load_from_csv(temp_file.path());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 3);
+        assert_eq!(processor.count_records(), 3);
         
-        let active_records = processor.filter_active();
-        assert_eq!(active_records.len(), 1);
-    }
-
-    #[test]
-    fn test_csv_roundtrip() {
-        let mut processor = DataProcessor::new();
-        let record = Record {
-            id: 99,
-            name: "Roundtrip".to_string(),
-            value: 3.14,
-            active: false,
-        };
+        let valid_records = processor.filter_valid();
+        assert_eq!(valid_records.len(), 2);
         
-        processor.add_record(record).unwrap();
+        let avg = processor.average_value();
+        assert!(avg.is_some());
+        assert!((avg.unwrap() - 13.1).abs() < 0.001);
         
-        let temp_file = NamedTempFile::new().unwrap();
-        let path = temp_file.path();
-        
-        processor.save_to_csv(path).unwrap();
-        
-        let mut new_processor = DataProcessor::new();
-        new_processor.load_from_csv(path).unwrap();
-        
-        assert_eq!(new_processor.get_record_count(), 1);
-        assert_eq!(new_processor.calculate_total(), 3.14);
+        let groups = processor.group_by_category();
+        assert_eq!(groups.get("category_a").unwrap().len(), 2);
+        assert_eq!(groups.get("category_b").unwrap().len(), 1);
     }
 }
