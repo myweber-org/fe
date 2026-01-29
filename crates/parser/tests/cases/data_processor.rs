@@ -240,4 +240,110 @@ mod tests {
 
         assert!((average - 15.333).abs() < 0.001);
     }
+}use std::collections::HashMap;
+use std::error::Error;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, values: Vec<f64>) -> Result<Self, Box<dyn Error>> {
+        if values.is_empty() {
+            return Err("Values cannot be empty".into());
+        }
+        if values.iter().any(|&v| v.is_nan() || v.is_infinite()) {
+            return Err("Invalid numeric values detected".into());
+        }
+        
+        Ok(Self {
+            id,
+            values,
+            metadata: HashMap::new(),
+        })
+    }
+    
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+    
+    pub fn validate(&self) -> Result<(), Box<dyn Error>> {
+        if self.id == 0 {
+            return Err("Invalid record ID".into());
+        }
+        if self.values.len() > 1000 {
+            return Err("Record exceeds maximum size".into());
+        }
+        Ok(())
+    }
+    
+    pub fn transform(&mut self, factor: f64) -> Result<(), Box<dyn Error>> {
+        if factor <= 0.0 || factor.is_nan() || factor.is_infinite() {
+            return Err("Invalid transformation factor".into());
+        }
+        
+        for value in &mut self.values {
+            *value *= factor;
+        }
+        Ok(())
+    }
+    
+    pub fn calculate_statistics(&self) -> (f64, f64, f64) {
+        let count = self.values.len() as f64;
+        let sum: f64 = self.values.iter().sum();
+        let mean = sum / count;
+        
+        let variance: f64 = self.values
+            .iter()
+            .map(|&v| (v - mean).powi(2))
+            .sum::<f64>() / count;
+        
+        let std_dev = variance.sqrt();
+        
+        (mean, variance, std_dev)
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord], factor: f64) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let mut processed = Vec::with_capacity(records.len());
+    
+    for record in records {
+        record.validate()?;
+        let mut processed_record = record.clone();
+        processed_record.transform(factor)?;
+        processed.push(processed_record);
+    }
+    
+    if processed.is_empty() {
+        return Err("No records processed".into());
+    }
+    
+    Ok(processed)
+}
+
+pub fn aggregate_statistics(records: &[DataRecord]) -> HashMap<String, f64> {
+    let mut stats = HashMap::new();
+    
+    if records.is_empty() {
+        return stats;
+    }
+    
+    let total_records = records.len() as f64;
+    let mut total_mean = 0.0;
+    let mut total_variance = 0.0;
+    
+    for record in records {
+        let (mean, variance, _) = record.calculate_statistics();
+        total_mean += mean;
+        total_variance += variance;
+    }
+    
+    stats.insert("average_mean".to_string(), total_mean / total_records);
+    stats.insert("average_variance".to_string(), total_variance / total_records);
+    stats.insert("total_records".to_string(), total_records);
+    
+    stats
 }
