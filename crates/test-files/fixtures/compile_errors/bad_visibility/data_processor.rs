@@ -550,3 +550,100 @@ mod tests {
         assert!((std_dev - 8.1649).abs() < 0.001);
     }
 }
+use csv;
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+fn process_csv_file(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let mut reader = csv::Reader::from_reader(input_file);
+    
+    let mut records: Vec<Record> = Vec::new();
+    
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.value > 0.0 && !record.name.is_empty() {
+            records.push(record);
+        }
+    }
+    
+    let output_file = File::create(output_path)?;
+    let mut writer = csv::Writer::from_writer(output_file);
+    
+    for record in records {
+        writer.serialize(&record)?;
+    }
+    
+    writer.flush()?;
+    
+    Ok(())
+}
+
+fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
+    let count = records.len() as f64;
+    
+    if count == 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+    
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let mean = sum / count;
+    
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (sum, mean, std_dev)
+}
+
+fn filter_records(records: &[Record], threshold: f64) -> Vec<&Record> {
+    records.iter()
+        .filter(|r| r.value >= threshold && r.active)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_statistics_calculation() {
+        let records = vec![
+            Record { id: 1, name: String::from("Item1"), value: 10.5, active: true },
+            Record { id: 2, name: String::from("Item2"), value: 20.0, active: true },
+            Record { id: 3, name: String::from("Item3"), value: 15.5, active: false },
+        ];
+        
+        let (sum, mean, std_dev) = calculate_statistics(&records);
+        
+        assert_eq!(sum, 46.0);
+        assert_eq!(mean, 15.333333333333334);
+        assert!((std_dev - 4.041451884327381).abs() < 0.0001);
+    }
+    
+    #[test]
+    fn test_filter_records() {
+        let records = vec![
+            Record { id: 1, name: String::from("A"), value: 5.0, active: true },
+            Record { id: 2, name: String::from("B"), value: 15.0, active: true },
+            Record { id: 3, name: String::from("C"), value: 10.0, active: false },
+        ];
+        
+        let filtered = filter_records(&records, 10.0);
+        
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, 2);
+    }
+}
