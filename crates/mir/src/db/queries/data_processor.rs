@@ -123,3 +123,211 @@ mod tests {
         assert!(result.is_err());
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    id: u32,
+    name: String,
+    value: f64,
+    tags: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidData(String),
+    TransformationError(String),
+    ValidationError(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
+            ProcessingError::TransformationError(msg) => write!(f, "Transformation error: {}", msg),
+            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64, tags: Vec<String>) -> Result<Self, ProcessingError> {
+        if name.trim().is_empty() {
+            return Err(ProcessingError::InvalidData("Name cannot be empty".to_string()));
+        }
+        if value < 0.0 {
+            return Err(ProcessingError::InvalidData("Value must be non-negative".to_string()));
+        }
+        
+        Ok(Self {
+            id,
+            name,
+            value,
+            tags,
+        })
+    }
+
+    pub fn transform(&mut self, multiplier: f64) -> Result<(), ProcessingError> {
+        if multiplier <= 0.0 {
+            return Err(ProcessingError::TransformationError(
+                "Multiplier must be positive".to_string()
+            ));
+        }
+        
+        self.value *= multiplier;
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), ProcessingError> {
+        if self.id == 0 {
+            return Err(ProcessingError::ValidationError("ID cannot be zero".to_string()));
+        }
+        if self.name.len() > 100 {
+            return Err(ProcessingError::ValidationError(
+                "Name cannot exceed 100 characters".to_string()
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn add_tag(&mut self, tag: String) {
+        if !self.tags.contains(&tag) {
+            self.tags.push(tag);
+        }
+    }
+
+    pub fn get_normalized_value(&self, base: f64) -> f64 {
+        if base == 0.0 {
+            return 0.0;
+        }
+        self.value / base
+    }
+}
+
+pub struct DataProcessor {
+    records: HashMap<u32, DataRecord>,
+    statistics: ProcessingStats,
+}
+
+#[derive(Debug, Default)]
+pub struct ProcessingStats {
+    pub total_records: usize,
+    pub total_value: f64,
+    pub average_value: f64,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        Self {
+            records: HashMap::new(),
+            statistics: ProcessingStats::default(),
+        }
+    }
+
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), ProcessingError> {
+        record.validate()?;
+        
+        if self.records.contains_key(&record.id) {
+            return Err(ProcessingError::ValidationError(
+                format!("Record with ID {} already exists", record.id)
+            ));
+        }
+
+        self.statistics.total_records += 1;
+        self.statistics.total_value += record.value;
+        self.statistics.average_value = self.statistics.total_value / self.statistics.total_records as f64;
+        
+        self.records.insert(record.id, record);
+        Ok(())
+    }
+
+    pub fn process_batch(&mut self, multiplier: f64) -> Result<Vec<u32>, ProcessingError> {
+        if multiplier <= 0.0 {
+            return Err(ProcessingError::TransformationError(
+                "Multiplier must be positive".to_string()
+            ));
+        }
+
+        let mut processed_ids = Vec::new();
+        for (id, record) in self.records.iter_mut() {
+            record.transform(multiplier)?;
+            processed_ids.push(*id);
+        }
+
+        self.update_statistics();
+        Ok(processed_ids)
+    }
+
+    fn update_statistics(&mut self) {
+        self.statistics.total_value = self.records.values().map(|r| r.value).sum();
+        self.statistics.average_value = if self.statistics.total_records > 0 {
+            self.statistics.total_value / self.statistics.total_records as f64
+        } else {
+            0.0
+        };
+    }
+
+    pub fn get_record(&self, id: u32) -> Option<&DataRecord> {
+        self.records.get(&id)
+    }
+
+    pub fn get_statistics(&self) -> &ProcessingStats {
+        &self.statistics
+    }
+
+    pub fn filter_by_tag(&self, tag: &str) -> Vec<&DataRecord> {
+        self.records
+            .values()
+            .filter(|record| record.tags.contains(&tag.to_string()))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_creation() {
+        let record = DataRecord::new(1, "Test".to_string(), 100.0, vec!["tag1".to_string()]);
+        assert!(record.is_ok());
+        
+        let invalid_record = DataRecord::new(0, "".to_string(), -10.0, vec![]);
+        assert!(invalid_record.is_err());
+    }
+
+    #[test]
+    fn test_record_validation() {
+        let record = DataRecord::new(1, "Valid".to_string(), 50.0, vec![]).unwrap();
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        let record = DataRecord::new(1, "Record1".to_string(), 100.0, vec!["test".to_string()]).unwrap();
+        
+        assert!(processor.add_record(record).is_ok());
+        assert_eq!(processor.get_statistics().total_records, 1);
+    }
+
+    #[test]
+    fn test_batch_processing() {
+        let mut processor = DataProcessor::new();
+        let record1 = DataRecord::new(1, "R1".to_string(), 100.0, vec![]).unwrap();
+        let record2 = DataRecord::new(2, "R2".to_string(), 200.0, vec![]).unwrap();
+        
+        processor.add_record(record1).unwrap();
+        processor.add_record(record2).unwrap();
+        
+        let result = processor.process_batch(2.0);
+        assert!(result.is_ok());
+        
+        let stats = processor.get_statistics();
+        assert_eq!(stats.total_value, 600.0);
+    }
+}
