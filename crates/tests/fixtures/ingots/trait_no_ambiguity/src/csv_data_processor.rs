@@ -138,3 +138,186 @@ mod tests {
         assert!((electronics_total - 300.0).abs() < 0.001);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+#[derive(Debug, Clone)]
+pub struct CsvRecord {
+    pub id: u32,
+    pub name: String,
+    pub category: String,
+    pub value: f64,
+    pub active: bool,
+}
+
+impl CsvRecord {
+    pub fn from_line(line: &str) -> Result<Self, Box<dyn Error>> {
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 5 {
+            return Err("Invalid CSV format".into());
+        }
+
+        Ok(CsvRecord {
+            id: parts[0].parse()?,
+            name: parts[1].to_string(),
+            category: parts[2].to_string(),
+            value: parts[3].parse()?,
+            active: parts[4].parse()?,
+        })
+    }
+}
+
+pub struct CsvProcessor {
+    records: Vec<CsvRecord>,
+}
+
+impl CsvProcessor {
+    pub fn new() -> Self {
+        CsvProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_file(&mut self, path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+
+        for (index, line) in reader.lines().enumerate() {
+            let line = line?;
+            if index == 0 {
+                continue;
+            }
+            let record = CsvRecord::from_line(&line)?;
+            self.records.push(record);
+        }
+
+        Ok(())
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<&CsvRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.category == category)
+            .collect()
+    }
+
+    pub fn filter_active(&self) -> Vec<&CsvRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.active)
+            .collect()
+    }
+
+    pub fn calculate_total_value(&self) -> f64 {
+        self.records.iter().map(|record| record.value).sum()
+    }
+
+    pub fn calculate_average_value(&self) -> f64 {
+        if self.records.is_empty() {
+            return 0.0;
+        }
+        self.calculate_total_value() / self.records.len() as f64
+    }
+
+    pub fn find_max_value_record(&self) -> Option<&CsvRecord> {
+        self.records.iter().max_by(|a, b| {
+            a.value
+                .partial_cmp(&b.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    }
+
+    pub fn get_category_summary(&self) -> Vec<(String, f64, usize)> {
+        use std::collections::HashMap;
+
+        let mut category_map: HashMap<String, (f64, usize)> = HashMap::new();
+
+        for record in &self.records {
+            let entry = category_map
+                .entry(record.category.clone())
+                .or_insert((0.0, 0));
+            entry.0 += record.value;
+            entry.1 += 1;
+        }
+
+        category_map
+            .into_iter()
+            .map(|(category, (total, count))| (category, total, count))
+            .collect()
+    }
+
+    pub fn count_records(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn create_test_csv() -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "id,name,category,value,active\n1,ItemA,Electronics,100.5,true\n2,ItemB,Books,25.0,false\n3,ItemC,Electronics,75.0,true"
+        )
+        .unwrap();
+        file
+    }
+
+    #[test]
+    fn test_csv_loading() {
+        let test_file = create_test_csv();
+        let mut processor = CsvProcessor::new();
+        let result = processor.load_from_file(test_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+        assert_eq!(processor.count_records(), 3);
+    }
+
+    #[test]
+    fn test_filter_by_category() {
+        let test_file = create_test_csv();
+        let mut processor = CsvProcessor::new();
+        processor
+            .load_from_file(test_file.path().to_str().unwrap())
+            .unwrap();
+
+        let electronics = processor.filter_by_category("Electronics");
+        assert_eq!(electronics.len(), 2);
+
+        let books = processor.filter_by_category("Books");
+        assert_eq!(books.len(), 1);
+    }
+
+    #[test]
+    fn test_calculate_total() {
+        let test_file = create_test_csv();
+        let mut processor = CsvProcessor::new();
+        processor
+            .load_from_file(test_file.path().to_str().unwrap())
+            .unwrap();
+
+        let total = processor.calculate_total_value();
+        assert_eq!(total, 200.5);
+    }
+
+    #[test]
+    fn test_find_max_value() {
+        let test_file = create_test_csv();
+        let mut processor = CsvProcessor::new();
+        processor
+            .load_from_file(test_file.path().to_str().unwrap())
+            .unwrap();
+
+        let max_record = processor.find_max_value_record().unwrap();
+        assert_eq!(max_record.id, 1);
+        assert_eq!(max_record.value, 100.5);
+    }
+}
