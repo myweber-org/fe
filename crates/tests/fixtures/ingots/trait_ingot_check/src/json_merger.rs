@@ -1,110 +1,55 @@
-use serde_json::{Map, Value};
+
+use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::File;
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
-    let mut merged_map = Map::new();
+    let mut merged_array = Vec::new();
+    let mut seen_keys = HashMap::new();
 
     for path_str in file_paths {
         let path = Path::new(path_str);
         if !path.exists() {
+            eprintln!("Warning: File {} not found, skipping.", path_str);
             continue;
         }
 
-        let content = fs::read_to_string(path)?;
-        let json_value: Value = serde_json::from_str(&content)?;
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut content = String::new();
+        reader.read_to_string(&mut content)?;
 
-        if let Value::Object(obj) = json_value {
-            for (key, value) in obj {
-                merged_map.insert(key, value);
-            }
-        }
-    }
+        let parsed: Value = serde_json::from_str(&content)?;
 
-    Ok(Value::Object(merged_map))
-}
-
-pub fn merge_json_with_strategy(
-    file_paths: &[&str],
-    strategy: MergeStrategy,
-) -> Result<Value, Box<dyn std::error::Error>> {
-    let mut accumulator: HashMap<String, Value> = HashMap::new();
-
-    for path_str in file_paths {
-        let path = Path::new(path_str);
-        if !path.exists() {
-            continue;
-        }
-
-        let content = fs::read_to_string(path)?;
-        let json_value: Value = serde_json::from_str(&content)?;
-
-        if let Value::Object(obj) = json_value {
-            for (key, value) in obj {
-                match strategy {
-                    MergeStrategy::Overwrite => {
-                        accumulator.insert(key, value);
-                    }
-                    MergeStrategy::CombineArrays => {
-                        if let Some(existing) = accumulator.get(&key) {
-                            if existing.is_array() && value.is_array() {
-                                let mut combined = existing.as_array().unwrap().clone();
-                                combined.extend(value.as_array().unwrap().clone());
-                                accumulator.insert(key, Value::Array(combined));
-                            } else {
-                                accumulator.insert(key, value);
+        match parsed {
+            Value::Array(arr) => {
+                for item in arr {
+                    if let Some(obj) = item.as_object() {
+                        if let Some(id) = obj.get("id").and_then(|v| v.as_str()) {
+                            if !seen_keys.contains_key(id) {
+                                seen_keys.insert(id.to_string(), true);
+                                merged_array.push(item);
                             }
                         } else {
-                            accumulator.insert(key, value);
+                            merged_array.push(item);
                         }
-                    }
-                    MergeStrategy::SkipDuplicate => {
-                        if !accumulator.contains_key(&key) {
-                            accumulator.insert(key, value);
-                        }
+                    } else {
+                        merged_array.push(item);
                     }
                 }
             }
+            Value::Object(_) => merged_array.push(parsed),
+            _ => eprintln!("Warning: File {} does not contain JSON object or array.", path_str),
         }
     }
 
-    let map: Map<String, Value> = accumulator.into_iter().collect();
-    Ok(Value::Object(map))
+    Ok(json!(merged_array))
 }
 
-#[derive(Clone, Copy)]
-pub enum MergeStrategy {
-    Overwrite,
-    CombineArrays,
-    SkipDuplicate,
-}use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
-
-pub fn merge_json_files(file_paths: &[&str]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let mut merged_map = HashMap::new();
-
-    for path_str in file_paths {
-        let path = Path::new(path_str);
-        if !path.exists() {
-            continue;
-        }
-
-        let content = fs::read_to_string(path)?;
-        let json_value: serde_json::Value = serde_json::from_str(&content)?;
-
-        if let serde_json::Value::Object(obj) = json_value {
-            for (key, value) in obj {
-                merged_map.insert(key, value);
-            }
-        }
-    }
-
-    Ok(serde_json::Value::Object(
-        merged_map
-            .into_iter()
-            .map(|(k, v)| (k, v))
-            .collect(),
-    ))
+pub fn write_merged_json(output_path: &str, value: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    let file = File::create(output_path)?;
+    serde_json::to_writer_pretty(file, value)?;
+    Ok(())
 }
