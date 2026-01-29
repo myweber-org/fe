@@ -1,48 +1,22 @@
+
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-pub struct XORCipher {
-    key: Vec<u8>,
+pub fn xor_encrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> io::Result<()> {
+    let input_data = fs::read(input_path)?;
+    let encrypted_data: Vec<u8> = input_data
+        .iter()
+        .enumerate()
+        .map(|(i, &byte)| byte ^ key[i % key.len()])
+        .collect();
+    
+    fs::write(output_path, encrypted_data)?;
+    Ok(())
 }
 
-impl XORCipher {
-    pub fn new(key: &str) -> Self {
-        XORCipher {
-            key: key.as_bytes().to_vec(),
-        }
-    }
-
-    pub fn encrypt_file(&self, source_path: &str, dest_path: &str) -> io::Result<()> {
-        self.process_file(source_path, dest_path)
-    }
-
-    pub fn decrypt_file(&self, source_path: &str, dest_path: &str) -> io::Result<()> {
-        self.process_file(source_path, dest_path)
-    }
-
-    fn process_file(&self, source_path: &str, dest_path: &str) -> io::Result<()> {
-        let mut source_file = fs::File::open(Path::new(source_path))?;
-        let mut buffer = Vec::new();
-        source_file.read_to_end(&mut buffer)?;
-
-        let processed_data: Vec<u8> = buffer
-            .iter()
-            .enumerate()
-            .map(|(i, &byte)| byte ^ self.key[i % self.key.len()])
-            .collect();
-
-        let mut dest_file = fs::File::create(Path::new(dest_path))?;
-        dest_file.write_all(&processed_data)?;
-
-        Ok(())
-    }
-}
-
-pub fn generate_random_key(length: usize) -> Vec<u8> {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    (0..length).map(|_| rng.gen()).collect()
+pub fn xor_decrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> io::Result<()> {
+    xor_encrypt_file(input_path, output_path, key)
 }
 
 #[cfg(test)]
@@ -51,48 +25,29 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_xor_cipher_symmetry() {
-        let cipher = XORCipher::new("secret_key");
-        let test_data = b"Hello, XOR encryption!";
+    fn test_xor_encryption_roundtrip() {
+        let original_content = b"Secret data for encryption test";
+        let key = b"mysecretkey";
         
-        let encrypted: Vec<u8> = test_data
-            .iter()
-            .enumerate()
-            .map(|(i, &byte)| byte ^ cipher.key[i % cipher.key.len()])
-            .collect();
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
         
-        let decrypted: Vec<u8> = encrypted
-            .iter()
-            .enumerate()
-            .map(|(i, &byte)| byte ^ cipher.key[i % cipher.key.len()])
-            .collect();
+        fs::write(input_file.path(), original_content).unwrap();
         
-        assert_eq!(test_data.to_vec(), decrypted);
-    }
-
-    #[test]
-    fn test_file_encryption() -> io::Result<()> {
-        let cipher = XORCipher::new("test_key");
-        let source_file = NamedTempFile::new()?;
-        let encrypted_file = NamedTempFile::new()?;
-        let decrypted_file = NamedTempFile::new()?;
-
-        fs::write(source_file.path(), "Test file content")?;
-        
-        cipher.encrypt_file(
-            source_file.path().to_str().unwrap(),
+        xor_encrypt_file(
+            input_file.path().to_str().unwrap(),
             encrypted_file.path().to_str().unwrap(),
-        )?;
+            key,
+        ).unwrap();
         
-        cipher.decrypt_file(
+        xor_decrypt_file(
             encrypted_file.path().to_str().unwrap(),
             decrypted_file.path().to_str().unwrap(),
-        )?;
+            key,
+        ).unwrap();
         
-        let original_content = fs::read_to_string(source_file.path())?;
-        let decrypted_content = fs::read_to_string(decrypted_file.path())?;
-        
-        assert_eq!(original_content, decrypted_content);
-        Ok(())
+        let decrypted_content = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(original_content.to_vec(), decrypted_content);
     }
 }
