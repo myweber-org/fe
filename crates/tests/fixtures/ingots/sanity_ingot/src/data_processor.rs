@@ -1,166 +1,106 @@
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
+    cache: HashMap<String, Vec<f64>>,
 }
 
 impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
+    pub fn new() -> Self {
         DataProcessor {
-            delimiter,
-            has_header,
+            cache: HashMap::new(),
         }
     }
 
-    pub fn process_csv<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        let mut lines = reader.lines();
-
-        if self.has_header {
-            lines.next();
+    pub fn process_dataset(&mut self, key: &str, data: &[f64]) -> Result<Vec<f64>, String> {
+        if data.is_empty() {
+            return Err("Empty dataset provided".to_string());
         }
 
-        for line_result in lines {
-            let line = line_result?;
-            let record: Vec<String> = line
-                .split(self.delimiter)
-                .map(|field| field.trim().to_string())
-                .collect();
-            
-            if !record.is_empty() {
-                records.push(record);
+        if let Some(cached) = self.cache.get(key) {
+            return Ok(cached.clone());
+        }
+
+        let validated = self.validate_data(data)?;
+        let normalized = self.normalize_data(&validated);
+        let transformed = self.apply_transformations(&normalized);
+
+        self.cache.insert(key.to_string(), transformed.clone());
+        Ok(transformed)
+    }
+
+    fn validate_data(&self, data: &[f64]) -> Result<Vec<f64>, String> {
+        let mut result = Vec::with_capacity(data.len());
+        
+        for &value in data {
+            if value.is_nan() || value.is_infinite() {
+                return Err(format!("Invalid numeric value encountered: {}", value));
             }
-        }
-
-        Ok(records)
-    }
-
-    pub fn validate_record(&self, record: &[String]) -> bool {
-        !record.is_empty() && record.iter().all(|field| !field.is_empty())
-    }
-
-    pub fn calculate_average(&self, records: &[Vec<String>], column_index: usize) -> Option<f64> {
-        let mut sum = 0.0;
-        let mut count = 0;
-
-        for record in records {
-            if record.len() > column_index {
-                if let Ok(value) = record[column_index].parse::<f64>() {
-                    sum += value;
-                    count += 1;
-                }
+            if value < 0.0 {
+                return Err("Negative values not allowed in this context".to_string());
             }
+            result.push(value);
+        }
+        
+        Ok(result)
+    }
+
+    fn normalize_data(&self, data: &[f64]) -> Vec<f64> {
+        let max_value = data.iter().fold(f64::MIN, |a, &b| a.max(b));
+        
+        if max_value == 0.0 {
+            return vec![0.0; data.len()];
         }
 
-        if count > 0 {
-            Some(sum / count as f64)
-        } else {
-            None
-        }
+        data.iter()
+            .map(|&x| x / max_value)
+            .collect()
+    }
+
+    fn apply_transformations(&self, data: &[f64]) -> Vec<f64> {
+        data.iter()
+            .map(|&x| (x * 100.0).round() / 100.0)
+            .collect()
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn cache_stats(&self) -> (usize, usize) {
+        let total_keys = self.cache.len();
+        let total_values: usize = self.cache.values().map(|v| v.len()).sum();
+        (total_keys, total_values)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_csv_processing() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,salary").unwrap();
-        writeln!(temp_file, "Alice,30,50000.0").unwrap();
-        writeln!(temp_file, "Bob,25,45000.0").unwrap();
-        writeln!(temp_file, "Charlie,35,55000.0").unwrap();
-
-        let processor = DataProcessor::new(',', true);
-        let records = processor.process_csv(temp_file.path()).unwrap();
-
-        assert_eq!(records.len(), 3);
-        assert!(processor.validate_record(&records[0]));
-        
-        let avg_age = processor.calculate_average(&records, 1);
-        assert!(avg_age.is_some());
-        assert!((avg_age.unwrap() - 30.0).abs() < 0.001);
+    fn test_validation_rejects_negative() {
+        let processor = DataProcessor::new();
+        let data = vec![1.0, -2.0, 3.0];
+        assert!(processor.validate_data(&data).is_err());
     }
 
     #[test]
-    fn test_invalid_records() {
-        let processor = DataProcessor::new(',', false);
-        let valid_record = vec!["data".to_string(), "123".to_string()];
-        let invalid_record = vec!["".to_string(), "value".to_string()];
-        
-        assert!(processor.validate_record(&valid_record));
-        assert!(!processor.validate_record(&invalid_record));
+    fn test_normalization_scales_correctly() {
+        let processor = DataProcessor::new();
+        let data = vec![1.0, 2.0, 3.0];
+        let normalized = processor.normalize_data(&data);
+        assert_eq!(normalized, vec![1.0/3.0, 2.0/3.0, 1.0]);
     }
-}use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-
-pub struct DataProcessor {
-    file_path: String,
-    filter_column: usize,
-    filter_value: String,
-}
-
-impl DataProcessor {
-    pub fn new(file_path: &str, filter_column: usize, filter_value: &str) -> Self {
-        DataProcessor {
-            file_path: file_path.to_string(),
-            filter_column,
-            filter_value: filter_value.to_string(),
-        }
-    }
-
-    pub fn process(&self) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(&self.file_path)?;
-        let reader = BufReader::new(file);
-        let mut results = Vec::new();
-
-        for line in reader.lines() {
-            let line = line?;
-            let columns: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
-            
-            if columns.get(self.filter_column) == Some(&self.filter_value) {
-                results.push(columns);
-            }
-        }
-
-        Ok(results)
-    }
-
-    pub fn count_matches(&self) -> Result<usize, Box<dyn Error>> {
-        let matches = self.process()?;
-        Ok(matches.len())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_data_processor() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,name,status").unwrap();
-        writeln!(temp_file, "1,Alice,active").unwrap();
-        writeln!(temp_file, "2,Bob,inactive").unwrap();
-        writeln!(temp_file, "3,Charlie,active").unwrap();
-
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap(), 2, "active");
-        let results = processor.process().unwrap();
+    fn test_cache_functionality() {
+        let mut processor = DataProcessor::new();
+        let data = vec![1.5, 2.7, 3.9];
         
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0][1], "Alice");
-        assert_eq!(results[1][1], "Charlie");
+        let result1 = processor.process_dataset("test", &data).unwrap();
+        let result2 = processor.process_dataset("test", &data).unwrap();
+        
+        assert_eq!(result1, result2);
+        assert_eq!(processor.cache_stats(), (1, 3));
     }
 }
