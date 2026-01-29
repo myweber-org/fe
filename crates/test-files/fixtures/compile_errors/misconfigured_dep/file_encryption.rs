@@ -281,3 +281,94 @@ mod tests {
         assert_eq!(original_data.to_vec(), decrypted);
     }
 }
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use pbkdf2::{pbkdf2_hmac, Params};
+use sha2::Sha256;
+use std::error::Error;
+
+const SALT_LENGTH: usize = 16;
+const NONCE_LENGTH: usize = 12;
+const PBKDF2_ITERATIONS: u32 = 100_000;
+
+pub struct EncryptionResult {
+    pub ciphertext: Vec<u8>,
+    pub salt: [u8; SALT_LENGTH],
+    pub nonce: [u8; NONCE_LENGTH],
+}
+
+pub fn encrypt_data(data: &[u8], password: &str) -> Result<EncryptionResult, Box<dyn Error>> {
+    let mut salt = [0u8; SALT_LENGTH];
+    OsRng.fill_bytes(&mut salt);
+    
+    let mut key = [0u8; 32];
+    pbkdf2_hmac::<Sha256>(
+        password.as_bytes(),
+        &salt,
+        PBKDF2_ITERATIONS,
+        &mut key
+    );
+    
+    let mut nonce_bytes = [0u8; NONCE_LENGTH];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    
+    let ciphertext = cipher.encrypt(nonce, data)
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+    
+    Ok(EncryptionResult {
+        ciphertext,
+        salt,
+        nonce: nonce_bytes,
+    })
+}
+
+pub fn decrypt_data(
+    encrypted: &EncryptionResult,
+    password: &str
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut key = [0u8; 32];
+    pbkdf2_hmac::<Sha256>(
+        password.as_bytes(),
+        &encrypted.salt,
+        PBKDF2_ITERATIONS,
+        &mut key
+    );
+    
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+    let nonce = Nonce::from_slice(&encrypted.nonce);
+    
+    let plaintext = cipher.decrypt(nonce, encrypted.ciphertext.as_ref())
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+    
+    Ok(plaintext)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_encryption_roundtrip() {
+        let original_data = b"Secret message for encryption test";
+        let password = "StrongPassword123!";
+        
+        let encrypted = encrypt_data(original_data, password).unwrap();
+        let decrypted = decrypt_data(&encrypted, password).unwrap();
+        
+        assert_eq!(original_data.to_vec(), decrypted);
+    }
+    
+    #[test]
+    fn test_wrong_password_fails() {
+        let data = b"Test data";
+        let encrypted = encrypt_data(data, "correct_password").unwrap();
+        
+        let result = decrypt_data(&encrypted, "wrong_password");
+        assert!(result.is_err());
+    }
+}
