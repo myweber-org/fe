@@ -264,3 +264,166 @@ mod tests {
         assert_eq!(results[0][1], "200");
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    data: HashMap<String, Vec<f64>>,
+    validation_rules: ValidationRules,
+}
+
+pub struct ValidationRules {
+    min_value: f64,
+    max_value: f64,
+    required_keys: Vec<String>,
+}
+
+impl DataProcessor {
+    pub fn new(rules: ValidationRules) -> Self {
+        DataProcessor {
+            data: HashMap::new(),
+            validation_rules: rules,
+        }
+    }
+
+    pub fn add_dataset(&mut self, key: String, values: Vec<f64>) -> Result<(), String> {
+        if !self.validation_rules.required_keys.contains(&key) {
+            return Err(format!("Key '{}' is not in required keys list", key));
+        }
+
+        for &value in &values {
+            if value < self.validation_rules.min_value || value > self.validation_rules.max_value {
+                return Err(format!("Value {} is outside allowed range [{}, {}]", 
+                    value, self.validation_rules.min_value, self.validation_rules.max_value));
+            }
+        }
+
+        self.data.insert(key, values);
+        Ok(())
+    }
+
+    pub fn calculate_statistics(&self, key: &str) -> Option<Statistics> {
+        self.data.get(key).map(|values| {
+            let count = values.len() as f64;
+            let sum: f64 = values.iter().sum();
+            let mean = sum / count;
+            
+            let variance: f64 = values.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / count;
+            
+            let std_dev = variance.sqrt();
+            
+            let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+            let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+            
+            Statistics {
+                count: values.len(),
+                mean,
+                std_dev,
+                min,
+                max,
+            }
+        })
+    }
+
+    pub fn normalize_data(&mut self, key: &str) -> Result<(), String> {
+        if let Some(values) = self.data.get_mut(key) {
+            let stats = self.calculate_statistics(key).unwrap();
+            
+            if stats.std_dev == 0.0 {
+                return Err("Cannot normalize data with zero standard deviation".to_string());
+            }
+
+            for value in values.iter_mut() {
+                *value = (*value - stats.mean) / stats.std_dev;
+            }
+            Ok(())
+        } else {
+            Err(format!("Key '{}' not found in dataset", key))
+        }
+    }
+
+    pub fn merge_datasets(&mut self, other: DataProcessor) {
+        for (key, values) in other.data {
+            self.data.entry(key)
+                .and_modify(|existing| existing.extend_from_slice(&values))
+                .or_insert(values);
+        }
+    }
+
+    pub fn get_keys(&self) -> Vec<String> {
+        self.data.keys().cloned().collect()
+    }
+}
+
+pub struct Statistics {
+    pub count: usize,
+    pub mean: f64,
+    pub std_dev: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+impl ValidationRules {
+    pub fn new(min_value: f64, max_value: f64, required_keys: Vec<String>) -> Self {
+        ValidationRules {
+            min_value,
+            max_value,
+            required_keys,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_validation() {
+        let rules = ValidationRules::new(
+            0.0,
+            100.0,
+            vec!["temperature".to_string(), "humidity".to_string()]
+        );
+        
+        let mut processor = DataProcessor::new(rules);
+        
+        assert!(processor.add_dataset("temperature".to_string(), vec![25.5, 30.0, 22.8]).is_ok());
+        assert!(processor.add_dataset("pressure".to_string(), vec![1013.25]).is_err());
+        assert!(processor.add_dataset("temperature".to_string(), vec![-5.0]).is_err());
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let rules = ValidationRules::new(f64::NEG_INFINITY, f64::INFINITY, vec!["test".to_string()]);
+        let mut processor = DataProcessor::new(rules);
+        
+        processor.add_dataset("test".to_string(), vec![1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+        
+        let stats = processor.calculate_statistics("test").unwrap();
+        
+        assert_eq!(stats.count, 5);
+        assert_eq!(stats.mean, 3.0);
+        assert_eq!(stats.min, 1.0);
+        assert_eq!(stats.max, 5.0);
+    }
+
+    #[test]
+    fn test_data_normalization() {
+        let rules = ValidationRules::new(f64::NEG_INFINITY, f64::INFINITY, vec!["values".to_string()]);
+        let mut processor = DataProcessor::new(rules);
+        
+        processor.add_dataset("values".to_string(), vec![2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]).unwrap();
+        
+        processor.normalize_data("values").unwrap();
+        
+        let normalized_values = processor.data.get("values").unwrap();
+        let normalized_mean: f64 = normalized_values.iter().sum::<f64>() / normalized_values.len() as f64;
+        let normalized_variance: f64 = normalized_values.iter()
+            .map(|&x| (x - normalized_mean).powi(2))
+            .sum::<f64>() / normalized_values.len() as f64;
+        
+        assert!(normalized_mean.abs() < 1e-10);
+        assert!((normalized_variance - 1.0).abs() < 1e-10);
+    }
+}
