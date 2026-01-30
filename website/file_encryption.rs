@@ -156,3 +156,113 @@ pub fn decrypt_file(input_path: &str, output_path: &str) -> io::Result<()> {
 
     Ok(())
 }
+use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use pbkdf2::{pbkdf2_hmac, Params};
+use rand::RngCore;
+use sha2::Sha256;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+
+type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+
+const SALT_LEN: usize = 16;
+const IV_LEN: usize = 16;
+const KEY_ITERATIONS: u32 = 100_000;
+const KEY_LEN: usize = 32;
+
+pub fn encrypt_file(input_path: &str, output_path: &str, password: &str) -> Result<(), String> {
+    let mut input_file = File::open(input_path).map_err(|e| format!("Failed to open input file: {}", e))?;
+    let mut plaintext = Vec::new();
+    input_file.read_to_end(&mut plaintext).map_err(|e| format!("Failed to read input file: {}", e))?;
+
+    let mut salt = [0u8; SALT_LEN];
+    let mut iv = [0u8; IV_LEN];
+    rand::thread_rng().fill_bytes(&mut salt);
+    rand::thread_rng().fill_bytes(&mut iv);
+
+    let mut key = [0u8; KEY_LEN];
+    let params = Params {
+        rounds: KEY_ITERATIONS,
+        output_length: KEY_LEN,
+    };
+    pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, params.rounds, &mut key)
+        .map_err(|e| format!("Key derivation failed: {}", e))?;
+
+    let ciphertext = Aes256CbcEnc::new(&key.into(), &iv.into())
+        .encrypt_padded_vec_mut::<Pkcs7>(&plaintext);
+
+    let mut output_file = File::create(output_path).map_err(|e| format!("Failed to create output file: {}", e))?;
+    output_file.write_all(&salt).map_err(|e| format!("Failed to write salt: {}", e))?;
+    output_file.write_all(&iv).map_err(|e| format!("Failed to write IV: {}", e))?;
+    output_file.write_all(&ciphertext).map_err(|e| format!("Failed to write ciphertext: {}", e))?;
+
+    Ok(())
+}
+
+pub fn decrypt_file(input_path: &str, output_path: &str, password: &str) -> Result<(), String> {
+    let mut input_file = File::open(input_path).map_err(|e| format!("Failed to open input file: {}", e))?;
+    let mut encrypted_data = Vec::new();
+    input_file.read_to_end(&mut encrypted_data).map_err(|e| format!("Failed to read input file: {}", e))?;
+
+    if encrypted_data.len() < SALT_LEN + IV_LEN {
+        return Err("File too short to contain salt and IV".to_string());
+    }
+
+    let (salt_data, rest) = encrypted_data.split_at(SALT_LEN);
+    let (iv_data, ciphertext) = rest.split_at(IV_LEN);
+
+    let mut salt = [0u8; SALT_LEN];
+    let mut iv = [0u8; IV_LEN];
+    salt.copy_from_slice(salt_data);
+    iv.copy_from_slice(iv_data);
+
+    let mut key = [0u8; KEY_LEN];
+    let params = Params {
+        rounds: KEY_ITERATIONS,
+        output_length: KEY_LEN,
+    };
+    pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, params.rounds, &mut key)
+        .map_err(|e| format!("Key derivation failed: {}", e))?;
+
+    let decrypted = Aes256CbcDec::new(&key.into(), &iv.into())
+        .decrypt_padded_vec_mut::<Pkcs7>(ciphertext)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+
+    let mut output_file = File::create(output_path).map_err(|e| format!("Failed to create output file: {}", e))?;
+    output_file.write_all(&decrypted).map_err(|e| format!("Failed to write decrypted data: {}", e))?;
+
+    Ok(())
+}
+
+pub fn encrypt_directory(dir_path: &str, password: &str) -> Result<(), String> {
+    for entry in fs::read_dir(dir_path).map_err(|e| format!("Failed to read directory: {}", e))? {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+        let path = entry.path();
+        if path.is_file() {
+            let input_path = path.to_str().ok_or("Invalid file path")?;
+            let output_path = format!("{}.enc", input_path);
+            encrypt_file(input_path, &output_path, password)?;
+            fs::remove_file(input_path).map_err(|e| format!("Failed to remove original file: {}", e))?;
+        }
+    }
+    Ok(())
+}
+
+pub fn decrypt_directory(dir_path: &str, password: &str) -> Result<(), String> {
+    for entry in fs::read_dir(dir_path).map_err(|e| format!("Failed to read directory: {}", e))? {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext == "enc" {
+                    let input_path = path.to_str().ok_or("Invalid file path")?;
+                    let output_path = input_path.trim_end_matches(".enc");
+                    decrypt_file(input_path, output_path, password)?;
+                    fs::remove_file(input_path).map_err(|e| format!("Failed to remove encrypted file: {}", e))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
