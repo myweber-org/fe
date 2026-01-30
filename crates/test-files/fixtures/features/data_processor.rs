@@ -1,147 +1,154 @@
-use csv::Reader;
-use serde::Deserialize;
-use std::error::Error;
 
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum DataError {
+    #[error("Invalid data format")]
+    InvalidFormat,
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+    #[error("Validation failed: {0}")]
+    ValidationFailed(String),
 }
 
-pub fn process_csv_data(input_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
-    let mut reader = Reader::from_path(input_path)?;
-    let mut records = Vec::new();
-
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        validate_record(&record)?;
-        records.push(record);
-    }
-
-    Ok(records)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: HashMap<String, f64>,
+    pub tags: Vec<String>,
 }
 
-fn validate_record(record: &Record) -> Result<(), Box<dyn Error>> {
-    if record.name.is_empty() {
-        return Err("Name field cannot be empty".into());
-    }
-    if record.value < 0.0 {
-        return Err("Value must be non-negative".into());
-    }
-    if !["A", "B", "C"].contains(&record.category.as_str()) {
-        return Err("Category must be A, B, or C".into());
-    }
-    Ok(())
-}
-
-pub fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let count = records.len() as f64;
-    let mean = if count > 0.0 { sum / count } else { 0.0 };
-    
-    let variance: f64 = records.iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>() / count;
-    
-    let std_dev = variance.sqrt();
-    
-    (mean, variance, std_dev)
-}
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
-
-pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
-}
-
-impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
-        DataProcessor {
-            delimiter,
-            has_header,
+impl DataRecord {
+    pub fn new(id: u64, timestamp: i64) -> Self {
+        Self {
+            id,
+            timestamp,
+            values: HashMap::new(),
+            tags: Vec::new(),
         }
     }
 
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        let mut lines = reader.lines();
+    pub fn add_value(&mut self, key: String, value: f64) {
+        self.values.insert(key, value);
+    }
 
-        if self.has_header {
-            let _ = lines.next();
+    pub fn add_tag(&mut self, tag: String) {
+        self.tags.push(tag);
+    }
+
+    pub fn validate(&self) -> Result<(), DataError> {
+        if self.values.is_empty() {
+            return Err(DataError::ValidationFailed(
+                "Record must contain at least one value".to_string(),
+            ));
         }
 
-        for line_result in lines {
-            let line = line_result?;
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-            
-            if !fields.is_empty() {
-                records.push(fields);
+        if self.timestamp < 0 {
+            return Err(DataError::ValidationFailed(
+                "Timestamp cannot be negative".to_string(),
+            ));
+        }
+
+        for (key, value) in &self.values {
+            if key.trim().is_empty() {
+                return Err(DataError::ValidationFailed(
+                    "Value key cannot be empty".to_string(),
+                ));
+            }
+            if !value.is_finite() {
+                return Err(DataError::ValidationFailed(format!(
+                    "Value for '{}' must be finite",
+                    key
+                )));
             }
         }
 
-        Ok(records)
+        Ok(())
     }
 
-    pub fn validate_record(&self, record: &[String]) -> bool {
-        !record.is_empty() && record.iter().all(|field| !field.is_empty())
+    pub fn normalize_values(&mut self) {
+        let sum: f64 = self.values.values().sum();
+        if sum != 0.0 {
+            for value in self.values.values_mut() {
+                *value /= sum;
+            }
+        }
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        Self {
+            records: Vec::new(),
+        }
     }
 
-    pub fn extract_column(&self, data: &[Vec<String>], column_index: usize) -> Vec<String> {
-        data.iter()
-            .filter_map(|record| record.get(column_index).cloned())
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), DataError> {
+        record.validate()?;
+        self.records.push(record);
+        Ok(())
+    }
+
+    pub fn process_records(&mut self) -> HashMap<String, f64> {
+        let mut aggregated = HashMap::new();
+
+        for record in &self.records {
+            for (key, value) in &record.values {
+                *aggregated.entry(key.clone()).or_insert(0.0) += value;
+            }
+        }
+
+        aggregated
+    }
+
+    pub fn filter_by_tag(&self, tag: &str) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.tags.contains(&tag.to_string()))
             .collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
+
+    pub fn record_count(&self) -> usize {
+        self.records.len()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_csv() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "Alice,30,New York").unwrap();
-        writeln!(temp_file, "Bob,25,London").unwrap();
-
-        let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path()).unwrap();
-        
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["Alice", "30", "New York"]);
+    fn test_record_validation() {
+        let mut record = DataRecord::new(1, 1234567890);
+        record.add_value("temperature".to_string(), 25.5);
+        assert!(record.validate().is_ok());
     }
 
     #[test]
-    fn test_validate_record() {
-        let processor = DataProcessor::new(',', false);
-        let valid_record = vec!["data".to_string(), "value".to_string()];
-        let invalid_record = vec!["".to_string(), "value".to_string()];
-        
-        assert!(processor.validate_record(&valid_record));
-        assert!(!processor.validate_record(&invalid_record));
+    fn test_record_validation_fails() {
+        let record = DataRecord::new(1, 1234567890);
+        assert!(record.validate().is_err());
     }
 
     #[test]
-    fn test_extract_column() {
-        let data = vec![
-            vec!["a".to_string(), "b".to_string()],
-            vec!["c".to_string(), "d".to_string()],
-        ];
-        let processor = DataProcessor::new(',', false);
-        let column = processor.extract_column(&data, 1);
-        
-        assert_eq!(column, vec!["b".to_string(), "d".to_string()]);
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        let mut record = DataRecord::new(1, 1234567890);
+        record.add_value("pressure".to_string(), 1013.25);
+        record.add_tag("sensor".to_string());
+
+        assert!(processor.add_record(record).is_ok());
+        assert_eq!(processor.record_count(), 1);
     }
 }
