@@ -331,3 +331,80 @@ mod tests {
         assert_eq!(stats.total_value, 600.0);
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    id: u64,
+    timestamp: i64,
+    values: Vec<f64>,
+    metadata: HashMap<String, String>,
+}
+
+impl DataRecord {
+    pub fn new(id: u64, timestamp: i64, values: Vec<f64>) -> Self {
+        Self {
+            id,
+            timestamp,
+            values,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.id == 0 {
+            return Err("Invalid record ID".to_string());
+        }
+        if self.timestamp < 0 {
+            return Err("Timestamp cannot be negative".to_string());
+        }
+        if self.values.is_empty() {
+            return Err("Values array cannot be empty".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn transform_values<F>(&mut self, transformer: F)
+    where
+        F: Fn(f64) -> f64,
+    {
+        self.values = self.values.iter().map(|&v| transformer(v)).collect();
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord]) -> Vec<Result<DataRecord, String>> {
+    records
+        .iter_mut()
+        .map(|record| {
+            record.validate()?;
+            record.transform_values(|v| v * 2.0);
+            Ok(record.clone())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = DataRecord::new(1, 1234567890, vec![1.0, 2.0, 3.0]);
+        assert!(valid_record.validate().is_ok());
+
+        let invalid_record = DataRecord::new(0, -1, vec![]);
+        assert!(invalid_record.validate().is_err());
+    }
+
+    #[test]
+    fn test_value_transformation() {
+        let mut record = DataRecord::new(1, 1234567890, vec![1.0, 2.0, 3.0]);
+        record.transform_values(|v| v * 3.0);
+        assert_eq!(record.values, vec![3.0, 6.0, 9.0]);
+    }
+}
