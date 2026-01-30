@@ -134,3 +134,68 @@ pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error
 
     Ok(Value::Object(merged_map))
 }
+use serde_json::{Value, Map};
+use std::collections::HashSet;
+use std::fs;
+
+pub fn merge_json_objects(base: &Value, new: &Value, strategy: MergeStrategy) -> Value {
+    match (base, new) {
+        (Value::Object(base_map), Value::Object(new_map)) => {
+            let mut result = Map::new();
+            let all_keys: HashSet<_> = base_map.keys().chain(new_map.keys()).collect();
+
+            for key in all_keys {
+                let base_val = base_map.get(key);
+                let new_val = new_map.get(key);
+
+                match (base_val, new_val) {
+                    (Some(b), Some(n)) => {
+                        let merged = merge_json_objects(b, n, strategy.clone());
+                        result.insert(key.clone(), merged);
+                    }
+                    (Some(b), None) => {
+                        result.insert(key.clone(), b.clone());
+                    }
+                    (None, Some(n)) => {
+                        result.insert(key.clone(), n.clone());
+                    }
+                    (None, None) => unreachable!(),
+                }
+            }
+            Value::Object(result)
+        }
+        (Value::Array(base_arr), Value::Array(new_arr)) => {
+            match strategy {
+                MergeStrategy::PreferNew => Value::Array(new_arr.clone()),
+                MergeStrategy::PreferOld => Value::Array(base_arr.clone()),
+                MergeStrategy::Concatenate => {
+                    let mut combined = base_arr.clone();
+                    combined.extend(new_arr.clone());
+                    Value::Array(combined)
+                }
+            }
+        }
+        _ => new.clone(),
+    }
+}
+
+#[derive(Clone)]
+pub enum MergeStrategy {
+    PreferNew,
+    PreferOld,
+    Concatenate,
+}
+
+pub fn merge_json_files(path1: &str, path2: &str, output_path: &str, strategy: MergeStrategy) -> Result<(), Box<dyn std::error::Error>> {
+    let content1 = fs::read_to_string(path1)?;
+    let content2 = fs::read_to_string(path2)?;
+    
+    let json1: Value = serde_json::from_str(&content1)?;
+    let json2: Value = serde_json::from_str(&content2)?;
+    
+    let merged = merge_json_objects(&json1, &json2, strategy);
+    let output = serde_json::to_string_pretty(&merged)?;
+    
+    fs::write(output_path, output)?;
+    Ok(())
+}
