@@ -85,4 +85,53 @@ mod tests {
         let config = Config::new();
         assert_eq!(config.get_with_default("MISSING", "default_value"), "default_value");
     }
+}use std::env;
+use std::fs;
+use std::collections::HashMap;
+
+pub struct Config {
+    values: HashMap<String, String>,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        let mut values = HashMap::new();
+        
+        for (key, value) in env::vars() {
+            if key.starts_with("APP_") {
+                values.insert(key.to_lowercase(), value);
+            }
+        }
+        
+        Config { values }
+    }
+    
+    pub fn from_file(path: &str) -> Result<Self, std::io::Error> {
+        let content = fs::read_to_string(path)?;
+        let mut values = HashMap::new();
+        
+        for line in content.lines() {
+            if let Some((key, value)) = line.split_once('=') {
+                let trimmed_key = key.trim().to_lowercase();
+                let trimmed_value = value.trim().to_string();
+                values.insert(trimmed_key, trimmed_value);
+            }
+        }
+        
+        Ok(Config { values })
+    }
+    
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.values.get(&key.to_lowercase())
+    }
+    
+    pub fn set(&mut self, key: &str, value: &str) {
+        self.values.insert(key.to_lowercase(), value.to_string());
+    }
+    
+    pub fn merge(&mut self, other: Config) {
+        for (key, value) in other.values {
+            self.values.insert(key, value);
+        }
+    }
 }
