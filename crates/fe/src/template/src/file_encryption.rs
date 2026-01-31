@@ -119,4 +119,130 @@ pub fn process_file_encryption(input_path: &str, output_path: &str) -> Result<()
     std::fs::write(output_path, encrypted)?;
     
     Ok(())
+}use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::Path;
+
+pub struct XORCipher {
+    key: Vec<u8>,
+}
+
+impl XORCipher {
+    pub fn new(key: &str) -> Self {
+        XORCipher {
+            key: key.as_bytes().to_vec(),
+        }
+    }
+
+    pub fn encrypt_file(&self, input_path: &str, output_path: &str) -> std::io::Result<()> {
+        self.process_file(input_path, output_path)
+    }
+
+    pub fn decrypt_file(&self, input_path: &str, output_path: &str) -> std::io::Result<()> {
+        self.process_file(input_path, output_path)
+    }
+
+    fn process_file(&self, input_path: &str, output_path: &str) -> std::io::Result<()> {
+        let path = Path::new(input_path);
+        if !path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Input file not found",
+            ));
+        }
+
+        let mut input_file = File::open(input_path)?;
+        let mut buffer = Vec::new();
+        input_file.read_to_end(&mut buffer)?;
+
+        let processed_data: Vec<u8> = buffer
+            .iter()
+            .enumerate()
+            .map(|(i, &byte)| byte ^ self.key[i % self.key.len()])
+            .collect();
+
+        let mut output_file = File::create(output_path)?;
+        output_file.write_all(&processed_data)?;
+
+        Ok(())
+    }
+
+    pub fn encrypt_string(&self, text: &str) -> Vec<u8> {
+        text.as_bytes()
+            .iter()
+            .enumerate()
+            .map(|(i, &byte)| byte ^ self.key[i % self.key.len()])
+            .collect()
+    }
+
+    pub fn decrypt_string(&self, data: &[u8]) -> String {
+        let bytes: Vec<u8> = data
+            .iter()
+            .enumerate()
+            .map(|(i, &byte)| byte ^ self.key[i % self.key.len()])
+            .collect();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+}
+
+pub fn calculate_file_hash(path: &str) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    
+    let mut file = File::open(path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    
+    let mut hasher = Sha256::new();
+    hasher.update(&buffer);
+    let result = hasher.finalize();
+    
+    Ok(format!("{:x}", result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_xor_cipher() {
+        let cipher = XORCipher::new("secret_key");
+        let original_text = "Hello, World!";
+        
+        let encrypted = cipher.encrypt_string(original_text);
+        let decrypted = cipher.decrypt_string(&encrypted);
+        
+        assert_eq!(original_text, decrypted);
+    }
+
+    #[test]
+    fn test_file_encryption() {
+        let cipher = XORCipher::new("test_key");
+        let test_content = b"Test file content for encryption";
+        
+        let input_file = NamedTempFile::new().unwrap();
+        let output_file = NamedTempFile::new().unwrap();
+        
+        fs::write(input_file.path(), test_content).unwrap();
+        
+        cipher
+            .encrypt_file(
+                input_file.path().to_str().unwrap(),
+                output_file.path().to_str().unwrap(),
+            )
+            .unwrap();
+        
+        let encrypted_content = fs::read(output_file.path()).unwrap();
+        assert_ne!(test_content, encrypted_content.as_slice());
+        
+        cipher
+            .decrypt_file(
+                output_file.path().to_str().unwrap(),
+                input_file.path().to_str().unwrap(),
+            )
+            .unwrap();
+        
+        let decrypted_content = fs::read(input_file.path()).unwrap();
+        assert_eq!(test_content, decrypted_content.as_slice());
+    }
 }
