@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -19,8 +18,9 @@ impl Config {
             }
 
             if let Some((key, value)) = trimmed.split_once('=') {
+                let key = key.trim().to_string();
                 let processed_value = Self::process_value(value.trim());
-                values.insert(key.trim().to_string(), processed_value);
+                values.insert(key, processed_value);
             }
         }
 
@@ -40,12 +40,8 @@ impl Config {
         self.values.get(key)
     }
 
-    pub fn get_or_default(&self, key: &str, default: &str) -> String {
-        self.values
-            .get(key)
-            .map(|s| s.as_str())
-            .unwrap_or(default)
-            .to_string()
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.values.contains_key(key)
     }
 }
 
@@ -58,26 +54,24 @@ mod tests {
     #[test]
     fn test_basic_parsing() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "DATABASE_URL=postgres://localhost").unwrap();
+        writeln!(file, "DATABASE_URL=postgres://localhost/db").unwrap();
         writeln!(file, "# This is a comment").unwrap();
         writeln!(file, "PORT=8080").unwrap();
 
         let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("DATABASE_URL").unwrap(), "postgres://localhost");
+        assert_eq!(config.get("DATABASE_URL").unwrap(), "postgres://localhost/db");
         assert_eq!(config.get("PORT").unwrap(), "8080");
-        assert_eq!(config.get("MISSING"), None);
+        assert!(!config.contains_key("NONEXISTENT"));
     }
 
     #[test]
     fn test_env_substitution() {
-        env::set_var("API_SECRET", "super_secret");
+        env::set_var("API_KEY", "secret123");
         
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "SECRET=$API_SECRET").unwrap();
-        writeln!(file, "NORMAL=regular_value").unwrap();
-
+        writeln!(file, "KEY=$API_KEY").unwrap();
+        
         let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("SECRET").unwrap(), "super_secret");
-        assert_eq!(config.get("NORMAL").unwrap(), "regular_value");
+        assert_eq!(config.get("KEY").unwrap(), "secret123");
     }
 }
