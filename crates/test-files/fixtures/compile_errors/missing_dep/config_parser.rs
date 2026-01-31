@@ -74,4 +74,111 @@ mod tests {
         let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
         assert_eq!(config.get("MODE"), Some(&"debug".to_string()));
     }
+}use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub server: ServerConfig,
+    pub database: DatabaseConfig,
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DatabaseConfig {
+    pub url: String,
+    pub max_connections: u32,
+    pub pool_timeout_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    pub level: String,
+    pub file_path: String,
+    pub max_file_size_mb: u64,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        AppConfig {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 8080,
+                timeout_seconds: 30,
+            },
+            database: DatabaseConfig {
+                url: "postgresql://localhost:5432/mydb".to_string(),
+                max_connections: 10,
+                pool_timeout_seconds: 10,
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                file_path: "app.log".to_string(),
+                max_file_size_mb: 100,
+            },
+        }
+    }
+}
+
+pub fn load_config(config_path: &str) -> Result<AppConfig, Box<dyn std::error::Error>> {
+    let path = Path::new(config_path);
+    
+    if !path.exists() {
+        println!("Config file not found at {}, using defaults", config_path);
+        return Ok(AppConfig::default());
+    }
+    
+    let content = fs::read_to_string(path)?;
+    let config: AppConfig = toml::from_str(&content)?;
+    
+    validate_config(&config)?;
+    
+    Ok(config)
+}
+
+fn validate_config(config: &AppConfig) -> Result<(), String> {
+    if config.server.port == 0 {
+        return Err("Server port cannot be 0".to_string());
+    }
+    
+    if config.server.timeout_seconds == 0 {
+        return Err("Server timeout cannot be 0".to_string());
+    }
+    
+    if config.database.max_connections == 0 {
+        return Err("Database max connections cannot be 0".to_string());
+    }
+    
+    if config.logging.max_file_size_mb == 0 {
+        return Err("Log file max size cannot be 0".to_string());
+    }
+    
+    let valid_log_levels = ["error", "warn", "info", "debug", "trace"];
+    if !valid_log_levels.contains(&config.logging.level.as_str()) {
+        return Err(format!("Invalid log level: {}", config.logging.level));
+    }
+    
+    Ok(())
+}
+
+pub fn save_config(config: &AppConfig, config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    validate_config(config)?;
+    
+    let toml_string = toml::to_string_pretty(config)?;
+    fs::write(config_path, toml_string)?;
+    
+    Ok(())
+}
+
+pub fn generate_default_config(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let default_config = AppConfig::default();
+    save_config(&default_config, config_path)
 }
