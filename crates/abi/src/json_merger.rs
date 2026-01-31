@@ -1,91 +1,67 @@
-use std::collections::HashMap;
-use serde_json::{Value, Map};
+use serde_json::{Map, Value};
+use std::fs;
+use std::path::Path;
 
-pub fn merge_json(base: &mut Value, update: &Value) {
-    match (base, update) {
-        (Value::Object(base_map), Value::Object(update_map)) => {
-            for (key, update_value) in update_map {
-                if let Some(base_value) = base_map.get_mut(key) {
-                    merge_json(base_value, update_value);
-                } else {
-                    base_map.insert(key.clone(), update_value.clone());
-                }
+pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            continue;
+        }
+
+        let content = fs::read_to_string(path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                merged_map.insert(key, value);
             }
         }
-        (base, update) => {
-            *base = update.clone();
-        }
     }
-}
 
-pub fn merge_json_with_strategy(
-    base: &mut Value,
-    update: &Value,
-    strategy: MergeStrategy,
-) -> Result<(), String> {
-    match strategy {
-        MergeStrategy::Deep => {
-            merge_json(base, update);
-            Ok(())
-        }
-        MergeStrategy::Shallow => {
-            *base = update.clone();
-            Ok(())
-        }
-        MergeStrategy::Custom(merge_fn) => merge_fn(base, update),
-    }
-}
-
-pub enum MergeStrategy {
-    Deep,
-    Shallow,
-    Custom(fn(&mut Value, &Value) -> Result<(), String>),
+    Ok(Value::Object(merged_map))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_deep_merge() {
-        let mut base = json!({
-            "name": "Alice",
-            "address": {
-                "city": "Wonderland",
-                "zip": "12345"
-            }
-        });
+    fn test_merge_json_files() {
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
 
-        let update = json!({
-            "age": 30,
-            "address": {
-                "zip": "54321",
-                "country": "Fantasy"
-            }
-        });
+        writeln!(file1, r#"{"name": "Alice", "age": 30}"#).unwrap();
+        writeln!(file2, r#"{"city": "Berlin", "active": true}"#).unwrap();
 
-        merge_json(&mut base, &update);
+        let result = merge_json_files(&[
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ])
+        .unwrap();
 
-        assert_eq!(base["name"], "Alice");
-        assert_eq!(base["age"], 30);
-        assert_eq!(base["address"]["city"], "Wonderland");
-        assert_eq!(base["address"]["zip"], "54321");
-        assert_eq!(base["address"]["country"], "Fantasy");
+        assert_eq!(result["name"], "Alice");
+        assert_eq!(result["age"], 30);
+        assert_eq!(result["city"], "Berlin");
+        assert_eq!(result["active"], true);
     }
 
     #[test]
-    fn test_shallow_merge() {
-        let mut base = json!({"data": {"inner": "value"}});
-        let update = json!({"data": {"new": "content"}});
+    fn test_merge_with_missing_file() {
+        let mut file1 = NamedTempFile::new().unwrap();
+        writeln!(file1, r#"{"data": "test"}"#).unwrap();
 
-        merge_json_with_strategy(
-            &mut base,
-            &update,
-            MergeStrategy::Shallow,
-        ).unwrap();
+        let result = merge_json_files(&[
+            file1.path().to_str().unwrap(),
+            "non_existent_file.json",
+        ])
+        .unwrap();
 
-        assert_eq!(base["data"]["new"], "content");
-        assert!(base["data"].get("inner").is_none());
+        assert_eq!(result["data"], "test");
+        assert!(result.get("non_existent").is_none());
     }
 }
