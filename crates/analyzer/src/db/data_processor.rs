@@ -1,283 +1,116 @@
-
-use csv::Reader;
-use serde::Deserialize;
 use std::error::Error;
 use std::fs::File;
-
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
-}
-
-pub fn process_data_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
-    let file = File::open(file_path)?;
-    let mut reader = Reader::from_reader(file);
-    let mut records = Vec::new();
-
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        validate_record(&record)?;
-        records.push(record);
-    }
-
-    Ok(records)
-}
-
-fn validate_record(record: &Record) -> Result<(), Box<dyn Error>> {
-    if record.name.is_empty() {
-        return Err("Name cannot be empty".into());
-    }
-    if record.value < 0.0 {
-        return Err("Value cannot be negative".into());
-    }
-    if !["A", "B", "C"].contains(&record.category.as_str()) {
-        return Err("Invalid category".into());
-    }
-    Ok(())
-}
-
-pub fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
-    let count = records.len() as f64;
-    if count == 0.0 {
-        return (0.0, 0.0, 0.0);
-    }
-
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let mean = sum / count;
-    let variance: f64 = records.iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>() / count;
-    let std_dev = variance.sqrt();
-
-    (mean, variance, std_dev)
-}
-
-pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
-    records.into_iter()
-        .filter(|r| r.category == category)
-        .collect()
-}
+use std::io::{BufRead, BufReader};
 use std::collections::HashMap;
-use std::error::Error;
-use std::fmt;
-
-#[derive(Debug, Clone)]
-pub struct DataRecord {
-    pub id: u32,
-    pub timestamp: i64,
-    pub values: Vec<f64>,
-    pub metadata: HashMap<String, String>,
-}
-
-#[derive(Debug)]
-pub enum ProcessingError {
-    InvalidData(String),
-    TransformationError(String),
-    ValidationError(String),
-}
-
-impl fmt::Display for ProcessingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProcessingError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
-            ProcessingError::TransformationError(msg) => write!(f, "Transformation error: {}", msg),
-            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
-        }
-    }
-}
-
-impl Error for ProcessingError {}
 
 pub struct DataProcessor {
-    validation_rules: Vec<Box<dyn Fn(&DataRecord) -> Result<(), ProcessingError>>>,
-    transformation_pipeline: Vec<Box<dyn Fn(DataRecord) -> Result<DataRecord, ProcessingError>>>,
+    data: Vec<f64>,
+    frequency_map: HashMap<String, u32>,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
         DataProcessor {
-            validation_rules: Vec::new(),
-            transformation_pipeline: Vec::new(),
+            data: Vec::new(),
+            frequency_map: HashMap::new(),
         }
     }
 
-    pub fn add_validation_rule<F>(&mut self, rule: F)
-    where
-        F: Fn(&DataRecord) -> Result<(), ProcessingError> + 'static,
-    {
-        self.validation_rules.push(Box::new(rule));
-    }
-
-    pub fn add_transformation<F>(&mut self, transform: F)
-    where
-        F: Fn(DataRecord) -> Result<DataRecord, ProcessingError> + 'static,
-    {
-        self.transformation_pipeline.push(Box::new(transform));
-    }
-
-    pub fn process_record(&self, mut record: DataRecord) -> Result<DataRecord, ProcessingError> {
-        for rule in &self.validation_rules {
-            rule(&record)?;
-        }
-
-        for transform in &self.transformation_pipeline {
-            record = transform(record)?;
-        }
-
-        Ok(record)
-    }
-
-    pub fn process_batch(&self, records: Vec<DataRecord>) -> Result<Vec<DataRecord>, ProcessingError> {
-        let mut results = Vec::with_capacity(records.len());
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
         
-        for record in records {
-            match self.process_record(record) {
-                Ok(processed) => results.push(processed),
-                Err(e) => return Err(e),
+        for line in reader.lines().skip(1) {
+            let line = line?;
+            let parts: Vec<&str> = line.split(',').collect();
+            
+            if parts.len() >= 2 {
+                if let Ok(value) = parts[1].parse::<f64>() {
+                    self.data.push(value);
+                }
+                
+                let category = parts[0].to_string();
+                *self.frequency_map.entry(category).or_insert(0) += 1;
             }
         }
         
-        Ok(results)
-    }
-}
-
-fn validate_timestamp(record: &DataRecord) -> Result<(), ProcessingError> {
-    if record.timestamp < 0 {
-        Err(ProcessingError::ValidationError(
-            "Timestamp cannot be negative".to_string(),
-        ))
-    } else {
         Ok(())
     }
-}
 
-fn normalize_values(record: DataRecord) -> Result<DataRecord, ProcessingError> {
-    if record.values.is_empty() {
-        return Err(ProcessingError::TransformationError(
-            "Record has no values to normalize".to_string(),
-        ));
-    }
-
-    let sum: f64 = record.values.iter().sum();
-    if sum == 0.0 {
-        return Err(ProcessingError::TransformationError(
-            "Cannot normalize zero-sum vector".to_string(),
-        ));
-    }
-
-    let normalized_values: Vec<f64> = record.values.iter().map(|&v| v / sum).collect();
-
-    Ok(DataRecord {
-        values: normalized_values,
-        ..record
-    })
-}
-
-fn add_processing_metadata(record: DataRecord) -> Result<DataRecord, ProcessingError> {
-    let mut new_metadata = record.metadata.clone();
-    new_metadata.insert(
-        "processed_at".to_string(),
-        chrono::Utc::now().timestamp().to_string(),
-    );
-    new_metadata.insert("record_id".to_string(), record.id.to_string());
-    new_metadata.insert("value_count".to_string(), record.values.len().to_string());
-
-    Ok(DataRecord {
-        metadata: new_metadata,
-        ..record
-    })
-}
-
-pub fn create_default_processor() -> DataProcessor {
-    let mut processor = DataProcessor::new();
-    
-    processor.add_validation_rule(validate_timestamp);
-    processor.add_validation_rule(|record| {
-        if record.id == 0 {
-            Err(ProcessingError::ValidationError(
-                "Record ID cannot be zero".to_string(),
-            ))
-        } else {
-            Ok(())
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.data.is_empty() {
+            return None;
         }
-    });
-    
-    processor.add_transformation(normalize_values);
-    processor.add_transformation(add_processing_metadata);
-    
-    processor
+        
+        let sum: f64 = self.data.iter().sum();
+        Some(sum / self.data.len() as f64)
+    }
+
+    pub fn calculate_median(&mut self) -> Option<f64> {
+        if self.data.is_empty() {
+            return None;
+        }
+        
+        self.data.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mid = self.data.len() / 2;
+        
+        if self.data.len() % 2 == 0 {
+            Some((self.data[mid - 1] + self.data[mid]) / 2.0)
+        } else {
+            Some(self.data[mid])
+        }
+    }
+
+    pub fn get_frequency_distribution(&self) -> &HashMap<String, u32> {
+        &self.frequency_map
+    }
+
+    pub fn filter_by_threshold(&self, threshold: f64) -> Vec<f64> {
+        self.data.iter()
+            .filter(|&&x| x > threshold)
+            .cloned()
+            .collect()
+    }
+
+    pub fn data_summary(&self) -> String {
+        let mean = self.calculate_mean().unwrap_or(0.0);
+        let count = self.data.len();
+        let unique_categories = self.frequency_map.len();
+        
+        format!(
+            "Data Summary: {} records, {} unique categories, mean value: {:.2}",
+            count, unique_categories, mean
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_processor_validation() {
-        let processor = create_default_processor();
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
         
-        let valid_record = DataRecord {
-            id: 1,
-            timestamp: 1234567890,
-            values: vec![1.0, 2.0, 3.0],
-            metadata: HashMap::new(),
-        };
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "category,value").unwrap();
+        writeln!(temp_file, "A,10.5").unwrap();
+        writeln!(temp_file, "B,20.3").unwrap();
+        writeln!(temp_file, "A,15.7").unwrap();
+        writeln!(temp_file, "C,8.9").unwrap();
         
-        let invalid_record = DataRecord {
-            id: 0,
-            timestamp: -1,
-            values: vec![],
-            metadata: HashMap::new(),
-        };
+        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
         
-        assert!(processor.process_record(valid_record).is_ok());
-        assert!(processor.process_record(invalid_record).is_err());
-    }
-
-    #[test]
-    fn test_normalization() {
-        let record = DataRecord {
-            id: 1,
-            timestamp: 1234567890,
-            values: vec![1.0, 2.0, 3.0],
-            metadata: HashMap::new(),
-        };
+        assert_eq!(processor.calculate_mean(), Some(13.85));
+        assert_eq!(processor.calculate_median(), Some(13.1));
         
-        let result = normalize_values(record).unwrap();
-        let sum: f64 = result.values.iter().sum();
+        let filtered = processor.filter_by_threshold(10.0);
+        assert_eq!(filtered.len(), 3);
         
-        assert!((sum - 1.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn test_batch_processing() {
-        let processor = create_default_processor();
-        
-        let records = vec![
-            DataRecord {
-                id: 1,
-                timestamp: 1000,
-                values: vec![1.0, 2.0],
-                metadata: HashMap::new(),
-            },
-            DataRecord {
-                id: 2,
-                timestamp: 2000,
-                values: vec![3.0, 4.0],
-                metadata: HashMap::new(),
-            },
-        ];
-        
-        let results = processor.process_batch(records).unwrap();
-        assert_eq!(results.len(), 2);
-        
-        for result in results {
-            assert!(result.metadata.contains_key("processed_at"));
-            assert!(result.metadata.contains_key("record_id"));
-        }
+        let freq = processor.get_frequency_distribution();
+        assert_eq!(freq.get("A"), Some(&2));
     }
 }
