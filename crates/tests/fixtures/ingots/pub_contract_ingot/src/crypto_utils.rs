@@ -1,47 +1,63 @@
 
-use rand::Rng;
-use sha2::{Digest, Sha256};
+use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use hex::FromHex;
+use rand::RngCore;
 
-pub fn generate_random_string(length: usize) -> String {
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
-                            abcdefghijklmnopqrstuvwxyz\
-                            0123456789";
-    let mut rng = rand::thread_rng();
-    (0..length)
-        .map(|_| {
-            let idx = rng.gen_range(0..CHARSET.len());
-            CHARSET[idx] as char
-        })
-        .collect()
+type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+
+pub fn generate_key() -> [u8; 32] {
+    let mut key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut key);
+    key
 }
 
-pub fn hash_password(password: &str, salt: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    hasher.update(salt.as_bytes());
-    format!("{:x}", hasher.finalize())
+pub fn generate_iv() -> [u8; 16] {
+    let mut iv = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut iv);
+    iv
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_generate_random_string() {
-        let s1 = generate_random_string(16);
-        let s2 = generate_random_string(16);
-        assert_eq!(s1.len(), 16);
-        assert_eq!(s2.len(), 16);
-        assert_ne!(s1, s2);
+pub fn encrypt_aes256_cbc(plaintext: &[u8], key: &[u8], iv: &[u8]) -> Result<Vec<u8>, String> {
+    if key.len() != 32 {
+        return Err("Key must be 32 bytes for AES-256".to_string());
+    }
+    if iv.len() != 16 {
+        return Err("IV must be 16 bytes".to_string());
     }
 
-    #[test]
-    fn test_hash_password() {
-        let hash1 = hash_password("mypassword", "somesalt");
-        let hash2 = hash_password("mypassword", "somesalt");
-        let hash3 = hash_password("otherpassword", "somesalt");
-        assert_eq!(hash1, hash2);
-        assert_ne!(hash1, hash3);
-        assert_eq!(hash1.len(), 64);
+    let mut buffer = vec![0u8; plaintext.len() + 16];
+    let len = Aes256CbcEnc::new(key.into(), iv.into())
+        .encrypt_padded_b2b_mut::<Pkcs7>(plaintext, &mut buffer)
+        .map_err(|e| e.to_string())?
+        .len();
+
+    buffer.truncate(len);
+    Ok(buffer)
+}
+
+pub fn decrypt_aes256_cbc(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Result<Vec<u8>, String> {
+    if key.len() != 32 {
+        return Err("Key must be 32 bytes for AES-256".to_string());
     }
+    if iv.len() != 16 {
+        return Err("IV must be 16 bytes".to_string());
+    }
+
+    let mut buffer = vec![0u8; ciphertext.len()];
+    let len = Aes256CbcDec::new(key.into(), iv.into())
+        .decrypt_padded_b2b_mut::<Pkcs7>(ciphertext, &mut buffer)
+        .map_err(|e| e.to_string())?
+        .len();
+
+    buffer.truncate(len);
+    Ok(buffer)
+}
+
+pub fn hex_to_bytes(hex_str: &str) -> Result<Vec<u8>, String> {
+    Vec::from_hex(hex_str).map_err(|e| e.to_string())
+}
+
+pub fn bytes_to_hex(bytes: &[u8]) -> String {
+    hex::encode(bytes)
 }
