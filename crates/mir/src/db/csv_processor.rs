@@ -3,96 +3,126 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-#[derive(Debug)]
-pub struct CsvRecord {
-    pub id: u32,
-    pub name: String,
-    pub value: f64,
+pub struct CsvProcessor {
+    headers: Vec<String>,
+    records: Vec<Vec<String>>,
 }
 
-#[derive(Debug)]
-pub enum CsvError {
-    IoError(String),
-    ParseError(String),
-    ValidationError(String),
-}
+impl CsvProcessor {
+    pub fn new<P: AsRef<Path>>(file_path: P) -> Result<Self, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
 
-impl std::fmt::Display for CsvError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CsvError::IoError(msg) => write!(f, "IO error: {}", msg),
-            CsvError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            CsvError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
+        let headers = match lines.next() {
+            Some(header_line) => header_line?
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect(),
+            None => return Err("Empty CSV file".into()),
+        };
+
+        let mut records = Vec::new();
+        for line_result in lines {
+            let line = line_result?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let record: Vec<String> = line
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            if record.len() == headers.len() {
+                records.push(record);
+            }
         }
+
+        Ok(CsvProcessor { headers, records })
     }
-}
 
-impl Error for CsvError {}
+    pub fn filter_by_column(&self, column_name: &str, value: &str) -> Vec<Vec<String>> {
+        let column_index = match self.headers.iter().position(|h| h == column_name) {
+            Some(idx) => idx,
+            None => return Vec::new(),
+        };
 
-pub fn process_csv_file<P: AsRef<Path>>(path: P) -> Result<Vec<CsvRecord>, CsvError> {
-    let file = File::open(&path).map_err(|e| CsvError::IoError(e.to_string()))?;
-    let reader = BufReader::new(file);
-    let mut records = Vec::new();
+        self.records
+            .iter()
+            .filter(|record| record.get(column_index) == Some(&value.to_string()))
+            .cloned()
+            .collect()
+    }
 
-    for (line_num, line) in reader.lines().enumerate() {
-        let line = line.map_err(|e| CsvError::IoError(e.to_string()))?;
+    pub fn get_column_summary(&self, column_name: &str) -> Option<(usize, Vec<String>)> {
+        let column_index = self.headers.iter().position(|h| h == column_name)?;
         
-        if line.trim().is_empty() || line.starts_with('#') {
-            continue;
+        let mut unique_values = Vec::new();
+        for record in &self.records {
+            if let Some(value) = record.get(column_index) {
+                if !unique_values.contains(value) {
+                    unique_values.push(value.clone());
+                }
+            }
         }
-
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() != 3 {
-            return Err(CsvError::ParseError(format!(
-                "Line {}: expected 3 columns, found {}",
-                line_num + 1,
-                parts.len()
-            )));
-        }
-
-        let id = parts[0]
-            .parse::<u32>()
-            .map_err(|_| CsvError::ParseError(format!("Line {}: invalid ID format", line_num + 1)))?;
         
-        let name = parts[1].trim().to_string();
-        if name.is_empty() {
-            return Err(CsvError::ValidationError(format!(
-                "Line {}: name cannot be empty",
-                line_num + 1
-            )));
-        }
-
-        let value = parts[2]
-            .parse::<f64>()
-            .map_err(|_| CsvError::ParseError(format!("Line {}: invalid value format", line_num + 1)))?;
-
-        if value < 0.0 {
-            return Err(CsvError::ValidationError(format!(
-                "Line {}: value cannot be negative",
-                line_num + 1
-            )));
-        }
-
-        records.push(CsvRecord { id, name, value });
+        Some((unique_values.len(), unique_values))
     }
 
-    if records.is_empty() {
-        return Err(CsvError::ValidationError("No valid records found".to_string()));
+    pub fn record_count(&self) -> usize {
+        self.records.len()
     }
 
-    Ok(records)
+    pub fn header_count(&self) -> usize {
+        self.headers.len()
+    }
 }
 
-pub fn calculate_statistics(records: &[CsvRecord]) -> (f64, f64, f64) {
-    let count = records.len() as f64;
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let mean = sum / count;
-    
-    let variance: f64 = records.iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>() / count;
-    
-    let std_dev = variance.sqrt();
-    
-    (sum, mean, std_dev)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn create_test_csv() -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "id,name,department").unwrap();
+        writeln!(file, "1,Alice,Engineering").unwrap();
+        writeln!(file, "2,Bob,Marketing").unwrap();
+        writeln!(file, "3,Charlie,Engineering").unwrap();
+        writeln!(file, "4,Diana,Marketing").unwrap();
+        file
+    }
+
+    #[test]
+    fn test_csv_loading() {
+        let test_file = create_test_csv();
+        let processor = CsvProcessor::new(test_file.path()).unwrap();
+        
+        assert_eq!(processor.header_count(), 3);
+        assert_eq!(processor.record_count(), 4);
+        assert_eq!(processor.headers, vec!["id", "name", "department"]);
+    }
+
+    #[test]
+    fn test_filter_by_column() {
+        let test_file = create_test_csv();
+        let processor = CsvProcessor::new(test_file.path()).unwrap();
+        
+        let engineering_records = processor.filter_by_column("department", "Engineering");
+        assert_eq!(engineering_records.len(), 2);
+        
+        let marketing_records = processor.filter_by_column("department", "Marketing");
+        assert_eq!(marketing_records.len(), 2);
+    }
+
+    #[test]
+    fn test_column_summary() {
+        let test_file = create_test_csv();
+        let processor = CsvProcessor::new(test_file.path()).unwrap();
+        
+        let summary = processor.get_column_summary("department").unwrap();
+        assert_eq!(summary.0, 2);
+        assert!(summary.1.contains(&"Engineering".to_string()));
+        assert!(summary.1.contains(&"Marketing".to_string()));
+    }
 }
