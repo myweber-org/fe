@@ -1,104 +1,153 @@
-use csv::{ReaderBuilder, WriterBuilder};
-use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 
-#[derive(Debug, Deserialize, Serialize)]
-struct Record {
-    id: u32,
-    name: String,
-    category: String,
-    value: f64,
-    active: bool,
+pub struct CsvProcessor {
+    delimiter: char,
+    has_header: bool,
 }
 
-fn load_csv_data(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
-    let file = File::open(file_path)?;
-    let mut reader = ReaderBuilder::new().has_headers(true).from_reader(file);
-    
-    let mut records = Vec::new();
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        records.push(record);
+impl CsvProcessor {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        CsvProcessor {
+            delimiter,
+            has_header,
+        }
     }
-    
-    Ok(records)
-}
 
-fn filter_records(records: &[Record], category_filter: &str) -> Vec<Record> {
-    records
-        .iter()
-        .filter(|r| r.category == category_filter && r.active)
-        .cloned()
-        .collect()
-}
+    pub fn read_and_validate<P: AsRef<Path>>(
+        &self,
+        file_path: P,
+    ) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut records = Vec::new();
+        let mut line_number = 0;
 
-fn calculate_average_value(records: &[Record]) -> f64 {
-    if records.is_empty() {
-        return 0.0;
+        for line in reader.lines() {
+            line_number += 1;
+            let line_content = line?;
+            let fields: Vec<String> = line_content
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if fields.is_empty() {
+                return Err(format!("Empty line at {}", line_number).into());
+            }
+
+            if self.has_header && line_number == 1 {
+                continue;
+            }
+
+            records.push(fields);
+        }
+
+        if records.is_empty() {
+            return Err("No valid data records found".into());
+        }
+
+        Ok(records)
     }
-    
-    let total: f64 = records.iter().map(|r| r.value).sum();
-    total / records.len() as f64
-}
 
-fn save_filtered_results(records: &[Record], output_path: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::create(output_path)?;
-    let mut writer = WriterBuilder::new().has_headers(true).from_writer(file);
-    
-    for record in records {
-        writer.serialize(record)?;
+    pub fn transform_data(
+        &self,
+        data: Vec<Vec<String>>,
+        transform_fn: impl Fn(&str) -> String,
+    ) -> Vec<Vec<String>> {
+        data.into_iter()
+            .map(|record| {
+                record
+                    .into_iter()
+                    .map(|field| transform_fn(&field))
+                    .collect()
+            })
+            .collect()
     }
-    
-    writer.flush()?;
-    Ok(())
-}
 
-fn process_data_pipeline(input_path: &str, output_path: &str, category: &str) -> Result<(), Box<dyn Error>> {
-    let all_records = load_csv_data(input_path)?;
-    let filtered_records = filter_records(&all_records, category);
-    
-    if !filtered_records.is_empty() {
-        let avg_value = calculate_average_value(&filtered_records);
-        println!("Processed {} records in category '{}'", filtered_records.len(), category);
-        println!("Average value: {:.2}", avg_value);
+    pub fn write_to_file<P: AsRef<Path>>(
+        &self,
+        data: Vec<Vec<String>>,
+        output_path: P,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut file = File::create(output_path)?;
         
-        save_filtered_results(&filtered_records, output_path)?;
-        println!("Results saved to: {}", output_path);
-    } else {
-        println!("No records found for category: {}", category);
+        for record in data {
+            let line: String = record
+                .iter()
+                .map(|field| field.replace(self.delimiter, " "))
+                .collect::<Vec<String>>()
+                .join(&self.delimiter.to_string());
+            
+            writeln!(file, "{}", line)?;
+        }
+        
+        Ok(())
     }
-    
+
+    pub fn calculate_statistics(&self, data: &[Vec<String>], column_index: usize) -> Result<(f64, f64, f64), Box<dyn Error>> {
+        let mut values = Vec::new();
+        
+        for record in data {
+            if column_index >= record.len() {
+                return Err(format!("Column index {} out of bounds", column_index).into());
+            }
+            
+            if let Ok(value) = record[column_index].parse::<f64>() {
+                values.push(value);
+            }
+        }
+        
+        if values.is_empty() {
+            return Err("No numeric values found in specified column".into());
+        }
+        
+        let sum: f64 = values.iter().sum();
+        let count = values.len() as f64;
+        let mean = sum / count;
+        
+        let variance: f64 = values.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / count;
+        
+        let std_dev = variance.sqrt();
+        
+        Ok((mean, variance, std_dev))
+    }
+}
+
+pub fn create_sample_csv() -> Result<(), Box<dyn Error>> {
+    let mut file = File::create("sample_data.csv")?;
+    writeln!(file, "id,name,value,score")?;
+    writeln!(file, "1,Alice,42.5,85.3")?;
+    writeln!(file, "2,Bob,38.2,92.1")?;
+    writeln!(file, "3,Charlie,45.8,78.4")?;
+    writeln!(file, "4,Diana,41.3,88.9")?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
-    
+    use std::fs;
+
     #[test]
-    fn test_filter_records() {
-        let records = vec![
-            Record { id: 1, name: "Item A".to_string(), category: "Electronics".to_string(), value: 100.0, active: true },
-            Record { id: 2, name: "Item B".to_string(), category: "Books".to_string(), value: 50.0, active: true },
-            Record { id: 3, name: "Item C".to_string(), category: "Electronics".to_string(), value: 200.0, active: false },
-        ];
+    fn test_csv_processing() {
+        create_sample_csv().unwrap();
         
-        let filtered = filter_records(&records, "Electronics");
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].id, 1);
-    }
-    
-    #[test]
-    fn test_calculate_average() {
-        let records = vec![
-            Record { id: 1, name: "Test".to_string(), category: "Test".to_string(), value: 10.0, active: true },
-            Record { id: 2, name: "Test".to_string(), category: "Test".to_string(), value: 20.0, active: true },
-            Record { id: 3, name: "Test".to_string(), category: "Test".to_string(), value: 30.0, active: true },
-        ];
+        let processor = CsvProcessor::new(',', true);
+        let data = processor.read_and_validate("sample_data.csv").unwrap();
         
-        let avg = calculate_average_value(&records);
-        assert_eq!(avg, 20.0);
+        assert_eq!(data.len(), 4);
+        assert_eq!(data[0].len(), 4);
+        
+        let transformed = processor.transform_data(data, |s| s.to_uppercase());
+        assert!(transformed[0][1].contains("ALICE"));
+        
+        let stats = processor.calculate_statistics(&transformed, 3).unwrap();
+        assert!(stats.0 > 0.0);
+        
+        fs::remove_file("sample_data.csv").unwrap();
     }
 }
