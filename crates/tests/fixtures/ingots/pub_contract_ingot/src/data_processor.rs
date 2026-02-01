@@ -184,3 +184,47 @@ mod tests {
         assert!(matches!(result, Err(DataError::DuplicateId(1))));
     }
 }
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DataRecord {
+    id: u32,
+    value: f64,
+    category: String,
+}
+
+pub fn validate_record(record: &DataRecord) -> Result<(), Box<dyn Error>> {
+    if record.id == 0 {
+        return Err("ID cannot be zero".into());
+    }
+    
+    if record.value < 0.0 {
+        return Err("Value must be non-negative".into());
+    }
+    
+    if record.category.is_empty() {
+        return Err("Category cannot be empty".into());
+    }
+    
+    Ok(())
+}
+
+pub fn transform_value(record: &mut DataRecord, multiplier: f64) {
+    record.value *= multiplier;
+}
+
+pub fn filter_records(records: Vec<DataRecord>, min_value: f64) -> Vec<DataRecord> {
+    records.into_iter()
+        .filter(|r| r.value >= min_value)
+        .collect()
+}
+
+pub fn calculate_average(records: &[DataRecord]) -> Option<f64> {
+    if records.is_empty() {
+        return None;
+    }
+    
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    Some(sum / records.len() as f64)
+}
