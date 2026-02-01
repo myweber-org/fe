@@ -240,3 +240,163 @@ mod tests {
         Ok(())
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    data: HashMap<String, Vec<f64>>,
+    validation_rules: HashMap<String, ValidationRule>,
+}
+
+pub struct ValidationRule {
+    min_value: Option<f64>,
+    max_value: Option<f64>,
+    allowed_values: Option<Vec<f64>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            data: HashMap::new(),
+            validation_rules: HashMap::new(),
+        }
+    }
+
+    pub fn add_dataset(&mut self, name: String, values: Vec<f64>) -> Result<(), String> {
+        if self.data.contains_key(&name) {
+            return Err(format!("Dataset '{}' already exists", name));
+        }
+        
+        if let Some(rule) = self.validation_rules.get(&name) {
+            if let Err(err) = rule.validate(&values) {
+                return Err(format!("Validation failed for dataset '{}': {}", name, err));
+            }
+        }
+        
+        self.data.insert(name, values);
+        Ok(())
+    }
+
+    pub fn set_validation_rule(&mut self, dataset_name: String, rule: ValidationRule) {
+        self.validation_rules.insert(dataset_name, rule);
+    }
+
+    pub fn calculate_statistics(&self, dataset_name: &str) -> Option<Statistics> {
+        self.data.get(dataset_name).map(|values| {
+            let count = values.len();
+            let sum: f64 = values.iter().sum();
+            let mean = if count > 0 { sum / count as f64 } else { 0.0 };
+            
+            let variance: f64 = if count > 1 {
+                values.iter()
+                    .map(|&x| (x - mean).powi(2))
+                    .sum::<f64>() / (count - 1) as f64
+            } else {
+                0.0
+            };
+            
+            let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+            let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+            
+            Statistics {
+                count,
+                mean,
+                variance,
+                standard_deviation: variance.sqrt(),
+                min,
+                max,
+            }
+        })
+    }
+
+    pub fn normalize_data(&self, dataset_name: &str) -> Option<Vec<f64>> {
+        self.data.get(dataset_name).map(|values| {
+            let stats = self.calculate_statistics(dataset_name).unwrap();
+            let mean = stats.mean;
+            let std_dev = stats.standard_deviation;
+            
+            if std_dev > 0.0 {
+                values.iter()
+                    .map(|&x| (x - mean) / std_dev)
+                    .collect()
+            } else {
+                values.iter()
+                    .map(|&x| x - mean)
+                    .collect()
+            }
+        })
+    }
+
+    pub fn merge_datasets(&self, names: &[&str]) -> Option<Vec<f64>> {
+        let mut result = Vec::new();
+        
+        for &name in names {
+            if let Some(values) = self.data.get(name) {
+                result.extend(values);
+            } else {
+                return None;
+            }
+        }
+        
+        Some(result)
+    }
+}
+
+impl ValidationRule {
+    pub fn new() -> Self {
+        ValidationRule {
+            min_value: None,
+            max_value: None,
+            allowed_values: None,
+        }
+    }
+
+    pub fn with_min_max(mut self, min: f64, max: f64) -> Self {
+        self.min_value = Some(min);
+        self.max_value = Some(max);
+        self
+    }
+
+    pub fn with_allowed_values(mut self, values: Vec<f64>) -> Self {
+        self.allowed_values = Some(values);
+        self
+    }
+
+    pub fn validate(&self, data: &[f64]) -> Result<(), String> {
+        for &value in data {
+            if let Some(min) = self.min_value {
+                if value < min {
+                    return Err(format!("Value {} is below minimum {}", value, min));
+                }
+            }
+            
+            if let Some(max) = self.max_value {
+                if value > max {
+                    return Err(format!("Value {} is above maximum {}", value, max));
+                }
+            }
+            
+            if let Some(allowed) = &self.allowed_values {
+                if !allowed.contains(&value) {
+                    return Err(format!("Value {} is not in allowed values", value));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+pub struct Statistics {
+    pub count: usize,
+    pub mean: f64,
+    pub variance: f64,
+    pub standard_deviation: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+impl std::fmt::Display for Statistics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Statistics:\n  Count: {}\n  Mean: {:.4}\n  Variance: {:.4}\n  Std Dev: {:.4}\n  Min: {:.4}\n  Max: {:.4}",
+               self.count, self.mean, self.variance, self.standard_deviation, self.min, self.max)
+    }
+}
