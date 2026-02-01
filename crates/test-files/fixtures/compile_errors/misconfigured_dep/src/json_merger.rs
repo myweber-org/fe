@@ -80,4 +80,103 @@ mod tests {
         assert_eq!(result, expected);
         Ok(())
     }
+}use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
+use std::path::Path;
+
+use serde_json::{Map, Value};
+
+pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
+
+    for file_path in file_paths {
+        let path = Path::new(file_path);
+        if !path.exists() {
+            return Err(format!("File not found: {}", file_path).into());
+        }
+
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents)?;
+
+        let json_value: Value = serde_json::from_str(&contents)?;
+
+        if let Value::Object(obj) = json_value {
+            for (key, value) in obj {
+                merged_map.insert(key, value);
+            }
+        } else {
+            return Err("JSON file does not contain an object at the root".into());
+        }
+    }
+
+    Ok(Value::Object(merged_map))
+}
+
+pub fn merge_json_directories(dir_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut file_paths = Vec::new();
+
+    for dir_path in dir_paths {
+        let path = Path::new(dir_path);
+        if !path.is_dir() {
+            return Err(format!("Directory not found: {}", dir_path).into());
+        }
+
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let file_path = entry.path();
+            if file_path.extension().and_then(|s| s.to_str()) == Some("json") {
+                file_paths.push(file_path.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    let ref_paths: Vec<&str> = file_paths.iter().map(|s| s.as_str()).collect();
+    merge_json_files(&ref_paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_json_files() {
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
+
+        writeln!(file1, r#"{"name": "Alice", "age": 30}"#).unwrap();
+        writeln!(file2, r#"{"city": "London", "country": "UK"}"#).unwrap();
+
+        let result = merge_json_files(&[
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ])
+        .unwrap();
+
+        let expected: Value = serde_json::from_str(
+            r#"{"name": "Alice", "age": 30, "city": "London", "country": "UK"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_merge_json_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let file1_path = dir.path().join("data1.json");
+        let file2_path = dir.path().join("data2.json");
+
+        fs::write(&file1_path, r#"{"key1": "value1"}"#).unwrap();
+        fs::write(&file2_path, r#"{"key2": "value2"}"#).unwrap();
+
+        let result = merge_json_directories(&[dir.path().to_str().unwrap()]).unwrap();
+
+        let expected: Value = serde_json::from_str(r#"{"key1": "value1", "key2": "value2"}"#).unwrap();
+        assert_eq!(result, expected);
+    }
 }
