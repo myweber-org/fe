@@ -152,3 +152,70 @@ mod tests {
         assert_eq!(result["key"], "first");
     }
 }
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
+use std::path::Path;
+
+use serde_json::{Value, json};
+
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], output_path: P) -> Result<(), String> {
+    let mut merged_array = Vec::new();
+
+    for path in paths {
+        let file = File::open(path).map_err(|e| format!("Failed to open {}: {}", path.as_ref().display(), e))?;
+        let mut reader = BufReader::new(file);
+        let mut content = String::new();
+        reader.read_to_string(&mut content).map_err(|e| format!("Failed to read {}: {}", path.as_ref().display(), e))?;
+
+        let json_value: Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse JSON from {}: {}", path.as_ref().display(), e))?;
+
+        if let Value::Array(arr) = json_value {
+            merged_array.extend(arr);
+        } else {
+            merged_array.push(json_value);
+        }
+    }
+
+    let output_file = File::create(&output_path)
+        .map_err(|e| format!("Failed to create output file {}: {}", output_path.as_ref().display(), e))?;
+
+    serde_json::to_writer_pretty(output_file, &json!(merged_array))
+        .map_err(|e| format!("Failed to write merged JSON: {}", e))?;
+
+    Ok(())
+}
+
+pub fn merge_json_with_key<P: AsRef<Path>>(paths: &[P], key: &str, output_path: P) -> Result<(), String> {
+    let mut merged_map: HashMap<String, Value> = HashMap::new();
+
+    for path in paths {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {}", path.as_ref().display(), e))?;
+
+        let json_value: Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse JSON from {}: {}", path.as_ref().display(), e))?;
+
+        if let Value::Object(map) = json_value {
+            if let Some(value) = map.get(key) {
+                let key_str = value.as_str()
+                    .ok_or_else(|| format!("Key '{}' is not a string in {}", key, path.as_ref().display()))?;
+                merged_map.insert(key_str.to_string(), Value::Object(map));
+            }
+        }
+    }
+
+    let output_value: Value = merged_map.into_iter()
+        .map(|(_, v)| v)
+        .collect::<Vec<_>>()
+        .into();
+
+    let output_file = File::create(&output_path)
+        .map_err(|e| format!("Failed to create output file {}: {}", output_path.as_ref().display(), e))?;
+
+    serde_json::to_writer_pretty(output_file, &output_value)
+        .map_err(|e| format!("Failed to write merged JSON: {}", e))?;
+
+    Ok(())
+}
