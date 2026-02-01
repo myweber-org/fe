@@ -180,4 +180,83 @@ mod tests {
         assert_eq!(config.get_or_default("EXISTING", "default"), "found");
         assert_eq!(config.get_or_default("MISSING", "default_value"), "default_value");
     }
+}use serde::Deserialize;
+use std::fs;
+use std::path::Path;
+
+#[derive(Debug, Deserialize)]
+pub struct DatabaseConfig {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub database_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServerConfig {
+    pub address: String,
+    pub port: u16,
+    pub max_connections: u32,
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AppConfig {
+    pub database: DatabaseConfig,
+    pub server: ServerConfig,
+    pub debug_mode: bool,
+    pub log_level: String,
+}
+
+impl AppConfig {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let config_content = fs::read_to_string(path)?;
+        let config: AppConfig = toml::from_str(&config_content)?;
+        
+        if config.server.port == 0 {
+            return Err("Server port cannot be zero".into());
+        }
+        
+        if config.database.host.is_empty() {
+            return Err("Database host cannot be empty".into());
+        }
+        
+        Ok(config)
+    }
+    
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        
+        if self.server.port > 65535 {
+            errors.push("Server port must be between 1 and 65535".to_string());
+        }
+        
+        if self.server.max_connections == 0 {
+            errors.push("Max connections must be greater than zero".to_string());
+        }
+        
+        let valid_log_levels = ["error", "warn", "info", "debug", "trace"];
+        if !valid_log_levels.contains(&self.log_level.as_str()) {
+            errors.push(format!("Invalid log level: {}. Must be one of: {:?}", 
+                self.log_level, valid_log_levels));
+        }
+        
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+    
+    pub fn get_database_url(&self) -> String {
+        format!(
+            "postgres://{}:{}@{}:{}/{}",
+            self.database.username,
+            self.database.password,
+            self.database.host,
+            self.database.port,
+            self.database.database_name
+        )
+    }
 }
