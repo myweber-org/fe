@@ -64,4 +64,49 @@ mod tests {
         assert_eq!(result["data"], "test");
         assert!(result.get("non_existent").is_none());
     }
+}use serde_json::{Map, Value};
+use std::env;
+use std::fs::File;
+use std::io::{BufReader, Write};
+use std::path::Path;
+
+fn merge_json_files(file_paths: &[String], output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
+
+    for file_path in file_paths {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let json_value: Value = serde_json::from_reader(reader)?;
+
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                merged_map.insert(key, value);
+            }
+        } else {
+            return Err("Each JSON file must contain a JSON object at the top level".into());
+        }
+    }
+
+    let output_file = File::create(output_path)?;
+    serde_json::to_writer_pretty(output_file, &Value::Object(merged_map))?;
+
+    Ok(())
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 4 {
+        eprintln!("Usage: {} <output.json> <input1.json> <input2.json> ...", args[0]);
+        std::process::exit(1);
+    }
+
+    let output_path = &args[1];
+    let input_files = &args[2..];
+
+    if let Err(e) = merge_json_files(input_files, output_path) {
+        eprintln!("Error merging JSON files: {}", e);
+        std::process::exit(1);
+    }
+
+    println!("Successfully merged {} JSON files into {}", input_files.len(), output_path);
 }
