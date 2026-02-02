@@ -142,4 +142,73 @@ mod tests {
         
         assert_eq!(encrypted_files.len(), 2);
     }
+}use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+const DEFAULT_KEY: u8 = 0x55;
+
+pub fn encrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
+    let encryption_key = key.unwrap_or(DEFAULT_KEY);
+    let mut input_file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    input_file.read_to_end(&mut buffer)?;
+
+    for byte in &mut buffer {
+        *byte ^= encryption_key;
+    }
+
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&buffer)?;
+    Ok(())
+}
+
+pub fn decrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
+    encrypt_file(input_path, output_path, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_encryption_decryption() {
+        let test_data = b"Hello, World!";
+        let input_file = "test_input.txt";
+        let encrypted_file = "test_encrypted.bin";
+        let decrypted_file = "test_decrypted.txt";
+
+        fs::write(input_file, test_data).unwrap();
+
+        encrypt_file(input_file, encrypted_file, Some(0x42)).unwrap();
+        decrypt_file(encrypted_file, decrypted_file, Some(0x42)).unwrap();
+
+        let decrypted_content = fs::read(decrypted_file).unwrap();
+        assert_eq!(decrypted_content, test_data);
+
+        fs::remove_file(input_file).ok();
+        fs::remove_file(encrypted_file).ok();
+        fs::remove_file(decrypted_file).ok();
+    }
+
+    #[test]
+    fn test_default_key() {
+        let test_data = b"Test data";
+        let input_file = "test_default_input.txt";
+        let encrypted_file = "test_default_encrypted.bin";
+        let decrypted_file = "test_default_decrypted.txt";
+
+        fs::write(input_file, test_data).unwrap();
+
+        encrypt_file(input_file, encrypted_file, None).unwrap();
+        decrypt_file(encrypted_file, decrypted_file, None).unwrap();
+
+        let decrypted_content = fs::read(decrypted_file).unwrap();
+        assert_eq!(decrypted_content, test_data);
+
+        fs::remove_file(input_file).ok();
+        fs::remove_file(encrypted_file).ok();
+        fs::remove_file(decrypted_file).ok();
+    }
 }
