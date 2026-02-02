@@ -1,129 +1,84 @@
-
-use serde_json::{Value, Map};
-use std::fs;
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
 use std::path::Path;
-use std::collections::HashSet;
 
-pub fn merge_json_files<P: AsRef<Path>>(paths: &[P]) -> Result<Value, String> {
-    if paths.is_empty() {
-        return Err("No input files provided".to_string());
-    }
+use serde_json::{Value, json};
 
-    let mut merged = Map::new();
-    let mut key_sources = Map::new();
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], output_path: P) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged_array = Vec::new();
 
-    for (index, path) in paths.iter().enumerate() {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read {}: {}", path.as_ref().display(), e))?;
+    for path in paths {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents)?;
+
+        let json_value: Value = serde_json::from_str(&contents)?;
         
-        let json: Value = serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid JSON in {}: {}", path.as_ref().display(), e))?;
-
-        if let Value::Object(obj) = json {
-            for (key, value) in obj {
-                if let Some(existing) = merged.get(&key) {
-                    if existing != &value {
-                        let sources = key_sources.entry(key.clone())
-                            .or_insert_with(Vec::new);
-                        sources.push(index);
-                        sources.sort();
-                        sources.dedup();
-                    }
-                } else {
-                    merged.insert(key.clone(), value);
-                }
+        match json_value {
+            Value::Array(arr) => {
+                merged_array.extend(arr);
             }
-        } else {
-            return Err(format!("Expected JSON object in {}", path.as_ref().display()));
+            Value::Object(obj) => {
+                merged_array.push(Value::Object(obj));
+            }
+            _ => {
+                return Err("Each JSON file must contain either an array or an object".into());
+            }
         }
     }
 
-    let conflicts: Vec<String> = key_sources.iter()
-        .filter(|(_, sources)| sources.len() > 1)
-        .map(|(key, _)| key.clone())
-        .collect();
-
-    if !conflicts.is_empty() {
-        return Err(format!("Conflicting keys found: {}", conflicts.join(", ")));
-    }
-
-    Ok(Value::Object(merged))
-}
-
-pub fn merge_json_with_strategy<P: AsRef<Path>>(
-    paths: &[P],
-    strategy: MergeStrategy
-) -> Result<Value, String> {
-    let mut merged = Map::new();
+    let deduplicated = deduplicate_by_key(&merged_array, "id");
+    let output_json = json!(deduplicated);
     
-    for path in paths {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read {}: {}", path.as_ref().display(), e))?;
-        
-        let json: Value = serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid JSON in {}: {}", path.as_ref().display(), e))?;
+    fs::write(output_path, output_json.to_string())?;
+    Ok(())
+}
 
-        if let Value::Object(obj) = json {
-            for (key, value) in obj {
-                match strategy {
-                    MergeStrategy::FirstWins => {
-                        merged.entry(key).or_insert(value);
-                    }
-                    MergeStrategy::LastWins => {
-                        merged.insert(key, value);
-                    }
-                    MergeStrategy::MergeObjects => {
-                        if let Some(Value::Object(existing)) = merged.get(&key) {
-                            if let Value::Object(new_obj) = value {
-                                let mut combined = existing.clone();
-                                for (k, v) in new_obj {
-                                    combined.insert(k, v);
-                                }
-                                merged.insert(key, Value::Object(combined));
-                            } else {
-                                merged.insert(key, value);
-                            }
-                        } else {
-                            merged.insert(key, value);
-                        }
-                    }
+fn deduplicate_by_key(array: &[Value], key: &str) -> Vec<Value> {
+    let mut seen = HashMap::new();
+    let mut result = Vec::new();
+
+    for item in array {
+        if let Some(obj) = item.as_object() {
+            if let Some(key_value) = obj.get(key) {
+                let key_str = key_value.to_string();
+                if !seen.contains_key(&key_str) {
+                    seen.insert(key_str.clone(), true);
+                    result.push(item.clone());
                 }
             }
-        } else {
-            return Err(format!("Expected JSON object in {}", path.as_ref().display()));
         }
     }
-
-    Ok(Value::Object(merged))
+    
+    result
 }
 
-pub enum MergeStrategy {
-    FirstWins,
-    LastWins,
-    MergeObjects,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use serde_json::json;
 
-pub fn find_common_keys<P: AsRef<Path>>(paths: &[P]) -> Result<HashSet<String>, String> {
-    let mut common_keys: Option<HashSet<String>> = None;
+    #[test]
+    fn test_merge_json_files() {
+        let file1 = NamedTempFile::new().unwrap();
+        let file2 = NamedTempFile::new().unwrap();
+        let output_file = NamedTempFile::new().unwrap();
 
-    for path in paths {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read {}: {}", path.as_ref().display(), e))?;
-        
-        let json: Value = serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid JSON in {}: {}", path.as_ref().display(), e))?;
+        let data1 = json!([{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]);
+        let data2 = json!([{"id": 3, "name": "Charlie"}, {"id": 1, "name": "AliceDuplicate"}]);
 
-        if let Value::Object(obj) = json {
-            let current_keys: HashSet<String> = obj.keys().cloned().collect();
-            
-            common_keys = match common_keys {
-                None => Some(current_keys),
-                Some(existing) => Some(existing.intersection(&current_keys).cloned().collect())
-            };
-        } else {
-            return Err(format!("Expected JSON object in {}", path.as_ref().display()));
-        }
+        fs::write(&file1, data1.to_string()).unwrap();
+        fs::write(&file2, data2.to_string()).unwrap();
+
+        let paths = [file1.path(), file2.path()];
+        merge_json_files(&paths, output_file.path()).unwrap();
+
+        let output_content = fs::read_to_string(output_file.path()).unwrap();
+        let parsed: Value = serde_json::from_str(&output_content).unwrap();
+
+        assert_eq!(parsed.as_array().unwrap().len(), 3);
     }
-
-    Ok(common_keys.unwrap_or_default())
 }
