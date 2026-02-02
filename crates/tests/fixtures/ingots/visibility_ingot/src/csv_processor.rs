@@ -107,3 +107,122 @@ mod tests {
         fs::remove_file(test_output).unwrap();
     }
 }
+use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+impl Record {
+    fn validate(&self) -> Result<(), String> {
+        if self.name.is_empty() {
+            return Err("Name cannot be empty".to_string());
+        }
+        if self.value < 0.0 {
+            return Err("Value must be non-negative".to_string());
+        }
+        Ok(())
+    }
+
+    fn transform(&mut self) {
+        self.name = self.name.to_uppercase();
+        self.value = (self.value * 100.0).round() / 100.0;
+    }
+}
+
+fn process_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let mut reader = ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(input_file);
+
+    let output_file = File::create(output_path)?;
+    let mut writer = WriterBuilder::new()
+        .has_headers(true)
+        .from_writer(output_file);
+
+    for result in reader.deserialize() {
+        let mut record: Record = result?;
+        
+        match record.validate() {
+            Ok(_) => {
+                record.transform();
+                writer.serialize(&record)?;
+            }
+            Err(e) => eprintln!("Validation failed for record: {} - {}", record.id, e),
+        }
+    }
+
+    writer.flush()?;
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let input_file = "data/input.csv";
+    let output_file = "data/output.csv";
+    
+    process_csv(input_file, output_file)?;
+    println!("CSV processing completed successfully");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = Record {
+            id: 1,
+            name: "Test".to_string(),
+            value: 42.5,
+            active: true,
+        };
+        assert!(valid_record.validate().is_ok());
+
+        let invalid_record = Record {
+            id: 2,
+            name: "".to_string(),
+            value: -10.0,
+            active: false,
+        };
+        assert!(invalid_record.validate().is_err());
+    }
+
+    #[test]
+    fn test_record_transformation() {
+        let mut record = Record {
+            id: 1,
+            name: "test".to_string(),
+            value: 123.456,
+            active: true,
+        };
+        
+        record.transform();
+        assert_eq!(record.name, "TEST");
+        assert_eq!(record.value, 123.46);
+    }
+
+    #[test]
+    fn test_csv_processing() -> Result<(), Box<dyn Error>> {
+        let csv_data = "id,name,value,active\n1,test,42.5,true\n2,another,99.99,false\n";
+        
+        let mut input_file = NamedTempFile::new()?;
+        write!(input_file, "{}", csv_data)?;
+        
+        let output_file = NamedTempFile::new()?;
+        
+        process_csv(input_file.path().to_str().unwrap(), output_file.path().to_str().unwrap())?;
+        
+        Ok(())
+    }
+}
