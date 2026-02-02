@@ -408,3 +408,65 @@ mod tests {
         assert_eq!(record.values, vec![3.0, 6.0, 9.0]);
     }
 }
+use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+
+#[derive(Debug, Deserialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+pub fn process_csv_data(input_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
+    let mut reader = Reader::from_path(input_path)?;
+    let mut records = Vec::new();
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        if record.value >= 0.0 {
+            records.push(record);
+        }
+    }
+
+    Ok(records)
+}
+
+pub fn calculate_statistics(records: &[Record]) -> (f64, f64, usize) {
+    let count = records.len();
+    if count == 0 {
+        return (0.0, 0.0, 0);
+    }
+
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let mean = sum / count as f64;
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count as f64;
+
+    (mean, variance.sqrt(), count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+
+    #[test]
+    fn test_data_processing() {
+        let csv_data = "id,name,value,active\n1,Test1,10.5,true\n2,Test2,-3.2,false\n3,Test3,7.8,true";
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "{}", csv_data).unwrap();
+
+        let records = process_csv_data(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+
+        let (mean, std_dev, count) = calculate_statistics(&records);
+        assert_eq!(count, 2);
+        assert!((mean - 9.15).abs() < 0.01);
+        assert!((std_dev - 1.35).abs() < 0.01);
+    }
+}
