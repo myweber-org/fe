@@ -178,3 +178,132 @@ mod tests {
         assert_eq!(processor.invalid_count, 1);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
+
+pub struct CsvProcessor {
+    delimiter: char,
+    has_header: bool,
+}
+
+impl CsvProcessor {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        CsvProcessor {
+            delimiter,
+            has_header,
+        }
+    }
+
+    pub fn validate_and_clean<P: AsRef<Path>>(
+        &self,
+        input_path: P,
+        output_path: P,
+    ) -> Result<usize, Box<dyn Error>> {
+        let input_file = File::open(input_path)?;
+        let reader = BufReader::new(input_file);
+        let mut output_file = File::create(output_path)?;
+
+        let mut cleaned_count = 0;
+        let mut line_number = 0;
+
+        for line in reader.lines() {
+            line_number += 1;
+            let line = line?;
+
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let fields: Vec<&str> = line.split(self.delimiter).collect();
+
+            if self.is_valid_record(&fields, line_number) {
+                writeln!(output_file, "{}", line)?;
+                cleaned_count += 1;
+            } else {
+                eprintln!("Skipping invalid record at line {}", line_number);
+            }
+        }
+
+        Ok(cleaned_count)
+    }
+
+    fn is_valid_record(&self, fields: &[&str], line_number: usize) -> bool {
+        if line_number == 1 && self.has_header {
+            return !fields.is_empty();
+        }
+
+        if fields.len() < 2 {
+            return false;
+        }
+
+        for field in fields {
+            if field.trim().is_empty() {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    pub fn count_records<P: AsRef<Path>>(&self, file_path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
+
+        for (index, line) in reader.lines().enumerate() {
+            let line = line?;
+
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            if index == 0 && self.has_header {
+                continue;
+            }
+
+            count += 1;
+        }
+
+        Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_csv_validation() {
+        let mut test_file = NamedTempFile::new().unwrap();
+        writeln!(test_file, "name,age,city").unwrap();
+        writeln!(test_file, "John,25,New York").unwrap();
+        writeln!(test_file, "Jane,30,London").unwrap();
+        writeln!(test_file, ",,").unwrap();
+
+        let processor = CsvProcessor::new(',', true);
+        let output_file = NamedTempFile::new().unwrap();
+
+        let cleaned = processor
+            .validate_and_clean(test_file.path(), output_file.path())
+            .unwrap();
+
+        assert_eq!(cleaned, 2);
+    }
+
+    #[test]
+    fn test_record_count() {
+        let mut test_file = NamedTempFile::new().unwrap();
+        writeln!(test_file, "header1,header2").unwrap();
+        writeln!(test_file, "data1,data2").unwrap();
+        writeln!(test_file, "data3,data4").unwrap();
+
+        let processor = CsvProcessor::new(',', true);
+        let count = processor.count_records(test_file.path()).unwrap();
+
+        assert_eq!(count, 2);
+    }
+}
