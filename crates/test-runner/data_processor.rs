@@ -1,155 +1,115 @@
+use csv::Reader;
+use std::error::Error;
+use std::fs::File;
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-pub enum ProcessingError {
-    #[error("Invalid data format")]
-    InvalidFormat,
-    #[error("Missing required field: {0}")]
-    MissingField(String),
-    #[error("Validation failed: {0}")]
-    ValidationFailed(String),
+#[derive(Debug)]
+pub struct DataSet {
+    values: Vec<f64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DataRecord {
-    pub id: u64,
-    pub timestamp: i64,
-    pub values: HashMap<String, f64>,
-    pub tags: Vec<String>,
-}
-
-pub struct DataProcessor {
-    validation_rules: Vec<ValidationRule>,
-    transformation_pipeline: Vec<Transformation>,
-}
-
-impl DataProcessor {
+impl DataSet {
     pub fn new() -> Self {
-        DataProcessor {
-            validation_rules: Vec::new(),
-            transformation_pipeline: Vec::new(),
-        }
+        DataSet { values: Vec::new() }
     }
 
-    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
-        self.validation_rules.push(rule);
-    }
+    pub fn from_csv(path: &str) -> Result<Self, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let mut rdr = Reader::from_reader(file);
+        let mut values = Vec::new();
 
-    pub fn add_transformation(&mut self, transformation: Transformation) {
-        self.transformation_pipeline.push(transformation);
-    }
-
-    pub fn process(&self, record: &mut DataRecord) -> Result<(), ProcessingError> {
-        for rule in &self.validation_rules {
-            rule.validate(record)?;
+        for result in rdr.records() {
+            let record = result?;
+            if let Some(field) = record.get(0) {
+                if let Ok(num) = field.parse::<f64>() {
+                    values.push(num);
+                }
+            }
         }
 
-        for transformation in &self.transformation_pipeline {
-            transformation.apply(record);
+        Ok(DataSet { values })
+    }
+
+    pub fn add_value(&mut self, value: f64) {
+        self.values.push(value);
+    }
+
+    pub fn mean(&self) -> Option<f64> {
+        if self.values.is_empty() {
+            return None;
         }
-
-        Ok(())
+        let sum: f64 = self.values.iter().sum();
+        Some(sum / self.values.len() as f64)
     }
 
-    pub fn batch_process(&self, records: &mut [DataRecord]) -> Vec<Result<(), ProcessingError>> {
-        records
-            .iter_mut()
-            .map(|record| self.process(record))
-            .collect()
+    pub fn variance(&self) -> Option<f64> {
+        let mean = self.mean()?;
+        let squared_diffs: f64 = self.values
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum();
+        Some(squared_diffs / self.values.len() as f64)
     }
-}
 
-pub trait ValidationRule {
-    fn validate(&self, record: &DataRecord) -> Result<(), ProcessingError>;
-}
-
-pub trait Transformation {
-    fn apply(&self, record: &mut DataRecord);
-}
-
-pub struct RequiredFieldRule {
-    field_name: String,
-}
-
-impl RequiredFieldRule {
-    pub fn new(field_name: &str) -> Self {
-        RequiredFieldRule {
-            field_name: field_name.to_string(),
-        }
+    pub fn standard_deviation(&self) -> Option<f64> {
+        self.variance().map(|v| v.sqrt())
     }
-}
 
-impl ValidationRule for RequiredFieldRule {
-    fn validate(&self, record: &DataRecord) -> Result<(), ProcessingError> {
-        if !record.values.contains_key(&self.field_name) {
-            return Err(ProcessingError::MissingField(self.field_name.clone()));
-        }
-        Ok(())
+    pub fn count(&self) -> usize {
+        self.values.len()
     }
-}
 
-pub struct NormalizeTransformation {
-    factor: f64,
-}
-
-impl NormalizeTransformation {
-    pub fn new(factor: f64) -> Self {
-        NormalizeTransformation { factor }
+    pub fn min(&self) -> Option<f64> {
+        self.values.iter().copied().reduce(f64::min)
     }
-}
 
-impl Transformation for NormalizeTransformation {
-    fn apply(&self, record: &mut DataRecord) {
-        for value in record.values.values_mut() {
-            *value /= self.factor;
-        }
+    pub fn max(&self) -> Option<f64> {
+        self.values.iter().copied().reduce(f64::max)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_required_field_validation() {
-        let mut processor = DataProcessor::new();
-        processor.add_validation_rule(RequiredFieldRule::new("temperature"));
+    fn test_basic_statistics() {
+        let mut dataset = DataSet::new();
+        dataset.add_value(10.0);
+        dataset.add_value(20.0);
+        dataset.add_value(30.0);
 
-        let mut record = DataRecord {
-            id: 1,
-            timestamp: 1234567890,
-            values: HashMap::new(),
-            tags: vec![],
-        };
-
-        let result = processor.process(&mut record);
-        assert!(result.is_err());
-
-        record.values.insert("temperature".to_string(), 25.5);
-        let result = processor.process(&mut record);
-        assert!(result.is_ok());
+        assert_eq!(dataset.count(), 3);
+        assert_eq!(dataset.mean(), Some(20.0));
+        assert_eq!(dataset.variance(), Some(66.66666666666667));
+        assert_eq!(dataset.min(), Some(10.0));
+        assert_eq!(dataset.max(), Some(30.0));
     }
 
     #[test]
-    fn test_normalize_transformation() {
-        let mut processor = DataProcessor::new();
-        processor.add_transformation(NormalizeTransformation::new(10.0));
+    fn test_empty_dataset() {
+        let dataset = DataSet::new();
+        assert_eq!(dataset.count(), 0);
+        assert_eq!(dataset.mean(), None);
+        assert_eq!(dataset.variance(), None);
+        assert_eq!(dataset.min(), None);
+        assert_eq!(dataset.max(), None);
+    }
 
-        let mut record = DataRecord {
-            id: 1,
-            timestamp: 1234567890,
-            values: HashMap::from([
-                ("value1".to_string(), 100.0),
-                ("value2".to_string(), 50.0),
-            ]),
-            tags: vec![],
-        };
+    #[test]
+    fn test_csv_import() -> Result<(), Box<dyn Error>> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "value")?;
+        writeln!(temp_file, "5.5")?;
+        writeln!(temp_file, "10.2")?;
+        writeln!(temp_file, "15.7")?;
 
-        processor.process(&mut record).unwrap();
-        assert_eq!(record.values.get("value1"), Some(&10.0));
-        assert_eq!(record.values.get("value2"), Some(&5.0));
+        let dataset = DataSet::from_csv(temp_file.path().to_str().unwrap())?;
+        assert_eq!(dataset.count(), 3);
+        assert_eq!(dataset.mean(), Some(10.466666666666667));
+        assert_eq!(dataset.standard_deviation(), Some(4.186534668874835));
+
+        Ok(())
     }
 }
