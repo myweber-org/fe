@@ -1,8 +1,12 @@
+
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufReader, BufWriter};
+use std::path::Path;
 
-#[derive(Debug)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Record {
     id: u32,
     name: String,
@@ -10,64 +14,88 @@ pub struct Record {
     category: String,
 }
 
-pub fn load_csv(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
-    let mut records = Vec::new();
-
-    for (index, line) in reader.lines().enumerate() {
-        if index == 0 {
-            continue;
-        }
-
-        let line = line?;
-        let parts: Vec<&str> = line.split(',').collect();
-        
-        if parts.len() == 4 {
-            let id = parts[0].parse()?;
-            let name = parts[1].to_string();
-            let value = parts[2].parse()?;
-            let category = parts[3].to_string();
-
-            records.push(Record {
-                id,
-                name,
-                value,
-                category,
-            });
+impl Record {
+    pub fn new(id: u32, name: String, value: f64, category: String) -> Self {
+        Record {
+            id,
+            name,
+            value,
+            category,
         }
     }
 
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.is_empty() {
+            return Err("Name cannot be empty".to_string());
+        }
+        if self.value < 0.0 {
+            return Err("Value must be non-negative".to_string());
+        }
+        if self.category.is_empty() {
+            return Err("Category cannot be empty".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn transform(&mut self, multiplier: f64) {
+        self.value *= multiplier;
+        self.name = self.name.to_uppercase();
+    }
+}
+
+pub fn read_csv_file<P: AsRef<Path>>(path: P) -> Result<Vec<Record>, Box<dyn Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut csv_reader = csv::Reader::from_reader(reader);
+    
+    let mut records = Vec::new();
+    for result in csv_reader.deserialize() {
+        let record: Record = result?;
+        records.push(record);
+    }
+    
     Ok(records)
 }
 
-pub fn filter_by_category(records: &[Record], category: &str) -> Vec<&Record> {
+pub fn write_csv_file<P: AsRef<Path>>(path: P, records: &[Record]) -> Result<(), Box<dyn Error>> {
+    let file = File::create(path)?;
+    let writer = BufWriter::new(file);
+    let mut csv_writer = csv::Writer::from_writer(writer);
+    
+    for record in records {
+        csv_writer.serialize(record)?;
+    }
+    
+    csv_writer.flush()?;
+    Ok(())
+}
+
+pub fn process_records(records: &mut [Record], multiplier: f64) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    
+    for (index, record) in records.iter_mut().enumerate() {
+        if let Err(err) = record.validate() {
+            errors.push(format!("Record {}: {}", index + 1, err));
+        } else {
+            record.transform(multiplier);
+        }
+    }
+    
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+pub fn filter_by_category(records: &[Record], category: &str) -> Vec<Record> {
     records
         .iter()
-        .filter(|record| record.category == category)
+        .filter(|r| r.category == category)
+        .cloned()
         .collect()
 }
 
-pub fn calculate_average(records: &[Record]) -> f64 {
-    if records.is_empty() {
-        return 0.0;
-    }
-
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    sum / records.len() as f64
-}
-
-pub fn find_max_value(records: &[Record]) -> Option<&Record> {
-    records.iter().max_by(|a, b| a.value.partial_cmp(&b.value).unwrap())
-}
-
-pub fn aggregate_by_category(records: &[Record]) -> Vec<(String, f64)> {
-    let mut aggregates = std::collections::HashMap::new();
-
-    for record in records {
-        let entry = aggregates.entry(record.category.clone()).or_insert(0.0);
-        *entry += record.value;
-    }
-
-    aggregates.into_iter().collect()
+pub fn calculate_total_value(records: &[Record]) -> f64 {
+    records.iter().map(|r| r.value).sum()
 }
