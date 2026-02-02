@@ -41,3 +41,79 @@ fn main() {
 
     println!("File processed successfully: {} -> {}", input_path, output_path);
 }
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use std::fs;
+
+pub struct FileEncryptor {
+    cipher: Aes256Gcm,
+}
+
+impl FileEncryptor {
+    pub fn new() -> Self {
+        let key = Aes256Gcm::generate_key(&mut OsRng);
+        let cipher = Aes256Gcm::new(&key);
+        Self { cipher }
+    }
+
+    pub fn encrypt_file(&self, input_path: &str, output_path: &str) -> Result<(), String> {
+        let data = fs::read(input_path)
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+        
+        let nonce = Nonce::from_slice(b"unique_nonce_12");
+        let ciphertext = self.cipher.encrypt(nonce, data.as_ref())
+            .map_err(|e| format!("Encryption failed: {}", e))?;
+        
+        fs::write(output_path, ciphertext)
+            .map_err(|e| format!("Failed to write encrypted file: {}", e))?;
+        
+        Ok(())
+    }
+
+    pub fn decrypt_file(&self, input_path: &str, output_path: &str) -> Result<(), String> {
+        let ciphertext = fs::read(input_path)
+            .map_err(|e| format!("Failed to read encrypted file: {}", e))?;
+        
+        let nonce = Nonce::from_slice(b"unique_nonce_12");
+        let plaintext = self.cipher.decrypt(nonce, ciphertext.as_ref())
+            .map_err(|e| format!("Decryption failed: {}", e))?;
+        
+        fs::write(output_path, plaintext)
+            .map_err(|e| format!("Failed to write decrypted file: {}", e))?;
+        
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_encryption_decryption() {
+        let encryptor = FileEncryptor::new();
+        let test_data = b"Secret data for encryption test";
+        
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+        
+        fs::write(input_file.path(), test_data).unwrap();
+        
+        encryptor.encrypt_file(
+            input_file.path().to_str().unwrap(),
+            encrypted_file.path().to_str().unwrap()
+        ).unwrap();
+        
+        encryptor.decrypt_file(
+            encrypted_file.path().to_str().unwrap(),
+            decrypted_file.path().to_str().unwrap()
+        ).unwrap();
+        
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(decrypted_data, test_data);
+    }
+}
