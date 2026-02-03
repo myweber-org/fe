@@ -237,3 +237,117 @@ mod tests {
         assert_eq!(max_record.unwrap().value, 20.3);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    id: u32,
+    name: String,
+    value: f64,
+    metadata: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    EmptyName,
+    NegativeValue,
+    MissingMetadata(String),
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "ID must be greater than 0"),
+            ValidationError::EmptyName => write!(f, "Name cannot be empty"),
+            ValidationError::NegativeValue => write!(f, "Value cannot be negative"),
+            ValidationError::MissingMetadata(key) => write!(f, "Missing metadata key: {}", key),
+        }
+    }
+}
+
+impl Error for ValidationError {}
+
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64) -> Self {
+        Self {
+            id,
+            name,
+            value,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.id == 0 {
+            return Err(ValidationError::InvalidId);
+        }
+        
+        if self.name.trim().is_empty() {
+            return Err(ValidationError::EmptyName);
+        }
+        
+        if self.value < 0.0 {
+            return Err(ValidationError::NegativeValue);
+        }
+        
+        Ok(())
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+
+    pub fn get_metadata(&self, key: &str) -> Option<&String> {
+        self.metadata.get(key)
+    }
+
+    pub fn transform_value(&mut self, multiplier: f64) {
+        self.value *= multiplier;
+    }
+
+    pub fn to_json(&self) -> String {
+        let metadata_json: String = self.metadata
+            .iter()
+            .map(|(k, v)| format!("\"{}\":\"{}\"", k, v))
+            .collect::<Vec<String>>()
+            .join(",");
+        
+        format!(
+            "{{\"id\":{},\"name\":\"{}\",\"value\":{},\"metadata\":{{{}}}}}",
+            self.id, self.name, self.value, metadata_json
+        )
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord], multiplier: f64) -> Result<Vec<String>, ValidationError> {
+    let mut results = Vec::new();
+    
+    for record in records.iter_mut() {
+        record.validate()?;
+        record.transform_value(multiplier);
+        results.push(record.to_json());
+    }
+    
+    Ok(results)
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
+    if records.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+    
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let count = records.len() as f64;
+    let mean = sum / count;
+    
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (mean, variance, std_dev)
+}
