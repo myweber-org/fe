@@ -1,8 +1,10 @@
+use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Record {
     id: u32,
     name: String,
@@ -11,179 +13,77 @@ struct Record {
     active: bool,
 }
 
-impl Record {
-    fn from_csv_line(line: &str) -> Result<Self, Box<dyn Error>> {
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() != 5 {
-            return Err("Invalid CSV format".into());
-        }
+fn read_csv<P: AsRef<Path>>(path: P) -> Result<Vec<Record>, Box<dyn Error>> {
+    let file = File::open(path)?;
+    let mut reader = Reader::from_reader(file);
+    let mut records = Vec::new();
 
-        Ok(Record {
-            id: parts[0].parse()?,
-            name: parts[1].to_string(),
-            category: parts[2].to_string(),
-            value: parts[3].parse()?,
-            active: parts[4].parse()?,
-        })
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        records.push(record);
     }
+
+    Ok(records)
 }
 
-struct DataProcessor {
-    records: Vec<Record>,
+fn filter_active_records(records: Vec<Record>) -> Vec<Record> {
+    records.into_iter().filter(|r| r.active).collect()
 }
 
-impl DataProcessor {
-    fn new() -> Self {
-        DataProcessor {
-            records: Vec::new(),
-        }
+fn calculate_category_averages(records: &[Record]) -> Vec<(String, f64)> {
+    use std::collections::HashMap;
+
+    let mut category_sums: HashMap<String, (f64, usize)> = HashMap::new();
+
+    for record in records {
+        let entry = category_sums
+            .entry(record.category.clone())
+            .or_insert((0.0, 0));
+        entry.0 += record.value;
+        entry.1 += 1;
     }
 
-    fn load_from_file(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
+    category_sums
+        .into_iter()
+        .map(|(category, (sum, count))| (category, sum / count as f64))
+        .collect()
+}
 
-        for (index, line) in reader.lines().enumerate() {
-            let line = line?;
-            if index == 0 {
-                continue;
-            }
+fn write_results<P: AsRef<Path>>(
+    averages: &[(String, f64)],
+    path: P,
+) -> Result<(), Box<dyn Error>> {
+    let file = File::create(path)?;
+    let mut writer = Writer::from_writer(file);
 
-            let record = Record::from_csv_line(&line)?;
-            self.records.push(record);
-        }
-
-        Ok(())
+    for (category, average) in averages {
+        writer.serialize((category, average))?;
     }
 
-    fn filter_by_category(&self, category: &str) -> Vec<&Record> {
-        self.records
-            .iter()
-            .filter(|record| record.category == category)
-            .collect()
-    }
+    writer.flush()?;
+    Ok(())
+}
 
-    fn filter_active(&self) -> Vec<&Record> {
-        self.records
-            .iter()
-            .filter(|record| record.active)
-            .collect()
-    }
+fn process_csv_data(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let records = read_csv(input_path)?;
+    let active_records = filter_active_records(records);
+    let category_averages = calculate_category_averages(&active_records);
+    write_results(&category_averages, output_path)?;
 
-    fn calculate_total_value(&self) -> f64 {
-        self.records.iter().map(|record| record.value).sum()
-    }
+    println!("Processed {} active records", active_records.len());
+    println!("Calculated averages for {} categories", category_averages.len());
 
-    fn calculate_average_value(&self) -> f64 {
-        if self.records.is_empty() {
-            return 0.0;
-        }
-        self.calculate_total_value() / self.records.len() as f64
-    }
-
-    fn find_max_value(&self) -> Option<&Record> {
-        self.records.iter().max_by(|a, b| {
-            a.value
-                .partial_cmp(&b.value)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-    }
-
-    fn group_by_category(&self) -> std::collections::HashMap<String, Vec<&Record>> {
-        let mut groups = std::collections::HashMap::new();
-        
-        for record in &self.records {
-            groups
-                .entry(record.category.clone())
-                .or_insert_with(Vec::new)
-                .push(record);
-        }
-        
-        groups
-    }
-
-    fn summary_statistics(&self) -> String {
-        let total = self.calculate_total_value();
-        let average = self.calculate_average_value();
-        let active_count = self.filter_active().len();
-        let max_record = self.find_max_value();
-
-        let max_info = match max_record {
-            Some(record) => format!("{} (ID: {})", record.value, record.id),
-            None => "None".to_string(),
-        };
-
-        format!(
-            "Total Records: {}\nActive Records: {}\nTotal Value: {:.2}\nAverage Value: {:.2}\nMax Value: {}",
-            self.records.len(),
-            active_count,
-            total,
-            average,
-            max_info
-        )
-    }
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut processor = DataProcessor::new();
-    
-    match processor.load_from_file("data.csv") {
-        Ok(_) => {
-            println!("Data loaded successfully!");
-            println!("\nSummary Statistics:");
-            println!("{}", processor.summary_statistics());
-            
-            println!("\nRecords in 'Electronics' category:");
-            let electronics = processor.filter_by_category("Electronics");
-            for record in electronics {
-                println!("ID: {}, Name: {}, Value: {:.2}", record.id, record.name, record.value);
-            }
-            
-            println!("\nGrouped by category:");
-            let groups = processor.group_by_category();
-            for (category, records) in groups {
-                println!("Category: {} ({} records)", category, records.len());
-            }
-        }
-        Err(e) => {
-            eprintln!("Error loading data: {}", e);
-            println!("Creating sample data for demonstration...");
-            
-            processor.records = vec![
-                Record {
-                    id: 1,
-                    name: "Laptop".to_string(),
-                    category: "Electronics".to_string(),
-                    value: 999.99,
-                    active: true,
-                },
-                Record {
-                    id: 2,
-                    name: "Desk".to_string(),
-                    category: "Furniture".to_string(),
-                    value: 299.50,
-                    active: true,
-                },
-                Record {
-                    id: 3,
-                    name: "Monitor".to_string(),
-                    category: "Electronics".to_string(),
-                    value: 199.99,
-                    active: false,
-                },
-                Record {
-                    id: 4,
-                    name: "Chair".to_string(),
-                    category: "Furniture".to_string(),
-                    value: 149.99,
-                    active: true,
-                },
-            ];
-            
-            println!("\nSummary Statistics (Sample Data):");
-            println!("{}", processor.summary_statistics());
-        }
+    let input_file = "data/input.csv";
+    let output_file = "data/output.csv";
+
+    match process_csv_data(input_file, output_file) {
+        Ok(_) => println!("CSV processing completed successfully"),
+        Err(e) => eprintln!("Error processing CSV: {}", e),
     }
-    
+
     Ok(())
 }
