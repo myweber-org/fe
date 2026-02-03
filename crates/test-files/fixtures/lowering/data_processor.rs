@@ -424,4 +424,75 @@ mod tests {
         assert!(result.contains_key("average"));
         assert!(result.contains_key("tag1"));
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub struct DataProcessor {
+    file_path: String,
+}
+
+impl DataProcessor {
+    pub fn new(file_path: &str) -> Self {
+        DataProcessor {
+            file_path: file_path.to_string(),
+        }
+    }
+
+    pub fn process(&self) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(&self.file_path)?;
+        let reader = BufReader::new(file);
+        let mut records = Vec::new();
+
+        for (index, line) in reader.lines().enumerate() {
+            let line = line?;
+            let fields: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
+            
+            if fields.len() < 2 {
+                return Err(format!("Invalid data format at line {}", index + 1).into());
+            }
+            
+            records.push(fields);
+        }
+
+        if records.is_empty() {
+            return Err("No data found in file".into());
+        }
+
+        Ok(records)
+    }
+
+    pub fn validate_numeric_fields(&self, records: &[Vec<String>], field_index: usize) -> Result<Vec<f64>, Box<dyn Error>> {
+        let mut numeric_values = Vec::new();
+        
+        for (row_index, record) in records.iter().enumerate() {
+            if field_index >= record.len() {
+                return Err(format!("Field index out of bounds at row {}", row_index + 1).into());
+            }
+            
+            match record[field_index].parse::<f64>() {
+                Ok(value) => numeric_values.push(value),
+                Err(_) => return Err(format!("Non-numeric value at row {} field {}", row_index + 1, field_index).into()),
+            }
+        }
+        
+        Ok(numeric_values)
+    }
+}
+
+pub fn calculate_statistics(values: &[f64]) -> (f64, f64, f64) {
+    if values.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+    
+    let sum: f64 = values.iter().sum();
+    let mean = sum / values.len() as f64;
+    
+    let variance: f64 = values.iter()
+        .map(|&x| (x - mean).powi(2))
+        .sum::<f64>() / values.len() as f64;
+    
+    let std_dev = variance.sqrt();
+    
+    (mean, variance, std_dev)
 }
