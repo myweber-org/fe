@@ -77,3 +77,85 @@ fn main() -> io::Result<()> {
 
     Ok(())
 }
+use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use pbkdf2::pbkdf2_hmac;
+use rand::RngCore;
+use sha2::Sha256;
+use std::fs;
+use std::io::{self, Read, Write};
+
+type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+
+const SALT_LENGTH: usize = 16;
+const IV_LENGTH: usize = 16;
+const KEY_ITERATIONS: u32 = 100_000;
+const KEY_LENGTH: usize = 32;
+
+pub struct EncryptionResult {
+    pub salt: Vec<u8>,
+    pub iv: Vec<u8>,
+    pub ciphertext: Vec<u8>,
+}
+
+pub fn encrypt_file(input_path: &str, output_path: &str, password: &str) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
+    let mut plaintext = Vec::new();
+    file.read_to_end(&mut plaintext)?;
+
+    let mut salt = [0u8; SALT_LENGTH];
+    let mut iv = [0u8; IV_LENGTH];
+    rand::thread_rng().fill_bytes(&mut salt);
+    rand::thread_rng().fill_bytes(&mut iv);
+
+    let key = derive_key(password, &salt);
+
+    let ciphertext = Aes256CbcEnc::new(&key.into(), &iv.into())
+        .encrypt_padded_vec_mut::<Pkcs7>(&plaintext);
+
+    let result = EncryptionResult {
+        salt: salt.to_vec(),
+        iv: iv.to_vec(),
+        ciphertext,
+    };
+
+    let mut output = fs::File::create(output_path)?;
+    output.write_all(&result.salt)?;
+    output.write_all(&result.iv)?;
+    output.write_all(&result.ciphertext)?;
+
+    Ok(())
+}
+
+pub fn decrypt_file(input_path: &str, output_path: &str, password: &str) -> io::Result<bool> {
+    let mut file = fs::File::open(input_path)?;
+    let mut encrypted_data = Vec::new();
+    file.read_to_end(&mut encrypted_data)?;
+
+    if encrypted_data.len() < SALT_LENGTH + IV_LENGTH {
+        return Ok(false);
+    }
+
+    let salt = &encrypted_data[0..SALT_LENGTH];
+    let iv = &encrypted_data[SALT_LENGTH..SALT_LENGTH + IV_LENGTH];
+    let ciphertext = &encrypted_data[SALT_LENGTH + IV_LENGTH..];
+
+    let key = derive_key(password, salt);
+
+    let decrypted_result = Aes256CbcDec::new(&key.into(), iv.into())
+        .decrypt_padded_vec_mut::<Pkcs7>(ciphertext);
+
+    match decrypted_result {
+        Ok(plaintext) => {
+            fs::write(output_path, plaintext)?;
+            Ok(true)
+        }
+        Err(_) => Ok(false),
+    }
+}
+
+fn derive_key(password: &str, salt: &[u8]) -> [u8; KEY_LENGTH] {
+    let mut key = [0u8; KEY_LENGTH];
+    pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, KEY_ITERATIONS, &mut key);
+    key
+}
