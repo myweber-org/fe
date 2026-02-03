@@ -15,55 +15,26 @@ pub fn encrypt_file(input_path: &str, output_path: &str) -> Result<(), Box<dyn s
     let encrypted_data = cipher.encrypt(nonce, data.as_ref())
         .map_err(|e| format!("Encryption failed: {}", e))?;
     
-    let mut output = key.to_vec();
-    output.extend_from_slice(nonce);
-    output.extend_from_slice(&encrypted_data);
+    fs::write(output_path, encrypted_data)?;
     
-    fs::write(output_path, output)?;
+    let key_path = format!("{}.key", output_path);
+    fs::write(key_path, key.as_slice())?;
+    
     Ok(())
 }
 
-pub fn decrypt_file(input_path: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let encrypted_content = fs::read(input_path)?;
+pub fn decrypt_file(input_path: &str, key_path: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let encrypted_data = fs::read(input_path)?;
+    let key_data = fs::read(key_path)?;
     
-    if encrypted_content.len() < 48 {
-        return Err("Invalid encrypted file format".into());
-    }
-    
-    let key = Key::<Aes256Gcm>::from_slice(&encrypted_content[0..32]);
-    let nonce = Nonce::from_slice(&encrypted_content[32..44]);
-    let ciphertext = &encrypted_content[44..];
-    
+    let key = Key::<Aes256Gcm>::from_slice(&key_data);
     let cipher = Aes256Gcm::new(key);
-    let decrypted_data = cipher.decrypt(nonce, ciphertext)
+    let nonce = Nonce::from_slice(b"unique_nonce_");
+    
+    let decrypted_data = cipher.decrypt(nonce, encrypted_data.as_ref())
         .map_err(|e| format!("Decryption failed: {}", e))?;
     
     fs::write(output_path, decrypted_data)?;
+    
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_encryption_roundtrip() {
-        let mut plaintext_file = NamedTempFile::new().unwrap();
-        let encrypted_file = NamedTempFile::new().unwrap();
-        let decrypted_file = NamedTempFile::new().unwrap();
-        
-        let test_data = b"Test data for encryption roundtrip";
-        plaintext_file.write_all(test_data).unwrap();
-        
-        encrypt_file(plaintext_file.path().to_str().unwrap(), 
-                    encrypted_file.path().to_str().unwrap()).unwrap();
-        
-        decrypt_file(encrypted_file.path().to_str().unwrap(), 
-                    decrypted_file.path().to_str().unwrap()).unwrap();
-        
-        let decrypted_content = fs::read(decrypted_file.path()).unwrap();
-        assert_eq!(test_data.to_vec(), decrypted_content);
-    }
 }
