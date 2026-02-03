@@ -576,4 +576,89 @@ mod tests {
         assert!(average.is_some());
         assert!((average.unwrap() - 12.666666666666666).abs() < 0.0001);
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Self {
+        DataRecord {
+            id,
+            value,
+            category,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.id > 0 && self.value >= 0.0 && !self.category.is_empty()
+    }
+}
+
+pub fn process_csv_file(file_path: &str) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+
+    for (line_number, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 3 {
+            return Err(format!("Invalid format at line {}", line_number + 1).into());
+        }
+
+        let id = parts[0].parse::<u32>()?;
+        let value = parts[1].parse::<f64>()?;
+        let category = parts[2].to_string();
+
+        let record = DataRecord::new(id, value, category);
+        if !record.is_valid() {
+            return Err(format!("Invalid data at line {}", line_number + 1).into());
+        }
+
+        records.push(record);
+    }
+
+    Ok(records)
+}
+
+pub fn calculate_average(records: &[DataRecord]) -> Option<f64> {
+    if records.is_empty() {
+        return None;
+    }
+
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    Some(sum / records.len() as f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record() {
+        let record = DataRecord::new(1, 42.5, "test".to_string());
+        assert!(record.is_valid());
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        let record1 = DataRecord::new(0, 42.5, "test".to_string());
+        assert!(!record1.is_valid());
+
+        let record2 = DataRecord::new(1, -1.0, "test".to_string());
+        assert!(!record2.is_valid());
+
+        let record3 = DataRecord::new(1, 42.5, String::new());
+        assert!(!record3.is_valid());
+    }
 }
