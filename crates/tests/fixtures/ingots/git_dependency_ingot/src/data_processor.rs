@@ -1,192 +1,114 @@
 
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
+    cache: HashMap<String, Vec<f64>>,
 }
 
 impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
+    pub fn new() -> Self {
         DataProcessor {
-            delimiter,
-            has_header,
+            cache: HashMap::new(),
         }
     }
 
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        let mut lines = reader.lines();
-
-        if self.has_header {
-            lines.next();
+    pub fn process_numeric_data(&mut self, key: &str, values: &[f64]) -> Result<Vec<f64>, String> {
+        if values.is_empty() {
+            return Err("Empty data set provided".to_string());
         }
 
-        for line_result in lines {
-            let line = line_result?;
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-            
-            if !fields.is_empty() {
-                records.push(fields);
+        if let Some(cached) = self.cache.get(key) {
+            return Ok(cached.clone());
+        }
+
+        let validated = self.validate_data(values)?;
+        let normalized = self.normalize_data(&validated);
+        let transformed = self.apply_transformations(&normalized);
+
+        self.cache.insert(key.to_string(), transformed.clone());
+        Ok(transformed)
+    }
+
+    fn validate_data(&self, values: &[f64]) -> Result<Vec<f64>, String> {
+        let mut valid_values = Vec::new();
+        
+        for &value in values {
+            if value.is_finite() {
+                valid_values.push(value);
+            } else {
+                return Err(format!("Invalid numeric value detected: {}", value));
             }
         }
 
-        Ok(records)
-    }
-
-    pub fn validate_record(&self, record: &[String]) -> bool {
-        !record.is_empty() && record.iter().all(|field| !field.is_empty())
-    }
-
-    pub fn calculate_statistics(&self, records: &[Vec<String>], column_index: usize) -> Option<(f64, f64, f64)> {
-        let values: Vec<f64> = records
-            .iter()
-            .filter_map(|record| record.get(column_index))
-            .filter_map(|value| value.parse::<f64>().ok())
-            .collect();
-
-        if values.is_empty() {
-            return None;
+        if valid_values.len() < 2 {
+            return Err("Insufficient valid data points".to_string());
         }
 
-        let sum: f64 = values.iter().sum();
-        let count = values.len() as f64;
-        let mean = sum / count;
-        
-        let variance: f64 = values
-            .iter()
-            .map(|value| (value - mean).powi(2))
-            .sum::<f64>() / count;
-        
+        Ok(valid_values)
+    }
+
+    fn normalize_data(&self, values: &[f64]) -> Vec<f64> {
+        let mean = values.iter().sum::<f64>() / values.len() as f64;
+        let variance = values.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / values.len() as f64;
         let std_dev = variance.sqrt();
 
-        Some((mean, variance, std_dev))
+        if std_dev.abs() < 1e-10 {
+            return vec![0.0; values.len()];
+        }
+
+        values.iter()
+            .map(|&x| (x - mean) / std_dev)
+            .collect()
+    }
+
+    fn apply_transformations(&self, values: &[f64]) -> Vec<f64> {
+        values.iter()
+            .map(|&x| x.powi(2).ln_1p().tanh())
+            .collect()
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn get_cache_stats(&self) -> (usize, usize) {
+        let total_entries = self.cache.len();
+        let total_values = self.cache.values()
+            .map(|v| v.len())
+            .sum();
+        
+        (total_entries, total_values)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_file_with_header() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,score").unwrap();
-        writeln!(temp_file, "Alice,25,95.5").unwrap();
-        writeln!(temp_file, "Bob,30,88.0").unwrap();
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        let test_data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         
-        let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path()).unwrap();
+        let result = processor.process_numeric_data("test", &test_data);
+        assert!(result.is_ok());
         
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["Alice", "25", "95.5"]);
-    }
-
-    #[test]
-    fn test_validate_record() {
-        let processor = DataProcessor::new(',', false);
-        let valid_record = vec!["data".to_string(), "123".to_string()];
-        let invalid_record = vec!["".to_string(), "123".to_string()];
+        let processed = result.unwrap();
+        assert_eq!(processed.len(), test_data.len());
         
-        assert!(processor.validate_record(&valid_record));
-        assert!(!processor.validate_record(&invalid_record));
+        let stats = processor.get_cache_stats();
+        assert_eq!(stats.0, 1);
+        assert_eq!(stats.1, 5);
     }
 
     #[test]
-    fn test_calculate_statistics() {
-        let processor = DataProcessor::new(',', false);
-        let records = vec![
-            vec!["10.0".to_string(), "20.0".to_string()],
-            vec!["20.0".to_string(), "30.0".to_string()],
-            vec!["30.0".to_string(), "40.0".to_string()],
-        ];
+    fn test_validation_failure() {
+        let processor = DataProcessor::new();
+        let invalid_data = vec![1.0, f64::NAN, 3.0];
         
-        let stats = processor.calculate_statistics(&records, 0).unwrap();
-        assert!((stats.0 - 20.0).abs() < 0.001);
-        assert!((stats.1 - 66.666).abs() < 0.001);
+        let result = processor.validate_data(&invalid_data);
+        assert!(result.is_err());
     }
-}use csv::Reader;
-use serde::Deserialize;
-use std::error::Error;
-use std::path::Path;
-
-#[derive(Debug, Deserialize)]
-pub struct Record {
-    pub id: u32,
-    pub name: String,
-    pub value: f64,
-    pub category: String,
-}
-
-pub struct DataProcessor {
-    records: Vec<Record>,
-}
-
-impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor {
-            records: Vec::new(),
-        }
-    }
-
-    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
-        let mut reader = Reader::from_path(path)?;
-        for result in reader.deserialize() {
-            let record: Record = result?;
-            self.records.push(record);
-        }
-        Ok(())
-    }
-
-    pub fn filter_by_category(&self, category: &str) -> Vec<&Record> {
-        self.records
-            .iter()
-            .filter(|record| record.category == category)
-            .collect()
-    }
-
-    pub fn calculate_average(&self) -> Option<f64> {
-        if self.records.is_empty() {
-            return None;
-        }
-        let sum: f64 = self.records.iter().map(|record| record.value).sum();
-        Some(sum / self.records.len() as f64)
-    }
-
-    pub fn validate_records(&self) -> Vec<&Record> {
-        self.records
-            .iter()
-            .filter(|record| record.value >= 0.0 && !record.name.is_empty())
-            .collect()
-    }
-
-    pub fn get_statistics(&self) -> Statistics {
-        let valid_records = self.validate_records();
-        let count = valid_records.len();
-        let total: f64 = valid_records.iter().map(|record| record.value).sum();
-        let average = if count > 0 { total / count as f64 } else { 0.0 };
-
-        Statistics {
-            total_records: self.records.len(),
-            valid_records: count,
-            average_value: average,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct Statistics {
-    pub total_records: usize,
-    pub valid_records: usize,
-    pub average_value: f64,
 }
