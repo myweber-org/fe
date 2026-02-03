@@ -805,4 +805,41 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, 2);
     }
+}use csv::Reader;
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
+}
+
+pub fn process_csv_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let mut reader = Reader::from_reader(file);
+    let mut records = Vec::new();
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        if record.value >= 0.0 {
+            records.push(record);
+        }
+    }
+
+    Ok(records)
+}
+
+pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
+    records
+        .into_iter()
+        .filter(|r| r.category == category)
+        .collect()
+}
+
+pub fn calculate_total_value(records: &[Record]) -> f64 {
+    records.iter().map(|r| r.value).sum()
 }
