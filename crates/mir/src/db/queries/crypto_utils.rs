@@ -36,3 +36,39 @@ mod tests {
         assert_eq!(hash, expected);
     }
 }
+use rand::Rng;
+use sha2::{Sha256, Digest};
+
+pub fn generate_salt() -> [u8; 16] {
+    let mut rng = rand::thread_rng();
+    let mut salt = [0u8; 16];
+    rng.fill(&mut salt);
+    salt
+}
+
+pub fn hash_password(password: &str, salt: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(password.as_bytes());
+    hasher.update(salt);
+    let result = hasher.finalize();
+    hex::encode(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_salt() {
+        let salt = generate_salt();
+        assert_eq!(salt.len(), 16);
+    }
+
+    #[test]
+    fn test_hash_password() {
+        let password = "secure_password123";
+        let salt = generate_salt();
+        let hash = hash_password(password, &salt);
+        assert_eq!(hash.len(), 64);
+    }
+}
