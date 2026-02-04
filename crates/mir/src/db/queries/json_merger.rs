@@ -23,47 +23,32 @@ pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error
 
     Ok(Value::Object(merged_map))
 }
-use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
-
-type JsonValue = serde_json::Value;
-
-pub fn merge_json_files(file_paths: &[impl AsRef<Path>]) -> Result<JsonValue, Box<dyn std::error::Error>> {
-    let mut merged = HashMap::new();
-
-    for path in file_paths {
-        let content = fs::read_to_string(path.as_ref())?;
-        let json_data: JsonValue = serde_json::from_str(&content)?;
-
-        if let JsonValue::Object(obj) = json_data {
-            for (key, value) in obj {
-                merged.insert(key, value);
-            }
-        } else {
-            return Err("Each JSON file must contain a JSON object".into());
-        }
-    }
-
-    Ok(serde_json::to_value(merged)?)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
     fn test_merge_json_files() {
-        let file1 = NamedTempFile::new().unwrap();
-        let file2 = NamedTempFile::new().unwrap();
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
 
-        fs::write(&file1, r#"{"a": 1, "b": 2}"#).unwrap();
-        fs::write(&file2, r#"{"c": 3, "d": 4}"#).unwrap();
+        writeln!(file1, r#"{"name": "Alice", "age": 30}"#).unwrap();
+        writeln!(file2, r#"{"city": "Berlin", "active": true}"#).unwrap();
 
-        let result = merge_json_files(&[&file1, &file2]).unwrap();
-        let expected: JsonValue = serde_json::from_str(r#"{"a":1,"b":2,"c":3,"d":4}"#).unwrap();
+        let paths = [
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ];
 
-        assert_eq!(result, expected);
+        let result = merge_json_files(&paths).unwrap();
+        let obj = result.as_object().unwrap();
+
+        assert_eq!(obj.get("name").unwrap(), "Alice");
+        assert_eq!(obj.get("age").unwrap(), 30);
+        assert_eq!(obj.get("city").unwrap(), "Berlin");
+        assert_eq!(obj.get("active").unwrap(), true);
     }
 }
