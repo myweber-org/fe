@@ -298,3 +298,96 @@ mod tests {
         assert!(processor.get_data().len() <= 5);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+
+pub struct DataProcessor {
+    validation_rules: HashMap<String, Box<dyn Fn(&str) -> bool>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        let mut processor = DataProcessor {
+            validation_rules: HashMap::new(),
+        };
+        
+        processor.add_validation_rule("email", |value| {
+            value.contains('@') && value.contains('.')
+        });
+        
+        processor.add_validation_rule("phone", |value| {
+            value.chars().all(|c| c.is_numeric()) && value.len() >= 10
+        });
+        
+        processor
+    }
+    
+    pub fn add_validation_rule(&mut self, rule_name: &str, validator: Box<dyn Fn(&str) -> bool>) {
+        self.validation_rules.insert(rule_name.to_string(), validator);
+    }
+    
+    pub fn validate(&self, rule_name: &str, value: &str) -> Result<bool, Box<dyn Error>> {
+        match self.validation_rules.get(rule_name) {
+            Some(validator) => Ok(validator(value)),
+            None => Err(format!("Validation rule '{}' not found", rule_name).into()),
+        }
+    }
+    
+    pub fn transform_data(&self, data: &str, transformation: &str) -> String {
+        match transformation {
+            "uppercase" => data.to_uppercase(),
+            "lowercase" => data.to_lowercase(),
+            "trim" => data.trim().to_string(),
+            "reverse" => data.chars().rev().collect(),
+            _ => data.to_string(),
+        }
+    }
+    
+    pub fn process_batch(&self, items: Vec<String>, transformation: &str) -> Vec<String> {
+        items
+            .into_iter()
+            .map(|item| self.transform_data(&item, transformation))
+            .collect()
+    }
+}
+
+pub fn sanitize_input(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_email_validation() {
+        let processor = DataProcessor::new();
+        assert!(processor.validate("email", "test@example.com").unwrap());
+        assert!(!processor.validate("email", "invalid-email").unwrap());
+    }
+    
+    #[test]
+    fn test_phone_validation() {
+        let processor = DataProcessor::new();
+        assert!(processor.validate("phone", "1234567890").unwrap());
+        assert!(!processor.validate("phone", "abc123").unwrap());
+    }
+    
+    #[test]
+    fn test_data_transformation() {
+        let processor = DataProcessor::new();
+        assert_eq!(processor.transform_data("hello", "uppercase"), "HELLO");
+        assert_eq!(processor.transform_data("WORLD", "lowercase"), "world");
+        assert_eq!(processor.transform_data("  test  ", "trim"), "test");
+        assert_eq!(processor.transform_data("abc", "reverse"), "cba");
+    }
+    
+    #[test]
+    fn test_sanitize_input() {
+        assert_eq!(sanitize_input("Hello123!"), "Hello123");
+        assert_eq!(sanitize_input("Test Input 456"), "Test Input 456");
+    }
+}
