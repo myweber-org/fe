@@ -107,4 +107,110 @@ mod tests {
         let invalid_result = processor.process_pipeline("   ".to_string(), vec![("validate", "non_empty")]);
         assert!(invalid_result.is_err());
     }
+}use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+struct DataProcessor {
+    records: Vec<Record>,
+}
+
+impl DataProcessor {
+    fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    fn load_from_csv(&mut self, path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(path)?;
+        let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+
+        for result in rdr.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
+        }
+
+        Ok(())
+    }
+
+    fn filter_by_value(&self, threshold: f64) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|record| record.value > threshold && record.active)
+            .collect()
+    }
+
+    fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.records.iter().map(|record| record.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    fn save_filtered_to_csv(&self, path: &str, threshold: f64) -> Result<(), Box<dyn Error>> {
+        let filtered = self.filter_by_value(threshold);
+        let file = File::create(path)?;
+        let mut wtr = WriterBuilder::new().has_headers(true).from_writer(file);
+
+        for record in filtered {
+            wtr.serialize(record)?;
+        }
+
+        wtr.flush()?;
+        Ok(())
+    }
+}
+
+fn process_data_file(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let mut processor = DataProcessor::new();
+    processor.load_from_csv(input_path)?;
+
+    if let Some(avg) = processor.calculate_average() {
+        println!("Average value: {:.2}", avg);
+        let threshold = avg * 0.8;
+        processor.save_filtered_to_csv(output_path, threshold)?;
+        println!("Filtered data saved to {}", output_path);
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processing() {
+        let csv_data = "id,name,value,active\n1,ItemA,10.5,true\n2,ItemB,5.2,false\n3,ItemC,15.8,true\n";
+        
+        let mut temp_input = NamedTempFile::new().unwrap();
+        std::fs::write(temp_input.path(), csv_data).unwrap();
+        
+        let temp_output = NamedTempFile::new().unwrap();
+        
+        let result = process_data_file(
+            temp_input.path().to_str().unwrap(),
+            temp_output.path().to_str().unwrap()
+        );
+        
+        assert!(result.is_ok());
+        
+        let output_content = std::fs::read_to_string(temp_output.path()).unwrap();
+        assert!(output_content.contains("ItemA"));
+        assert!(!output_content.contains("ItemB"));
+        assert!(output_content.contains("ItemC"));
+    }
 }
