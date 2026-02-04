@@ -86,3 +86,113 @@ mod tests {
         assert_eq!(groups.get("Beta").unwrap().len(), 1);
     }
 }
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum DataError {
+    #[error("Invalid input data")]
+    InvalidInput,
+    #[error("Transformation failed")]
+    TransformationFailed,
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataRecord {
+    pub id: u64,
+    pub value: f64,
+    pub timestamp: i64,
+}
+
+impl DataRecord {
+    pub fn validate(&self) -> Result<(), DataError> {
+        if self.id == 0 {
+            return Err(DataError::ValidationError("ID cannot be zero".to_string()));
+        }
+        if self.value.is_nan() || self.value.is_infinite() {
+            return Err(DataError::ValidationError("Value must be finite".to_string()));
+        }
+        if self.timestamp < 0 {
+            return Err(DataError::ValidationError("Timestamp cannot be negative".to_string()));
+        }
+        Ok(())
+    }
+}
+
+pub fn process_records(records: Vec<DataRecord>) -> Result<Vec<DataRecord>, DataError> {
+    let mut processed = Vec::with_capacity(records.len());
+    
+    for record in records {
+        record.validate()?;
+        
+        let processed_record = DataRecord {
+            id: record.id,
+            value: transform_value(record.value)?,
+            timestamp: record.timestamp,
+        };
+        
+        processed.push(processed_record);
+    }
+    
+    Ok(processed)
+}
+
+fn transform_value(value: f64) -> Result<f64, DataError> {
+    if value.abs() > 1_000_000.0 {
+        return Err(DataError::TransformationFailed);
+    }
+    
+    let transformed = value.log10();
+    if transformed.is_nan() || transformed.is_infinite() {
+        Err(DataError::TransformationFailed)
+    } else {
+        Ok(transformed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record() {
+        let record = DataRecord {
+            id: 1,
+            value: 100.0,
+            timestamp: 1625097600,
+        };
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        let record = DataRecord {
+            id: 0,
+            value: 100.0,
+            timestamp: 1625097600,
+        };
+        assert!(record.validate().is_err());
+    }
+
+    #[test]
+    fn test_process_records() {
+        let records = vec![
+            DataRecord {
+                id: 1,
+                value: 100.0,
+                timestamp: 1625097600,
+            },
+            DataRecord {
+                id: 2,
+                value: 1000.0,
+                timestamp: 1625097601,
+            },
+        ];
+        
+        let result = process_records(records);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 2);
+    }
+}
