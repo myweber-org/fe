@@ -646,4 +646,164 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, 2);
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub category: String,
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
+
+        for (index, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if index == 0 {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 4 {
+                continue;
+            }
+
+            let id = parts[0].parse::<u32>()?;
+            let name = parts[1].to_string();
+            let value = parts[2].parse::<f64>()?;
+            let category = parts[3].to_string();
+
+            if !self.validate_record(&name, value) {
+                continue;
+            }
+
+            let record = DataRecord {
+                id,
+                name,
+                value,
+                category,
+            };
+
+            self.records.push(record);
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    fn validate_record(&self, name: &str, value: f64) -> bool {
+        !name.is_empty() && value >= 0.0 && value <= 1000.0
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<DataRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.category == category)
+            .cloned()
+            .collect()
+    }
+
+    pub fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.records.iter().map(|record| record.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    pub fn find_max_value(&self) -> Option<&DataRecord> {
+        self.records.iter().max_by(|a, b| {
+            a.value.partial_cmp(&b.value).unwrap()
+        })
+    }
+
+    pub fn get_statistics(&self) -> Statistics {
+        let count = self.records.len();
+        let avg = self.calculate_average().unwrap_or(0.0);
+        let max = self.find_max_value().map(|r| r.value).unwrap_or(0.0);
+        let min = self.records.iter()
+            .map(|r| r.value)
+            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap_or(0.0);
+
+        Statistics {
+            count,
+            average: avg,
+            maximum: max,
+            minimum: min,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
+
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
+}
+
+#[derive(Debug)]
+pub struct Statistics {
+    pub count: usize,
+    pub average: f64,
+    pub maximum: f64,
+    pub minimum: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        assert_eq!(processor.record_count(), 0);
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,name,value,category").unwrap();
+        writeln!(temp_file, "1,ItemA,100.5,Category1").unwrap();
+        writeln!(temp_file, "2,ItemB,200.0,Category2").unwrap();
+        writeln!(temp_file, "3,ItemC,300.75,Category1").unwrap();
+
+        let count = processor.load_from_csv(temp_file.path()).unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(processor.record_count(), 3);
+
+        let category1_items = processor.filter_by_category("Category1");
+        assert_eq!(category1_items.len(), 2);
+
+        let avg = processor.calculate_average().unwrap();
+        assert!((avg - 200.416).abs() < 0.001);
+
+        let stats = processor.get_statistics();
+        assert_eq!(stats.count, 3);
+        assert_eq!(stats.maximum, 300.75);
+        assert_eq!(stats.minimum, 100.5);
+
+        processor.clear();
+        assert_eq!(processor.record_count(), 0);
+    }
 }
