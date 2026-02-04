@@ -889,4 +889,105 @@ mod tests {
         processor.clear();
         assert_eq!(processor.get_records().len(), 0);
     }
+}use csv::Reader;
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug)]
+pub struct DataSet {
+    values: Vec<f64>,
+}
+
+impl DataSet {
+    pub fn from_csv(file_path: &str) -> Result<Self, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let mut rdr = Reader::from_reader(file);
+        let mut values = Vec::new();
+
+        for result in rdr.records() {
+            let record = result?;
+            if let Some(field) = record.get(0) {
+                if let Ok(num) = field.parse::<f64>() {
+                    values.push(num);
+                }
+            }
+        }
+
+        Ok(DataSet { values })
+    }
+
+    pub fn calculate_mean(&self) -> f64 {
+        if self.values.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = self.values.iter().sum();
+        sum / self.values.len() as f64
+    }
+
+    pub fn calculate_standard_deviation(&self) -> f64 {
+        if self.values.len() < 2 {
+            return 0.0;
+        }
+        let mean = self.calculate_mean();
+        let variance: f64 = self.values
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / (self.values.len() - 1) as f64;
+        variance.sqrt()
+    }
+
+    pub fn get_summary(&self) -> Summary {
+        Summary {
+            count: self.values.len(),
+            mean: self.calculate_mean(),
+            std_dev: self.calculate_standard_deviation(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Summary {
+    pub count: usize,
+    pub mean: f64,
+    pub std_dev: f64,
+}
+
+impl Summary {
+    pub fn display(&self) {
+        println!("Data Summary:");
+        println!("  Count: {}", self.count);
+        println!("  Mean: {:.4}", self.mean);
+        println!("  Standard Deviation: {:.4}", self.std_dev);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_empty_dataset() {
+        let dataset = DataSet { values: vec![] };
+        assert_eq!(dataset.calculate_mean(), 0.0);
+        assert_eq!(dataset.calculate_standard_deviation(), 0.0);
+    }
+
+    #[test]
+    fn test_single_value() {
+        let dataset = DataSet { values: vec![42.0] };
+        assert_eq!(dataset.calculate_mean(), 42.0);
+        assert_eq!(dataset.calculate_standard_deviation(), 0.0);
+    }
+
+    #[test]
+    fn test_csv_parsing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "value\n10.5\n20.3\n15.7").unwrap();
+        
+        let dataset = DataSet::from_csv(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(dataset.values.len(), 3);
+        assert!((dataset.calculate_mean() - 15.5).abs() < 0.001);
+    }
 }
