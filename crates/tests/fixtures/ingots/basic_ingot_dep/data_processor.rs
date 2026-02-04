@@ -784,3 +784,105 @@ mod tests {
         assert_eq!(avg, Some(20.0));
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    data: Vec<f64>,
+    metadata: HashMap<String, String>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            data: Vec::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        
+        for (index, line) in reader.lines().enumerate() {
+            let line = line?;
+            if index == 0 {
+                continue;
+            }
+            
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() >= 2 {
+                if let Ok(value) = parts[1].parse::<f64>() {
+                    self.data.push(value);
+                }
+            }
+        }
+        
+        self.metadata.insert("source".to_string(), file_path.to_string());
+        self.metadata.insert("loaded_timestamp".to_string(), chrono::Utc::now().to_rfc3339());
+        
+        Ok(())
+    }
+
+    pub fn calculate_statistics(&self) -> Statistics {
+        if self.data.is_empty() {
+            return Statistics::default();
+        }
+        
+        let sum: f64 = self.data.iter().sum();
+        let count = self.data.len() as f64;
+        let mean = sum / count;
+        
+        let variance: f64 = self.data.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / count;
+        
+        let std_dev = variance.sqrt();
+        
+        let min = self.data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = self.data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        
+        Statistics {
+            count: self.data.len(),
+            mean,
+            std_dev,
+            min,
+            max,
+            variance,
+        }
+    }
+
+    pub fn filter_data(&self, threshold: f64) -> Vec<f64> {
+        self.data.iter()
+            .filter(|&&x| x >= threshold)
+            .cloned()
+            .collect()
+    }
+
+    pub fn get_metadata(&self) -> &HashMap<String, String> {
+        &self.metadata
+    }
+
+    pub fn data_len(&self) -> usize {
+        self.data.len()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Statistics {
+    pub count: usize,
+    pub mean: f64,
+    pub std_dev: f64,
+    pub min: f64,
+    pub max: f64,
+    pub variance: f64,
+}
+
+impl std::fmt::Display for Statistics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Statistics:\n  Count: {}\n  Mean: {:.4}\n  Std Dev: {:.4}\n  Min: {:.4}\n  Max: {:.4}\n  Variance: {:.4}",
+               self.count, self.mean, self.std_dev, self.min, self.max, self.variance)
+    }
+}
