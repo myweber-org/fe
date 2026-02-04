@@ -109,4 +109,149 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].message, "Error");
     }
+}use serde_json::Value;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use chrono::{DateTime, Utc};
+
+pub struct LogEntry {
+    pub timestamp: DateTime<Utc>,
+    pub level: String,
+    pub message: String,
+    pub fields: HashMap<String, Value>,
+}
+
+pub struct LogParser {
+    min_level: Option<String>,
+    field_filters: HashMap<String, Value>,
+}
+
+impl LogParser {
+    pub fn new() -> Self {
+        LogParser {
+            min_level: None,
+            field_filters: HashMap::new(),
+        }
+    }
+
+    pub fn set_min_level(&mut self, level: &str) {
+        let levels = ["trace", "debug", "info", "warn", "error"];
+        if levels.contains(&level.to_lowercase().as_str()) {
+            self.min_level = Some(level.to_lowercase());
+        }
+    }
+
+    pub fn add_field_filter(&mut self, key: &str, value: Value) {
+        self.field_filters.insert(key.to_string(), value);
+    }
+
+    pub fn parse_file(&self, path: &str) -> Result<Vec<LogEntry>, Box<dyn std::error::Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut entries = Vec::new();
+
+        for line in reader.lines() {
+            let line = line?;
+            if let Ok(entry) = self.parse_line(&line) {
+                entries.push(entry);
+            }
+        }
+
+        Ok(entries)
+    }
+
+    fn parse_line(&self, line: &str) -> Result<LogEntry, Box<dyn std::error::Error>> {
+        let json_value: Value = serde_json::from_str(line)?;
+        
+        let timestamp_str = json_value.get("timestamp")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing timestamp field")?;
+        
+        let timestamp = DateTime::parse_from_rfc3339(timestamp_str)?
+            .with_timezone(&Utc);
+
+        let level = json_value.get("level")
+            .and_then(|v| v.as_str())
+            .unwrap_or("info")
+            .to_lowercase();
+
+        if let Some(min_level) = &self.min_level {
+            let level_order = |lvl: &str| match lvl {
+                "trace" => 0,
+                "debug" => 1,
+                "info" => 2,
+                "warn" => 3,
+                "error" => 4,
+                _ => 5,
+            };
+
+            if level_order(&level) < level_order(min_level) {
+                return Err("Log level below minimum threshold".into());
+            }
+        }
+
+        let message = json_value.get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let mut fields = HashMap::new();
+        if let Some(obj) = json_value.as_object() {
+            for (key, value) in obj {
+                if key != "timestamp" && key != "level" && key != "message" {
+                    fields.insert(key.clone(), value.clone());
+                }
+            }
+        }
+
+        for (filter_key, filter_value) in &self.field_filters {
+            if let Some(field_value) = fields.get(filter_key) {
+                if field_value != filter_value {
+                    return Err("Field filter mismatch".into());
+                }
+            }
+        }
+
+        Ok(LogEntry {
+            timestamp,
+            level,
+            message,
+            fields,
+        })
+    }
+
+    pub fn format_entry(&self, entry: &LogEntry) -> String {
+        let mut output = format!(
+            "[{}] {}: {}",
+            entry.timestamp.format("%Y-%m-%d %H:%M:%S"),
+            entry.level.to_uppercase(),
+            entry.message
+        );
+
+        if !entry.fields.is_empty() {
+            output.push_str(" | ");
+            let fields_str: Vec<String> = entry.fields
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            output.push_str(&fields_str.join(", "));
+        }
+
+        output
+    }
+}
+
+pub fn analyze_logs(entries: &[LogEntry]) -> HashMap<String, usize> {
+    let mut stats = HashMap::new();
+    
+    for entry in entries {
+        *stats.entry(entry.level.clone()).or_insert(0) += 1;
+        
+        for key in entry.fields.keys() {
+            *stats.entry(format!("field_{}", key)).or_insert(0) += 1;
+        }
+    }
+    
+    stats
 }
