@@ -102,3 +102,201 @@ mod tests {
         assert_eq!(filtered.len(), 5);
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+pub struct ValidationRule {
+    field_name: String,
+    min_value: f64,
+    max_value: f64,
+    required: bool,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
+            validation_rules: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn process_dataset(&mut self, dataset: &[HashMap<String, f64>]) -> Result<Vec<ProcessedRecord>, ProcessingError> {
+        let mut results = Vec::with_capacity(dataset.len());
+        
+        for (index, record) in dataset.iter().enumerate() {
+            match self.validate_record(record) {
+                Ok(validated) => {
+                    let transformed = self.transform_record(&validated);
+                    self.cache_results(&transformed);
+                    results.push(transformed);
+                }
+                Err(err) => {
+                    return Err(ProcessingError::ValidationFailed {
+                        record_index: index,
+                        reason: err,
+                    });
+                }
+            }
+        }
+        
+        Ok(results)
+    }
+
+    fn validate_record(&self, record: &HashMap<String, f64>) -> Result<ValidatedRecord, String> {
+        for rule in &self.validation_rules {
+            if let Some(&value) = record.get(&rule.field_name) {
+                if value < rule.min_value || value > rule.max_value {
+                    return Err(format!(
+                        "Field '{}' value {} out of range [{}, {}]",
+                        rule.field_name, value, rule.min_value, rule.max_value
+                    ));
+                }
+            } else if rule.required {
+                return Err(format!("Required field '{}' missing", rule.field_name));
+            }
+        }
+        
+        Ok(ValidatedRecord {
+            original: record.clone(),
+            validation_timestamp: std::time::SystemTime::now(),
+        })
+    }
+
+    fn transform_record(&self, validated: &ValidatedRecord) -> ProcessedRecord {
+        let mut transformed = HashMap::new();
+        
+        for (key, value) in &validated.original {
+            let transformed_value = match key.as_str() {
+                "temperature" => (value - 32.0) * 5.0 / 9.0,
+                "pressure" => value * 0.0689476,
+                "humidity" => value.min(100.0).max(0.0),
+                _ => *value,
+            };
+            transformed.insert(key.clone(), transformed_value);
+        }
+        
+        ProcessedRecord {
+            data: transformed,
+            processing_timestamp: std::time::SystemTime::now(),
+            validation_timestamp: validated.validation_timestamp,
+        }
+    }
+
+    fn cache_results(&mut self, processed: &ProcessedRecord) {
+        for (key, value) in &processed.data {
+            self.cache
+                .entry(key.clone())
+                .or_insert_with(Vec::new)
+                .push(*value);
+        }
+    }
+
+    pub fn get_cached_stats(&self, field: &str) -> Option<FieldStatistics> {
+        self.cache.get(field).map(|values| {
+            let count = values.len();
+            let sum: f64 = values.iter().sum();
+            let mean = sum / count as f64;
+            let variance: f64 = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count as f64;
+            
+            FieldStatistics {
+                field_name: field.to_string(),
+                count,
+                mean,
+                variance,
+                min: *values.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&0.0),
+                max: *values.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&0.0),
+            }
+        })
+    }
+}
+
+pub struct ValidatedRecord {
+    original: HashMap<String, f64>,
+    validation_timestamp: std::time::SystemTime,
+}
+
+pub struct ProcessedRecord {
+    data: HashMap<String, f64>,
+    processing_timestamp: std::time::SystemTime,
+    validation_timestamp: std::time::SystemTime,
+}
+
+pub struct FieldStatistics {
+    pub field_name: String,
+    pub count: usize,
+    pub mean: f64,
+    pub variance: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    ValidationFailed {
+        record_index: usize,
+        reason: String,
+    },
+    TransformationError(String),
+    CacheError(String),
+}
+
+impl std::fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProcessingError::ValidationFailed { record_index, reason } => {
+                write!(f, "Validation failed at record {}: {}", record_index, reason)
+            }
+            ProcessingError::TransformationError(msg) => {
+                write!(f, "Transformation error: {}", msg)
+            }
+            ProcessingError::CacheError(msg) => {
+                write!(f, "Cache error: {}", msg)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProcessingError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        
+        processor.add_validation_rule(ValidationRule {
+            field_name: "temperature".to_string(),
+            min_value: -50.0,
+            max_value: 150.0,
+            required: true,
+        });
+        
+        let dataset = vec![
+            [("temperature".to_string(), 68.0), ("humidity".to_string(), 45.0)]
+                .iter().cloned().collect(),
+            [("temperature".to_string(), 72.0), ("pressure".to_string(), 14.7)]
+                .iter().cloned().collect(),
+        ];
+        
+        let result = processor.process_dataset(&dataset);
+        assert!(result.is_ok());
+        
+        let stats = processor.get_cached_stats("temperature");
+        assert!(stats.is_some());
+        
+        if let Some(stats) = stats {
+            assert_eq!(stats.count, 2);
+            assert!(stats.mean > 0.0);
+        }
+    }
+}
