@@ -269,3 +269,125 @@ mod tests {
         assert_eq!(extracted[0]["message"], "Test error");
     }
 }
+use serde_json::{Value, Error as JsonError};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+    pub metadata: Value,
+}
+
+pub fn parse_log_file<P: AsRef<Path>>(path: P) -> Result<Vec<LogEntry>, Box<dyn std::error::Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut entries = Vec::new();
+
+    for (line_num, line) in reader.lines().enumerate() {
+        let line_content = line?;
+        
+        match parse_log_line(&line_content) {
+            Ok(entry) => entries.push(entry),
+            Err(e) => eprintln!("Warning: Failed to parse line {}: {}", line_num + 1, e),
+        }
+    }
+
+    Ok(entries)
+}
+
+fn parse_log_line(line: &str) -> Result<LogEntry, JsonError> {
+    let json_value: Value = serde_json::from_str(line)?;
+    
+    let timestamp = json_value["timestamp"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    
+    let level = json_value["level"]
+        .as_str()
+        .unwrap_or("INFO")
+        .to_string();
+    
+    let message = json_value["message"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    
+    let metadata = json_value.get("metadata")
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    Ok(LogEntry {
+        timestamp,
+        level,
+        message,
+        metadata,
+    })
+}
+
+pub fn filter_logs_by_level(entries: &[LogEntry], level: &str) -> Vec<&LogEntry> {
+    entries.iter()
+        .filter(|entry| entry.level.to_uppercase() == level.to_uppercase())
+        .collect()
+}
+
+pub fn count_logs_by_level(entries: &[LogEntry]) -> std::collections::HashMap<String, usize> {
+    let mut counts = std::collections::HashMap::new();
+    
+    for entry in entries {
+        *counts.entry(entry.level.clone()).or_insert(0) += 1;
+    }
+    
+    counts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_parse_valid_log_line() {
+        let json_line = r#"{"timestamp":"2024-01-15T10:30:00Z","level":"ERROR","message":"Database connection failed","metadata":{"error_code":500,"service":"auth"}}"#;
+        
+        let entry = parse_log_line(json_line).unwrap();
+        
+        assert_eq!(entry.timestamp, "2024-01-15T10:30:00Z");
+        assert_eq!(entry.level, "ERROR");
+        assert_eq!(entry.message, "Database connection failed");
+        assert_eq!(entry.metadata["error_code"], 500);
+    }
+
+    #[test]
+    fn test_parse_invalid_json() {
+        let invalid_line = r#"{"timestamp":"2024-01-15T10:30:00Z","level":"ERROR""#;
+        
+        assert!(parse_log_line(invalid_line).is_err());
+    }
+
+    #[test]
+    fn test_filter_logs() {
+        let entries = vec![
+            LogEntry {
+                timestamp: "2024-01-15T10:30:00Z".to_string(),
+                level: "ERROR".to_string(),
+                message: "Test error".to_string(),
+                metadata: Value::Null,
+            },
+            LogEntry {
+                timestamp: "2024-01-15T10:31:00Z".to_string(),
+                level: "INFO".to_string(),
+                message: "Test info".to_string(),
+                metadata: Value::Null,
+            },
+        ];
+        
+        let errors = filter_logs_by_level(&entries, "ERROR");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].level, "ERROR");
+    }
+}
