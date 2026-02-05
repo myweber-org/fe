@@ -280,4 +280,221 @@ mod tests {
         assert_eq!(config.get_or_default("EXISTING", "default"), "value");
         assert_eq!(config.get_or_default("MISSING", "default"), "default");
     }
+}use std::collections::HashMap;
+use std::fs;
+use std::io;
+
+#[derive(Debug, PartialEq)]
+pub struct Config {
+    pub server: ServerConfig,
+    pub database: DatabaseConfig,
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub enable_ssl: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct DatabaseConfig {
+    pub url: String,
+    pub pool_size: u32,
+    pub timeout_secs: u64,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct LoggingConfig {
+    pub level: String,
+    pub file_path: Option<String>,
+    pub enable_console: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 8080,
+                enable_ssl: false,
+            },
+            database: DatabaseConfig {
+                url: "postgresql://localhost:5432/mydb".to_string(),
+                pool_size: 10,
+                timeout_secs: 30,
+            },
+            logging: LoggingConfig {
+                level: "INFO".to_string(),
+                file_path: None,
+                enable_console: true,
+            },
+        }
+    }
+}
+
+pub fn parse_config_file(path: &str) -> Result<Config, io::Error> {
+    let content = fs::read_to_string(path)?;
+    parse_config(&content)
+}
+
+pub fn parse_config(content: &str) -> Result<Config, io::Error> {
+    let mut config = Config::default();
+    let lines: Vec<&str> = content.lines().collect();
+
+    let mut current_section = String::new();
+    let mut section_map: HashMap<String, Vec<(&str, &str)>> = HashMap::new();
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            current_section = trimmed[1..trimmed.len() - 1].to_string();
+            continue;
+        }
+
+        if let Some(pos) = trimmed.find('=') {
+            let key = trimmed[..pos].trim();
+            let value = trimmed[pos + 1..].trim();
+            section_map
+                .entry(current_section.clone())
+                .or_insert_with(Vec::new)
+                .push((key, value));
+        }
+    }
+
+    if let Some(server_entries) = section_map.get("server") {
+        for (key, value) in server_entries {
+            match *key {
+                "host" => config.server.host = value.to_string(),
+                "port" => {
+                    if let Ok(port) = value.parse() {
+                        config.server.port = port;
+                    }
+                }
+                "enable_ssl" => {
+                    config.server.enable_ssl = value.eq_ignore_ascii_case("true");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(db_entries) = section_map.get("database") {
+        for (key, value) in db_entries {
+            match *key {
+                "url" => config.database.url = value.to_string(),
+                "pool_size" => {
+                    if let Ok(size) = value.parse() {
+                        config.database.pool_size = size;
+                    }
+                }
+                "timeout_secs" => {
+                    if let Ok(timeout) = value.parse() {
+                        config.database.timeout_secs = timeout;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(log_entries) = section_map.get("logging") {
+        for (key, value) in log_entries {
+            match *key {
+                "level" => config.logging.level = value.to_string(),
+                "file_path" => {
+                    if value != "null" {
+                        config.logging.file_path = Some(value.to_string());
+                    }
+                }
+                "enable_console" => {
+                    config.logging.enable_console = value.eq_ignore_ascii_case("true");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = Config::default();
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 8080);
+        assert!(!config.server.enable_ssl);
+        assert_eq!(config.database.url, "postgresql://localhost:5432/mydb");
+        assert_eq!(config.database.pool_size, 10);
+        assert_eq!(config.database.timeout_secs, 30);
+        assert_eq!(config.logging.level, "INFO");
+        assert!(config.logging.enable_console);
+    }
+
+    #[test]
+    fn test_parse_config() {
+        let content = r#"
+[server]
+host = 0.0.0.0
+port = 9000
+enable_ssl = true
+
+[database]
+url = postgresql://prod-db:5432/production
+pool_size = 20
+timeout_secs = 60
+
+[logging]
+level = DEBUG
+file_path = /var/log/app.log
+enable_console = false
+"#;
+
+        let config = parse_config(content).unwrap();
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 9000);
+        assert!(config.server.enable_ssl);
+        assert_eq!(config.database.url, "postgresql://prod-db:5432/production");
+        assert_eq!(config.database.pool_size, 20);
+        assert_eq!(config.database.timeout_secs, 60);
+        assert_eq!(config.logging.level, "DEBUG");
+        assert_eq!(config.logging.file_path, Some("/var/log/app.log".to_string()));
+        assert!(!config.logging.enable_console);
+    }
+
+    #[test]
+    fn test_parse_config_with_comments_and_whitespace() {
+        let content = r#"
+# Server configuration
+[server]
+host = 192.168.1.100  # Bind address
+port = 443
+
+# Database settings
+[database]
+url = mysql://localhost:3306/testdb
+
+[logging]
+level = WARN
+file_path = null
+enable_console = true
+"#;
+
+        let config = parse_config(content).unwrap();
+        assert_eq!(config.server.host, "192.168.1.100");
+        assert_eq!(config.server.port, 443);
+        assert_eq!(config.database.url, "mysql://localhost:3306/testdb");
+        assert_eq!(config.logging.level, "WARN");
+        assert_eq!(config.logging.file_path, None);
+        assert!(config.logging.enable_console);
+    }
 }
