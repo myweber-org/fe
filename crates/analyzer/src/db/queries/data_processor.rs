@@ -360,3 +360,137 @@ pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
         .filter(|r| r.category == category)
         .collect()
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+    pub valid: bool,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Self {
+        let valid = value >= 0.0 && !category.is_empty();
+        DataRecord {
+            id,
+            value,
+            category,
+            valid,
+        }
+    }
+}
+
+pub fn process_csv_file<P: AsRef<Path>>(path: P) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    let mut line_number = 0;
+
+    for line in reader.lines() {
+        line_number += 1;
+        let line = line?;
+        
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 3 {
+            eprintln!("Warning: Invalid format at line {}", line_number);
+            continue;
+        }
+
+        let id = match parts[0].parse::<u32>() {
+            Ok(val) => val,
+            Err(_) => {
+                eprintln!("Warning: Invalid ID at line {}", line_number);
+                continue;
+            }
+        };
+
+        let value = match parts[1].parse::<f64>() {
+            Ok(val) => val,
+            Err(_) => {
+                eprintln!("Warning: Invalid value at line {}", line_number);
+                continue;
+            }
+        };
+
+        let category = parts[2].trim().to_string();
+        records.push(DataRecord::new(id, value, category));
+    }
+
+    Ok(records)
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, usize) {
+    let valid_records: Vec<&DataRecord> = records.iter().filter(|r| r.valid).collect();
+    
+    if valid_records.is_empty() {
+        return (0.0, 0.0, 0);
+    }
+
+    let sum: f64 = valid_records.iter().map(|r| r.value).sum();
+    let count = valid_records.len();
+    let mean = sum / count as f64;
+
+    let variance: f64 = valid_records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count as f64;
+
+    (mean, variance, count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_record_validation() {
+        let record1 = DataRecord::new(1, 10.5, "A".to_string());
+        assert!(record1.valid);
+
+        let record2 = DataRecord::new(2, -5.0, "B".to_string());
+        assert!(!record2.valid);
+
+        let record3 = DataRecord::new(3, 7.5, "".to_string());
+        assert!(!record3.valid);
+    }
+
+    #[test]
+    fn test_process_csv_file() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1,10.5,CategoryA").unwrap();
+        writeln!(temp_file, "2,15.3,CategoryB").unwrap();
+        writeln!(temp_file, "# This is a comment").unwrap();
+        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file, "3,invalid,CategoryC").unwrap();
+
+        let records = process_csv_file(temp_file.path()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].id, 1);
+        assert_eq!(records[0].value, 10.5);
+        assert_eq!(records[0].category, "CategoryA");
+    }
+
+    #[test]
+    fn test_calculate_statistics() {
+        let records = vec![
+            DataRecord::new(1, 10.0, "A".to_string()),
+            DataRecord::new(2, 20.0, "B".to_string()),
+            DataRecord::new(3, 30.0, "C".to_string()),
+            DataRecord::new(4, -5.0, "D".to_string()),
+        ];
+
+        let (mean, variance, count) = calculate_statistics(&records);
+        assert_eq!(count, 3);
+        assert!((mean - 20.0).abs() < 0.001);
+        assert!((variance - 66.666).abs() < 0.001);
+    }
+}
