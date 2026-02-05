@@ -64,3 +64,42 @@ fn main() {
         std::process::exit(1);
     }
 }
+use regex::Regex;
+use std::collections::HashSet;
+
+pub fn clean_and_normalize(input: &str, stop_words: &HashSet<&str>) -> String {
+    let re = Regex::new(r"[^\w\s]").unwrap();
+    let cleaned = re.replace_all(input, "").to_lowercase();
+    
+    cleaned
+        .split_whitespace()
+        .filter(|word| !stop_words.contains(word))
+        .collect::<Vec<&str>>()
+        .join(" ")
+}
+
+pub fn create_default_stopwords() -> HashSet<&'static str> {
+    let words = vec!["the", "a", "an", "and", "or", "but", "in", "on", "at"];
+    words.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_and_normalize() {
+        let stopwords = create_default_stopwords();
+        let input = "The quick brown fox jumps over the lazy dog!";
+        let result = clean_and_normalize(input, &stopwords);
+        assert_eq!(result, "quick brown fox jumps over lazy dog");
+    }
+
+    #[test]
+    fn test_with_punctuation() {
+        let stopwords = create_default_stopwords();
+        let input = "Hello, World! This is a test.";
+        let result = clean_and_normalize(input, &stopwords);
+        assert_eq!(result, "hello world this is test");
+    }
+}
