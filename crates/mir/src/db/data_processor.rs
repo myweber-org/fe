@@ -214,3 +214,198 @@ mod tests {
         assert!(output_content.contains("ItemC"));
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::error::Error;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ValidationError {
+    InvalidId,
+    InvalidTimestamp,
+    EmptyValues,
+    MetadataTooLarge,
+}
+
+pub struct DataProcessor {
+    max_metadata_size: usize,
+    min_values_count: usize,
+}
+
+impl DataProcessor {
+    pub fn new(max_metadata_size: usize, min_values_count: usize) -> Self {
+        DataProcessor {
+            max_metadata_size,
+            min_values_count,
+        }
+    }
+
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ValidationError> {
+        if record.id == 0 {
+            return Err(ValidationError::InvalidId);
+        }
+
+        if record.timestamp <= 0 {
+            return Err(ValidationError::InvalidTimestamp);
+        }
+
+        if record.values.len() < self.min_values_count {
+            return Err(ValidationError::EmptyValues);
+        }
+
+        let total_metadata_size: usize = record.metadata
+            .iter()
+            .map(|(k, v)| k.len() + v.len())
+            .sum();
+
+        if total_metadata_size > self.max_metadata_size {
+            return Err(ValidationError::MetadataTooLarge);
+        }
+
+        Ok(())
+    }
+
+    pub fn transform_values(&self, record: &mut DataRecord, transform_fn: fn(f64) -> f64) {
+        record.values = record.values
+            .iter()
+            .map(|&value| transform_fn(value))
+            .collect();
+    }
+
+    pub fn calculate_statistics(&self, record: &DataRecord) -> HashMap<String, f64> {
+        let mut stats = HashMap::new();
+
+        if record.values.is_empty() {
+            return stats;
+        }
+
+        let sum: f64 = record.values.iter().sum();
+        let count = record.values.len() as f64;
+        let mean = sum / count;
+
+        let variance: f64 = record.values
+            .iter()
+            .map(|&value| (value - mean).powi(2))
+            .sum::<f64>() / count;
+
+        let min = record.values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = record.values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+        stats.insert("mean".to_string(), mean);
+        stats.insert("variance".to_string(), variance);
+        stats.insert("min".to_string(), min);
+        stats.insert("max".to_string(), max);
+        stats.insert("count".to_string(), count);
+        stats.insert("sum".to_string(), sum);
+
+        stats
+    }
+
+    pub fn merge_records(&self, records: Vec<DataRecord>) -> Result<DataRecord, Box<dyn Error>> {
+        if records.is_empty() {
+            return Err("No records to merge".into());
+        }
+
+        let first_record = &records[0];
+        let mut merged_values = Vec::new();
+        let mut merged_metadata = first_record.metadata.clone();
+
+        for record in &records {
+            self.validate_record(record)?;
+            merged_values.extend_from_slice(&record.values);
+
+            for (key, value) in &record.metadata {
+                merged_metadata.entry(key.clone())
+                    .and_modify(|v| *v = format!("{};{}", v, value))
+                    .or_insert(value.clone());
+            }
+        }
+
+        Ok(DataRecord {
+            id: records.iter().map(|r| r.id).max().unwrap_or(0),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs() as i64,
+            values: merged_values,
+            metadata: merged_metadata,
+        })
+    }
+}
+
+pub fn normalize_value(value: f64) -> f64 {
+    if value == 0.0 {
+        0.0
+    } else {
+        value.signum() * value.abs().ln()
+    }
+}
+
+pub fn scale_value(factor: f64) -> impl Fn(f64) -> f64 {
+    move |value| value * factor
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validation() {
+        let processor = DataProcessor::new(100, 2);
+        let mut record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0],
+            metadata: HashMap::new(),
+        };
+
+        assert!(processor.validate_record(&record).is_ok());
+
+        record.id = 0;
+        assert_eq!(processor.validate_record(&record), Err(ValidationError::InvalidId));
+
+        record.id = 1;
+        record.timestamp = -1;
+        assert_eq!(processor.validate_record(&record), Err(ValidationError::InvalidTimestamp));
+
+        record.timestamp = 1234567890;
+        record.values.clear();
+        assert_eq!(processor.validate_record(&record), Err(ValidationError::EmptyValues));
+    }
+
+    #[test]
+    fn test_statistics() {
+        let processor = DataProcessor::new(100, 1);
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            metadata: HashMap::new(),
+        };
+
+        let stats = processor.calculate_statistics(&record);
+        assert_eq!(stats.get("mean"), Some(&3.0));
+        assert_eq!(stats.get("sum"), Some(&15.0));
+        assert_eq!(stats.get("count"), Some(&5.0));
+    }
+
+    #[test]
+    fn test_value_transformation() {
+        let processor = DataProcessor::new(100, 1);
+        let mut record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0],
+            metadata: HashMap::new(),
+        };
+
+        processor.transform_values(&mut record, |x| x * 2.0);
+        assert_eq!(record.values, vec![2.0, 4.0, 6.0]);
+    }
+}
