@@ -143,4 +143,54 @@ mod tests {
         assert_eq!(cleaned.get("names").unwrap(), &vec!["John", "Alice"]);
         assert_eq!(cleaner.count_valid_entries(), 2);
     }
+}use std::collections::HashSet;
+use std::io::{self, BufRead};
+
+pub fn clean_data(input: Vec<String>) -> Vec<String> {
+    let mut unique_items: HashSet<String> = HashSet::new();
+    for item in input {
+        unique_items.insert(item.trim().to_string());
+    }
+    
+    let mut sorted_items: Vec<String> = unique_items.into_iter().collect();
+    sorted_items.sort();
+    sorted_items
+}
+
+pub fn read_lines_from_stdin() -> Vec<String> {
+    let stdin = io::stdin();
+    let lines: Vec<String> = stdin.lock().lines()
+        .filter_map(Result::ok)
+        .collect();
+    lines
+}
+
+pub fn process_input() -> Vec<String> {
+    let raw_data = read_lines_from_stdin();
+    clean_data(raw_data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_data() {
+        let input = vec![
+            "banana".to_string(),
+            "apple".to_string(),
+            "banana".to_string(),
+            "cherry".to_string(),
+            "apple".to_string(),
+        ];
+        let result = clean_data(input);
+        assert_eq!(result, vec!["apple", "banana", "cherry"]);
+    }
+
+    #[test]
+    fn test_empty_input() {
+        let input: Vec<String> = vec![];
+        let result = clean_data(input);
+        assert!(result.is_empty());
+    }
 }
