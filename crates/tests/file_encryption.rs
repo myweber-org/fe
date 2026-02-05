@@ -1,56 +1,80 @@
 
-use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, Key, Nonce,
-};
-use std::fs;
-use std::io::{self, Read, Write};
+use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use pbkdf2::pbkdf2_hmac;
+use rand::RngCore;
+use sha2::Sha256;
+use std::error::Error;
 
-const NONCE_SIZE: usize = 12;
+type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
-pub fn encrypt_file(input_path: &str, output_path: &str) -> io::Result<()> {
-    let key = Key::<Aes256Gcm>::generate(&mut OsRng);
-    let cipher = Aes256Gcm::new(&key);
-    let nonce = Nonce::from_slice(&[0u8; NONCE_SIZE]);
+const SALT_LEN: usize = 16;
+const IV_LEN: usize = 16;
+const KEY_LEN: usize = 32;
+const PBKDF2_ITERATIONS: u32 = 100_000;
 
-    let mut file = fs::File::open(input_path)?;
-    let mut plaintext = Vec::new();
-    file.read_to_end(&mut plaintext)?;
-
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_ref())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    let mut output = fs::File::create(output_path)?;
-    output.write_all(&key)?;
-    output.write_all(&ciphertext)?;
-
-    Ok(())
+pub struct EncryptionResult {
+    pub ciphertext: Vec<u8>,
+    pub salt: [u8; SALT_LEN],
+    pub iv: [u8; IV_LEN],
 }
 
-pub fn decrypt_file(input_path: &str, output_path: &str) -> io::Result<()> {
-    let mut file = fs::File::open(input_path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
+pub fn encrypt_file_data(plaintext: &[u8], password: &str) -> Result<EncryptionResult, Box<dyn Error>> {
+    let mut salt = [0u8; SALT_LEN];
+    let mut iv = [0u8; IV_LEN];
+    
+    rand::thread_rng().fill_bytes(&mut salt);
+    rand::thread_rng().fill_bytes(&mut iv);
+    
+    let key = derive_key(password, &salt)?;
+    
+    let ciphertext = Aes256CbcEnc::new(&key.into(), &iv.into())
+        .encrypt_padded_vec_mut::<Pkcs7>(plaintext);
+    
+    Ok(EncryptionResult {
+        ciphertext,
+        salt,
+        iv,
+    })
+}
 
-    if buffer.len() < 32 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "File too short to contain key and ciphertext",
-        ));
+pub fn decrypt_file_data(encrypted: &EncryptionResult, password: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let key = derive_key(password, &encrypted.salt)?;
+    
+    let plaintext = Aes256CbcDec::new(&key.into(), &encrypted.iv.into())
+        .decrypt_padded_vec_mut::<Pkcs7>(&encrypted.ciphertext)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+    
+    Ok(plaintext)
+}
+
+fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], Box<dyn Error>> {
+    let mut key = [0u8; KEY_LEN];
+    pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, PBKDF2_ITERATIONS, &mut key);
+    Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encryption_roundtrip() {
+        let plaintext = b"Secret document content";
+        let password = "strong_password_123";
+        
+        let encrypted = encrypt_file_data(plaintext, password).unwrap();
+        let decrypted = decrypt_file_data(&encrypted, password).unwrap();
+        
+        assert_eq!(plaintext.to_vec(), decrypted);
     }
 
-    let (key_bytes, ciphertext) = buffer.split_at(32);
-    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&[0u8; NONCE_SIZE]);
-
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    let mut output = fs::File::create(output_path)?;
-    output.write_all(&plaintext)?;
-
-    Ok(())
+    #[test]
+    fn test_wrong_password_fails() {
+        let plaintext = b"Test data";
+        let encrypted = encrypt_file_data(plaintext, "correct_pass").unwrap();
+        
+        let result = decrypt_file_data(&encrypted, "wrong_pass");
+        assert!(result.is_err());
+    }
 }
