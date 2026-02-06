@@ -1,59 +1,99 @@
-use csv::Reader;
-use serde::Deserialize;
+
 use std::error::Error;
 use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
+pub struct DataProcessor {
+    delimiter: char,
+    has_header: bool,
 }
 
-pub fn process_data_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
-    let file = File::open(file_path)?;
-    let mut reader = Reader::from_reader(file);
-    let mut records = Vec::new();
-
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        validate_record(&record)?;
-        records.push(record);
+impl DataProcessor {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        DataProcessor {
+            delimiter,
+            has_header,
+        }
     }
 
-    Ok(records)
-}
+    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut records = Vec::new();
 
-fn validate_record(record: &Record) -> Result<(), Box<dyn Error>> {
-    if record.name.is_empty() {
-        return Err("Name cannot be empty".into());
-    }
-    if record.value < 0.0 {
-        return Err("Value cannot be negative".into());
-    }
-    if !["A", "B", "C"].contains(&record.category.as_str()) {
-        return Err("Invalid category".into());
-    }
-    Ok(())
-}
+        for (line_number, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if self.has_header && line_number == 0 {
+                continue;
+            }
 
-pub fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
-    let count = records.len() as f64;
-    if count == 0.0 {
-        return (0.0, 0.0, 0.0);
+            let fields: Vec<String> = line
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if !fields.is_empty() && !fields.iter().all(|f| f.is_empty()) {
+                records.push(fields);
+            }
+        }
+
+        Ok(records)
     }
 
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let mean = sum / count;
-    
-    let variance: f64 = records.iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>() / count;
-    
-    let std_dev = variance.sqrt();
-    
-    (sum, mean, std_dev)
+    pub fn validate_records(&self, records: &[Vec<String>]) -> Result<(), String> {
+        if records.is_empty() {
+            return Err("No valid records found".to_string());
+        }
+
+        let expected_len = records[0].len();
+        for (idx, record) in records.iter().enumerate() {
+            if record.len() != expected_len {
+                return Err(format!(
+                    "Record {} has {} fields, expected {}",
+                    idx + 1,
+                    record.len(),
+                    expected_len
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn calculate_statistics(&self, records: &[Vec<String>], column_index: usize) -> Result<(f64, f64, f64), String> {
+        if records.is_empty() {
+            return Err("No records to process".to_string());
+        }
+
+        if column_index >= records[0].len() {
+            return Err(format!("Column index {} out of bounds", column_index));
+        }
+
+        let mut values = Vec::new();
+        for record in records {
+            if let Ok(value) = record[column_index].parse::<f64>() {
+                values.push(value);
+            }
+        }
+
+        if values.is_empty() {
+            return Err("No numeric values found in specified column".to_string());
+        }
+
+        let sum: f64 = values.iter().sum();
+        let count = values.len() as f64;
+        let mean = sum / count;
+
+        let variance: f64 = values.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / count;
+
+        let std_dev = variance.sqrt();
+
+        Ok((mean, variance, std_dev))
+    }
 }
 
 #[cfg(test)]
@@ -63,39 +103,47 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_valid_data_processing() {
+    fn test_process_csv() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,name,value,category").unwrap();
-        writeln!(temp_file, "1,Test1,10.5,A").unwrap();
-        writeln!(temp_file, "2,Test2,20.0,B").unwrap();
+        writeln!(temp_file, "name,age,salary").unwrap();
+        writeln!(temp_file, "Alice,30,50000").unwrap();
+        writeln!(temp_file, "Bob,25,45000").unwrap();
 
-        let records = process_data_file(temp_file.path().to_str().unwrap()).unwrap();
+        let processor = DataProcessor::new(',', true);
+        let result = processor.process_file(temp_file.path());
+        
+        assert!(result.is_ok());
+        let records = result.unwrap();
         assert_eq!(records.len(), 2);
-        assert_eq!(records[0].name, "Test1");
-        assert_eq!(records[1].value, 20.0);
+        assert_eq!(records[0], vec!["Alice", "30", "50000"]);
     }
 
     #[test]
-    fn test_invalid_category() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,name,value,category").unwrap();
-        writeln!(temp_file, "1,Test,15.0,Invalid").unwrap();
-
-        let result = process_data_file(temp_file.path().to_str().unwrap());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_statistics_calculation() {
+    fn test_validation() {
         let records = vec![
-            Record { id: 1, name: "A".to_string(), value: 10.0, category: "A".to_string() },
-            Record { id: 2, name: "B".to_string(), value: 20.0, category: "B".to_string() },
-            Record { id: 3, name: "C".to_string(), value: 30.0, category: "C".to_string() },
+            vec!["a".to_string(), "b".to_string()],
+            vec!["c".to_string(), "d".to_string()],
         ];
+        
+        let processor = DataProcessor::new(',', false);
+        assert!(processor.validate_records(&records).is_ok());
+    }
 
-        let (sum, mean, std_dev) = calculate_statistics(&records);
-        assert_eq!(sum, 60.0);
-        assert_eq!(mean, 20.0);
-        assert!((std_dev - 8.164965).abs() < 0.0001);
+    #[test]
+    fn test_statistics() {
+        let records = vec![
+            vec!["10.5".to_string()],
+            vec!["20.0".to_string()],
+            vec!["15.5".to_string()],
+        ];
+        
+        let processor = DataProcessor::new(',', false);
+        let stats = processor.calculate_statistics(&records, 0);
+        
+        assert!(stats.is_ok());
+        let (mean, variance, std_dev) = stats.unwrap();
+        assert!((mean - 15.3333).abs() < 0.001);
+        assert!((variance - 15.5555).abs() < 0.001);
+        assert!((std_dev - 3.9440).abs() < 0.001);
     }
 }
