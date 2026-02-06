@@ -136,3 +136,103 @@ mod tests {
         assert_eq!(groups.get("category_b").unwrap().len(), 1);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+pub struct DataRecord {
+    id: u32,
+    value: f64,
+    timestamp: String,
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<usize, Box<dyn Error>> {
+        let path = Path::new(file_path);
+        let file = File::open(path)?;
+        let mut rdr = csv::Reader::from_reader(file);
+
+        let mut count = 0;
+        for result in rdr.records() {
+            let record = result?;
+            if record.len() >= 3 {
+                let data_record = DataRecord {
+                    id: record[0].parse()?,
+                    value: record[1].parse()?,
+                    timestamp: record[2].to_string(),
+                };
+                self.records.push(data_record);
+                count += 1;
+            }
+        }
+
+        Ok(count)
+    }
+
+    pub fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    pub fn filter_by_threshold(&self, threshold: f64) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.value >= threshold)
+            .collect()
+    }
+
+    pub fn get_record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        assert_eq!(processor.get_record_count(), 0);
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,value,timestamp").unwrap();
+        writeln!(temp_file, "1,12.5,2023-01-01T10:00:00").unwrap();
+        writeln!(temp_file, "2,8.2,2023-01-01T11:00:00").unwrap();
+        writeln!(temp_file, "3,15.7,2023-01-01T12:00:00").unwrap();
+
+        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+        assert_eq!(processor.get_record_count(), 3);
+
+        let avg = processor.calculate_average();
+        assert!(avg.is_some());
+        assert!((avg.unwrap() - 12.133333).abs() < 0.0001);
+
+        let filtered = processor.filter_by_threshold(10.0);
+        assert_eq!(filtered.len(), 2);
+
+        processor.clear();
+        assert_eq!(processor.get_record_count(), 0);
+    }
+}
