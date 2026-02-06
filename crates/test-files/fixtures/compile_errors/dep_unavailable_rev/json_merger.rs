@@ -146,4 +146,65 @@ mod tests {
         assert_eq!(parsed[0]["name"], "Alice");
         assert_eq!(parsed[1]["name"], "Bob");
     }
+}use serde_json::{Map, Value};
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, String> {
+    let mut merged_map = Map::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            return Err(format!("File not found: {}", path_str));
+        }
+
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {}", path_str, e))?;
+
+        let json_value: Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Invalid JSON in {}: {}", path_str, e))?;
+
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                if merged_map.contains_key(&key) {
+                    return Err(format!("Duplicate key '{}' found in {}", key, path_str));
+                }
+                merged_map.insert(key, value);
+            }
+        } else {
+            return Err(format!("Root element in {} is not a JSON object", path_str));
+        }
+    }
+
+    Ok(Value::Object(merged_map))
+}
+
+pub fn merge_json_with_overwrite(file_paths: &[&str]) -> Result<Value, String> {
+    let mut merged_map = HashMap::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            return Err(format!("File not found: {}", path_str));
+        }
+
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {}", path_str, e))?;
+
+        let json_value: Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Invalid JSON in {}: {}", path_str, e))?;
+
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                merged_map.insert(key, value);
+            }
+        } else {
+            return Err(format!("Root element in {} is not a JSON object", path_str));
+        }
+    }
+
+    let final_map: Map<String, Value> = merged_map.into_iter().collect();
+    Ok(Value::Object(final_map))
 }
