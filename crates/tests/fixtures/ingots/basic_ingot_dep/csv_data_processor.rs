@@ -1,123 +1,115 @@
 
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::io::{BufReader, BufWriter};
+use serde::{Deserialize, Serialize};
+use csv::{ReaderBuilder, WriterBuilder};
 
-pub struct CsvProcessor {
-    delimiter: char,
-    has_header: bool,
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct Transaction {
+    id: u32,
+    customer_id: String,
+    amount: f64,
+    category: String,
+    timestamp: String,
 }
 
-impl CsvProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
-        CsvProcessor {
-            delimiter,
-            has_header,
+struct TransactionProcessor {
+    transactions: Vec<Transaction>,
+}
+
+impl TransactionProcessor {
+    fn new() -> Self {
+        TransactionProcessor {
+            transactions: Vec::new(),
         }
     }
 
-    pub fn read_file<P: AsRef<Path>>(&self, path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(path)?;
+    fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
         let reader = BufReader::new(file);
-        let mut records = Vec::new();
-
-        for (index, line) in reader.lines().enumerate() {
-            let line = line?;
-            
-            if index == 0 && self.has_header {
-                continue;
-            }
-
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-
-            if !fields.is_empty() && !fields.iter().all(|f| f.is_empty()) {
-                records.push(fields);
-            }
+        let mut csv_reader = ReaderBuilder::new().has_headers(true).from_reader(reader);
+        
+        for result in csv_reader.deserialize() {
+            let transaction: Transaction = result?;
+            self.transactions.push(transaction);
         }
-
-        Ok(records)
+        
+        Ok(())
     }
 
-    pub fn validate_numeric_column(&self, records: &[Vec<String>], column_index: usize) -> Result<Vec<f64>, String> {
-        let mut numeric_values = Vec::new();
-
-        for (row_num, record) in records.iter().enumerate() {
-            if column_index >= record.len() {
-                return Err(format!("Row {}: Column index out of bounds", row_num + 1));
-            }
-
-            match record[column_index].parse::<f64>() {
-                Ok(value) => numeric_values.push(value),
-                Err(_) => return Err(format!("Row {}: Invalid numeric value '{}'", 
-                    row_num + 1, record[column_index])),
-            }
-        }
-
-        Ok(numeric_values)
-    }
-
-    pub fn calculate_statistics(&self, numeric_data: &[f64]) -> (f64, f64, f64) {
-        if numeric_data.is_empty() {
-            return (0.0, 0.0, 0.0);
-        }
-
-        let sum: f64 = numeric_data.iter().sum();
-        let count = numeric_data.len() as f64;
-        let mean = sum / count;
-
-        let variance: f64 = numeric_data.iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / count;
-
-        let std_dev = variance.sqrt();
-
-        (mean, variance, std_dev)
-    }
-
-    pub fn filter_records<F>(&self, records: &[Vec<String>], predicate: F) -> Vec<Vec<String>>
-    where
-        F: Fn(&[String]) -> bool,
-    {
-        records.iter()
-            .filter(|record| predicate(record))
+    fn filter_by_category(&self, category: &str) -> Vec<Transaction> {
+        self.transactions
+            .iter()
+            .filter(|t| t.category == category)
             .cloned()
             .collect()
     }
+
+    fn calculate_total_amount(&self) -> f64 {
+        self.transactions.iter().map(|t| t.amount).sum()
+    }
+
+    fn calculate_average_amount(&self) -> f64 {
+        if self.transactions.is_empty() {
+            return 0.0;
+        }
+        self.calculate_total_amount() / self.transactions.len() as f64
+    }
+
+    fn get_customer_summary(&self) -> Vec<(String, f64)> {
+        let mut summary: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        
+        for transaction in &self.transactions {
+            *summary.entry(transaction.customer_id.clone()).or_insert(0.0) += transaction.amount;
+        }
+        
+        let mut result: Vec<(String, f64)> = summary.into_iter().collect();
+        result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        result
+    }
+
+    fn save_filtered_to_csv(&self, category: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+        let filtered = self.filter_by_category(category);
+        
+        let file = File::create(output_path)?;
+        let writer = BufWriter::new(file);
+        let mut csv_writer = WriterBuilder::new().has_headers(true).from_writer(writer);
+        
+        for transaction in filtered {
+            csv_writer.serialize(transaction)?;
+        }
+        
+        csv_writer.flush()?;
+        Ok(())
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_csv_processing() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,salary").unwrap();
-        writeln!(temp_file, "Alice,30,50000.0").unwrap();
-        writeln!(temp_file, "Bob,25,45000.5").unwrap();
-        writeln!(temp_file, "Charlie,35,55000.0").unwrap();
-
-        let processor = CsvProcessor::new(',', true);
-        let records = processor.read_file(temp_file.path()).unwrap();
-        
-        assert_eq!(records.len(), 3);
-        assert_eq!(records[0], vec!["Alice", "30", "50000.0"]);
-        
-        let ages = processor.validate_numeric_column(&records, 1).unwrap();
-        assert_eq!(ages, vec![30.0, 25.0, 35.0]);
-        
-        let (mean, variance, std_dev) = processor.calculate_statistics(&ages);
-        assert!((mean - 30.0).abs() < 0.001);
-        
-        let filtered = processor.filter_records(&records, |record| {
-            record[0].starts_with('A')
-        });
-        assert_eq!(filtered.len(), 1);
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut processor = TransactionProcessor::new();
+    
+    match processor.load_from_csv("transactions.csv") {
+        Ok(_) => println!("Successfully loaded transactions"),
+        Err(e) => eprintln!("Error loading CSV: {}", e),
     }
+    
+    let electronics_transactions = processor.filter_by_category("Electronics");
+    println!("Found {} electronics transactions", electronics_transactions.len());
+    
+    let total = processor.calculate_total_amount();
+    println!("Total transaction amount: ${:.2}", total);
+    
+    let average = processor.calculate_average_amount();
+    println!("Average transaction amount: ${:.2}", average);
+    
+    let customer_summary = processor.get_customer_summary();
+    println!("Top customers by spending:");
+    for (customer, amount) in customer_summary.iter().take(5) {
+        println!("  {}: ${:.2}", customer, amount);
+    }
+    
+    processor.save_filtered_to_csv("Electronics", "electronics_transactions.csv")?;
+    println!("Filtered transactions saved to electronics_transactions.csv");
+    
+    Ok(())
 }
