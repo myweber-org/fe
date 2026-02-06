@@ -91,4 +91,52 @@ pub fn remove_duplicates(input_path: &str, output_path: &str) -> Result<(), Box<
 
     csv_writer.flush()?;
     Ok(())
+}use std::collections::HashMap;
+
+pub struct DataCleaner {
+    filters: Vec<Box<dyn Fn(&HashMap<String, String>) -> bool>>,
+}
+
+impl DataCleaner {
+    pub fn new() -> Self {
+        DataCleaner {
+            filters: Vec::new(),
+        }
+    }
+
+    pub fn add_filter<F>(&mut self, filter: F)
+    where
+        F: Fn(&HashMap<String, String>) -> bool + 'static,
+    {
+        self.filters.push(Box::new(filter));
+    }
+
+    pub fn clean(&self, data: Vec<HashMap<String, String>>) -> Vec<HashMap<String, String>> {
+        data.into_iter()
+            .filter(|entry| self.filters.iter().all(|f| f(entry)))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cleaner_filters_invalid_data() {
+        let mut cleaner = DataCleaner::new();
+        
+        cleaner.add_filter(|entry| entry.contains_key("id") && !entry.get("id").unwrap().is_empty());
+        cleaner.add_filter(|entry| entry.get("status").map_or(false, |s| s == "active"));
+
+        let test_data = vec![
+            HashMap::from([("id".to_string(), "".to_string()), ("status".to_string(), "active".to_string())]),
+            HashMap::from([("id".to_string(), "123".to_string()), ("status".to_string(), "inactive".to_string())]),
+            HashMap::from([("id".to_string(), "456".to_string()), ("status".to_string(), "active".to_string())]),
+        ];
+
+        let result = cleaner.clean(test_data);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].get("id").unwrap(), "456");
+    }
 }
