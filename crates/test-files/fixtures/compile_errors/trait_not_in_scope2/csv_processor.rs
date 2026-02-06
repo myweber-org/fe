@@ -184,4 +184,96 @@ mod tests {
         
         Ok(())
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
+
+pub struct CsvProcessor {
+    input_path: String,
+    output_path: String,
+    filter_column: usize,
+    filter_value: String,
+    transform_column: usize,
+    transform_fn: Box<dyn Fn(&str) -> String>,
+}
+
+impl CsvProcessor {
+    pub fn new(
+        input_path: String,
+        output_path: String,
+        filter_column: usize,
+        filter_value: String,
+        transform_column: usize,
+        transform_fn: Box<dyn Fn(&str) -> String>,
+    ) -> Self {
+        CsvProcessor {
+            input_path,
+            output_path,
+            filter_column,
+            filter_value,
+            transform_column,
+            transform_fn,
+        }
+    }
+
+    pub fn process(&self) -> Result<(), Box<dyn Error>> {
+        let input_file = File::open(Path::new(&self.input_path))?;
+        let reader = BufReader::new(input_file);
+        let mut output_file = File::create(Path::new(&self.output_path))?;
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            let parts: Vec<&str> = line.split(',').collect();
+
+            if line_num == 0 {
+                writeln!(output_file, "{}", line)?;
+                continue;
+            }
+
+            if parts.get(self.filter_column).map_or(false, |&val| val == self.filter_value) {
+                let mut transformed_parts = parts.clone();
+                if let Some(cell) = transformed_parts.get_mut(self.transform_column) {
+                    *cell = &(self.transform_fn)(cell);
+                }
+                writeln!(output_file, "{}", transformed_parts.join(","))?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_csv_processing() {
+        let test_input = "id,name,status,value\n1,item1,active,100\n2,item2,inactive,200\n3,item3,active,300";
+        let input_path = "test_input.csv";
+        let output_path = "test_output.csv";
+
+        fs::write(input_path, test_input).unwrap();
+
+        let processor = CsvProcessor::new(
+            input_path.to_string(),
+            output_path.to_string(),
+            2,
+            "active".to_string(),
+            3,
+            Box::new(|val| format!("${}", val)),
+        );
+
+        processor.process().unwrap();
+
+        let output = fs::read_to_string(output_path).unwrap();
+        assert!(output.contains("$100"));
+        assert!(output.contains("$300"));
+        assert!(!output.contains("inactive"));
+
+        fs::remove_file(input_path).unwrap();
+        fs::remove_file(output_path).unwrap();
+    }
 }
