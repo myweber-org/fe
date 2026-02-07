@@ -76,3 +76,65 @@ mod tests {
         assert_eq!(obj.get("key").unwrap().as_str(), Some("second"));
     }
 }
+use serde_json::{Map, Value};
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], output_path: P) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged = Map::new();
+    let mut processed_keys = HashSet::new();
+    let mut conflict_log = Vec::new();
+
+    for path in paths {
+        let content = fs::read_to_string(path)?;
+        let json: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(obj) = json {
+            for (key, value) in obj {
+                if processed_keys.contains(&key) {
+                    conflict_log.push(format!("Conflict detected for key '{}'", key));
+                    if let Some(existing) = merged.get_mut(&key) {
+                        *existing = merge_values(existing.clone(), value);
+                    }
+                } else {
+                    merged.insert(key.clone(), value);
+                    processed_keys.insert(key);
+                }
+            }
+        }
+    }
+
+    let output_json = Value::Object(merged);
+    let pretty_json = serde_json::to_string_pretty(&output_json)?;
+    fs::write(output_path, pretty_json)?;
+
+    if !conflict_log.is_empty() {
+        eprintln!("Merged with conflicts:");
+        for log in conflict_log {
+            eprintln!("  {}", log);
+        }
+    }
+
+    Ok(())
+}
+
+fn merge_values(a: Value, b: Value) -> Value {
+    match (a, b) {
+        (Value::Array(mut arr_a), Value::Array(arr_b)) => {
+            arr_a.extend(arr_b);
+            Value::Array(arr_a)
+        }
+        (Value::Object(mut obj_a), Value::Object(obj_b)) => {
+            for (key, val_b) in obj_b {
+                if let Some(val_a) = obj_a.get_mut(&key) {
+                    *val_a = merge_values(val_a.clone(), val_b);
+                } else {
+                    obj_a.insert(key, val_b);
+                }
+            }
+            Value::Object(obj_a)
+        }
+        (_, b_val) => b_val,
+    }
+}
