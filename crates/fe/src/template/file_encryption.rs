@@ -104,3 +104,79 @@ pub fn decrypt_file(input_path: &Path, output_path: &Path) -> io::Result<()> {
 
     Ok(())
 }
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+pub fn xor_encrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> io::Result<()> {
+    let input_data = fs::read(input_path)?;
+    let encrypted_data = xor_transform(&input_data, key);
+    fs::write(output_path, encrypted_data)?;
+    Ok(())
+}
+
+pub fn xor_decrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> io::Result<()> {
+    xor_encrypt_file(input_path, output_path, key)
+}
+
+fn xor_transform(data: &[u8], key: &[u8]) -> Vec<u8> {
+    let key_len = key.len();
+    if key_len == 0 {
+        return data.to_vec();
+    }
+    
+    data.iter()
+        .enumerate()
+        .map(|(i, &byte)| byte ^ key[i % key_len])
+        .collect()
+}
+
+pub fn generate_random_key(length: usize) -> Vec<u8> {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    (0..length).map(|_| rng.gen()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_xor_symmetry() {
+        let original = b"Hello, World!";
+        let key = b"secret";
+        
+        let encrypted = xor_transform(original, key);
+        let decrypted = xor_transform(&encrypted, key);
+        
+        assert_eq!(original.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn test_file_encryption() -> io::Result<()> {
+        let temp_input = NamedTempFile::new()?;
+        let temp_output = NamedTempFile::new()?;
+        
+        let test_data = b"Test file content";
+        fs::write(temp_input.path(), test_data)?;
+        
+        let key = b"test_key";
+        xor_encrypt_file(temp_input.path().to_str().unwrap(), 
+                        temp_output.path().to_str().unwrap(), 
+                        key)?;
+        
+        let encrypted = fs::read(temp_output.path())?;
+        assert_ne!(test_data.to_vec(), encrypted);
+        
+        let temp_decrypted = NamedTempFile::new()?;
+        xor_decrypt_file(temp_output.path().to_str().unwrap(),
+                        temp_decrypted.path().to_str().unwrap(),
+                        key)?;
+        
+        let decrypted = fs::read(temp_decrypted.path())?;
+        assert_eq!(test_data.to_vec(), decrypted);
+        
+        Ok(())
+    }
+}
