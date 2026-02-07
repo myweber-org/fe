@@ -106,3 +106,274 @@ mod tests {
         assert_eq!(config.get_or_default("MISSING", "default"), "default");
     }
 }
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DatabaseConfig {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub database_name: String,
+    pub pool_size: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServerConfig {
+    pub address: String,
+    pub port: u16,
+    pub enable_https: bool,
+    pub cert_path: Option<String>,
+    pub key_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LoggingConfig {
+    pub level: String,
+    pub file_path: String,
+    pub max_files: usize,
+    pub max_file_size_mb: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppConfig {
+    pub database: DatabaseConfig,
+    pub server: ServerConfig,
+    pub logging: LoggingConfig,
+    pub feature_flags: Vec<String>,
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        DatabaseConfig {
+            host: "localhost".to_string(),
+            port: 5432,
+            username: "postgres".to_string(),
+            password: "".to_string(),
+            database_name: "app_db".to_string(),
+            pool_size: 10,
+        }
+    }
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig {
+            address: "0.0.0.0".to_string(),
+            port: 8080,
+            enable_https: false,
+            cert_path: None,
+            key_path: None,
+        }
+    }
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        LoggingConfig {
+            level: "info".to_string(),
+            file_path: "logs/app.log".to_string(),
+            max_files: 5,
+            max_file_size_mb: 10,
+        }
+    }
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        AppConfig {
+            database: DatabaseConfig::default(),
+            server: ServerConfig::default(),
+            logging: LoggingConfig::default(),
+            feature_flags: vec![],
+        }
+    }
+}
+
+impl AppConfig {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let config_str = fs::read_to_string(path)?;
+        let mut config: AppConfig = serde_yaml::from_str(&config_str)?;
+        
+        config.validate()?;
+        Ok(config)
+    }
+    
+    pub fn from_file_with_defaults<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let default_config = AppConfig::default();
+        
+        if !path.as_ref().exists() {
+            return Ok(default_config);
+        }
+        
+        let config_str = fs::read_to_string(path)?;
+        let mut config: AppConfig = serde_yaml::from_str(&config_str)?;
+        
+        config.database = Self::merge_database_config(&default_config.database, &config.database);
+        config.server = Self::merge_server_config(&default_config.server, &config.server);
+        config.logging = Self::merge_logging_config(&default_config.logging, &config.logging);
+        
+        config.validate()?;
+        Ok(config)
+    }
+    
+    fn merge_database_config(default: &DatabaseConfig, provided: &DatabaseConfig) -> DatabaseConfig {
+        DatabaseConfig {
+            host: if provided.host.is_empty() { default.host.clone() } else { provided.host.clone() },
+            port: if provided.port == 0 { default.port } else { provided.port },
+            username: if provided.username.is_empty() { default.username.clone() } else { provided.username.clone() },
+            password: provided.password.clone(),
+            database_name: if provided.database_name.is_empty() { default.database_name.clone() } else { provided.database_name.clone() },
+            pool_size: if provided.pool_size == 0 { default.pool_size } else { provided.pool_size },
+        }
+    }
+    
+    fn merge_server_config(default: &ServerConfig, provided: &ServerConfig) -> ServerConfig {
+        ServerConfig {
+            address: if provided.address.is_empty() { default.address.clone() } else { provided.address.clone() },
+            port: if provided.port == 0 { default.port } else { provided.port },
+            enable_https: provided.enable_https,
+            cert_path: provided.cert_path.clone().or_else(|| default.cert_path.clone()),
+            key_path: provided.key_path.clone().or_else(|| default.key_path.clone()),
+        }
+    }
+    
+    fn merge_logging_config(default: &LoggingConfig, provided: &LoggingConfig) -> LoggingConfig {
+        LoggingConfig {
+            level: if provided.level.is_empty() { default.level.clone() } else { provided.level.clone() },
+            file_path: if provided.file_path.is_empty() { default.file_path.clone() } else { provided.file_path.clone() },
+            max_files: if provided.max_files == 0 { default.max_files } else { provided.max_files },
+            max_file_size_mb: if provided.max_file_size_mb == 0 { default.max_file_size_mb } else { provided.max_file_size_mb },
+        }
+    }
+    
+    pub fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.database.port == 0 {
+            return Err("Database port cannot be 0".into());
+        }
+        
+        if self.database.host.is_empty() {
+            return Err("Database host cannot be empty".into());
+        }
+        
+        if self.database.database_name.is_empty() {
+            return Err("Database name cannot be empty".into());
+        }
+        
+        if self.server.port == 0 {
+            return Err("Server port cannot be 0".into());
+        }
+        
+        if self.server.enable_https {
+            if self.server.cert_path.is_none() || self.server.key_path.is_none() {
+                return Err("HTTPS requires both certificate and key paths".into());
+            }
+        }
+        
+        let valid_log_levels = ["error", "warn", "info", "debug", "trace"];
+        if !valid_log_levels.contains(&self.logging.level.as_str()) {
+            return Err(format!("Invalid log level: {}. Valid levels are: {:?}", 
+                self.logging.level, valid_log_levels).into());
+        }
+        
+        Ok(())
+    }
+    
+    pub fn to_yaml(&self) -> Result<String, Box<dyn std::error::Error>> {
+        Ok(serde_yaml::to_string(self)?)
+    }
+    
+    pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let yaml = self.to_yaml()?;
+        fs::write(path, yaml)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_default_config() {
+        let config = AppConfig::default();
+        assert_eq!(config.database.port, 5432);
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.logging.level, "info");
+    }
+    
+    #[test]
+    fn test_config_from_file() {
+        let yaml_content = r#"
+database:
+  host: "db.example.com"
+  port: 5433
+  username: "app_user"
+  password: "secure_password"
+  database_name: "production_db"
+  pool_size: 20
+server:
+  address: "127.0.0.1"
+  port: 8443
+  enable_https: true
+  cert_path: "/path/to/cert.pem"
+  key_path: "/path/to/key.pem"
+logging:
+  level: "debug"
+  file_path: "/var/log/app.log"
+  max_files: 10
+  max_file_size_mb: 50
+feature_flags:
+  - "new_ui"
+  - "beta_features"
+"#;
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        std::fs::write(temp_file.path(), yaml_content).unwrap();
+        
+        let config = AppConfig::from_file(temp_file.path()).unwrap();
+        
+        assert_eq!(config.database.host, "db.example.com");
+        assert_eq!(config.database.port, 5433);
+        assert_eq!(config.server.port, 8443);
+        assert!(config.server.enable_https);
+        assert_eq!(config.logging.level, "debug");
+        assert_eq!(config.feature_flags.len(), 2);
+    }
+    
+    #[test]
+    fn test_config_validation() {
+        let mut config = AppConfig::default();
+        config.database.port = 0;
+        
+        assert!(config.validate().is_err());
+    }
+    
+    #[test]
+    fn test_merge_with_defaults() {
+        let partial_yaml = r#"
+database:
+  host: "custom_host"
+  port: 9999
+server:
+  enable_https: true
+logging:
+  level: "warn"
+"#;
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        std::fs::write(temp_file.path(), partial_yaml).unwrap();
+        
+        let config = AppConfig::from_file_with_defaults(temp_file.path()).unwrap();
+        
+        assert_eq!(config.database.host, "custom_host");
+        assert_eq!(config.database.port, 9999);
+        assert_eq!(config.database.username, "postgres");
+        assert_eq!(config.server.port, 8080);
+        assert!(config.server.enable_https);
+        assert_eq!(config.logging.level, "warn");
+    }
+}
