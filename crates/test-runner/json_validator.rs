@@ -8,13 +8,13 @@ pub fn validate_json(schema: &str, data: &str) -> Result<(), Vec<String>> {
     let data_value: Value = serde_json::from_str(data)
         .map_err(|e| vec![format!("Invalid JSON data: {}", e)])?;
     
-    let compiled_schema = JSONSchema::compile(&schema_value)
+    let compiled = JSONSchema::compile(&schema_value)
         .map_err(|e| vec![format!("Schema compilation failed: {}", e)])?;
     
-    let validation_result = compiled_schema.validate(&data_value);
+    let validation_result = compiled.validate(&data_value);
     
     match validation_result {
-        Ok(_) => Ok(()),
+        Ok(()) => Ok(()),
         Err(errors) => {
             let error_messages: Vec<String> = errors
                 .map(|e| format!("Validation error: {}", e))
