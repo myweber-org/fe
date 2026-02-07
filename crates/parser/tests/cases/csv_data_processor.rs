@@ -1,90 +1,102 @@
 
-use csv::{ReaderBuilder, WriterBuilder};
+use csv::{Reader, Writer};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
+use std::fs::File;
 use std::path::Path;
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct DataRecord {
-    pub id: u32,
-    pub name: String,
-    pub value: f64,
-    pub category: String,
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    category: String,
+    value: f64,
+    active: bool,
 }
 
-pub fn read_csv_file<P: AsRef<Path>>(file_path: P) -> Result<Vec<DataRecord>, Box<dyn Error>> {
-    let mut reader = ReaderBuilder::new()
-        .has_headers(true)
-        .from_path(file_path)?;
-    
+#[derive(Debug)]
+struct AggregatedData {
+    category: String,
+    total_value: f64,
+    average_value: f64,
+    record_count: usize,
+}
+
+fn read_csv_file<P: AsRef<Path>>(path: P) -> Result<Vec<Record>, Box<dyn Error>> {
+    let file = File::open(path)?;
+    let mut reader = Reader::from_reader(file);
     let mut records = Vec::new();
+
     for result in reader.deserialize() {
-        let record: DataRecord = result?;
+        let record: Record = result?;
         records.push(record);
     }
-    
+
     Ok(records)
 }
 
-pub fn write_csv_file<P: AsRef<Path>>(
-    file_path: P,
-    records: &[DataRecord],
-) -> Result<(), Box<dyn Error>> {
-    let mut writer = WriterBuilder::new()
-        .has_headers(true)
-        .from_path(file_path)?;
-    
+fn filter_active_records(records: &[Record]) -> Vec<&Record> {
+    records.iter().filter(|r| r.active).collect()
+}
+
+fn aggregate_by_category(records: &[Record]) -> Vec<AggregatedData> {
+    use std::collections::HashMap;
+
+    let mut category_map: HashMap<String, (f64, usize)> = HashMap::new();
+
     for record in records {
-        writer.serialize(record)?;
+        let entry = category_map.entry(record.category.clone()).or_insert((0.0, 0));
+        entry.0 += record.value;
+        entry.1 += 1;
     }
-    
+
+    category_map
+        .into_iter()
+        .map(|(category, (total, count))| AggregatedData {
+            category,
+            total_value: total,
+            average_value: total / count as f64,
+            record_count: count,
+        })
+        .collect()
+}
+
+fn write_aggregated_csv<P: AsRef<Path>>(
+    aggregated_data: &[AggregatedData],
+    path: P,
+) -> Result<(), Box<dyn Error>> {
+    let file = File::create(path)?;
+    let mut writer = Writer::from_writer(file);
+
+    for data in aggregated_data {
+        writer.serialize(data)?;
+    }
+
     writer.flush()?;
     Ok(())
 }
 
-pub fn filter_records_by_category(
-    records: &[DataRecord],
-    category: &str,
-) -> Vec<DataRecord> {
-    records
-        .iter()
-        .filter(|r| r.category == category)
-        .cloned()
-        .collect()
-}
+fn process_csv_data(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let records = read_csv_file(input_path)?;
+    let active_records = filter_active_records(&records);
+    let aggregated = aggregate_by_category(&active_records);
+    write_aggregated_csv(&aggregated, output_path)?;
 
-pub fn calculate_average_value(records: &[DataRecord]) -> Option<f64> {
-    if records.is_empty() {
-        return None;
-    }
-    
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    Some(sum / records.len() as f64)
-}
+    println!("Processed {} records", records.len());
+    println!("Found {} active records", active_records.len());
+    println!("Generated {} aggregated categories", aggregated.len());
 
-pub fn validate_record(record: &DataRecord) -> Result<(), String> {
-    if record.name.trim().is_empty() {
-        return Err("Name cannot be empty".to_string());
-    }
-    
-    if record.value < 0.0 {
-        return Err("Value cannot be negative".to_string());
-    }
-    
-    if record.category.trim().is_empty() {
-        return Err("Category cannot be empty".to_string());
-    }
-    
     Ok(())
 }
 
-pub fn transform_records(records: &[DataRecord]) -> Vec<DataRecord> {
-    records
-        .iter()
-        .map(|r| DataRecord {
-            name: r.name.to_uppercase(),
-            value: (r.value * 100.0).round() / 100.0,
-            ..r.clone()
-        })
-        .collect()
+fn main() -> Result<(), Box<dyn Error>> {
+    let input_file = "data/input.csv";
+    let output_file = "data/output.csv";
+
+    match process_csv_data(input_file, output_file) {
+        Ok(_) => println!("CSV processing completed successfully"),
+        Err(e) => eprintln!("Error processing CSV: {}", e),
+    }
+
+    Ok(())
 }
