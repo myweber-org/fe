@@ -1,261 +1,123 @@
 
-use std::error::Error;
-use std::fmt;
-
-#[derive(Debug)]
-pub enum ProcessingError {
-    InvalidInput(String),
-    TransformationFailed(String),
-    ValidationError(String),
-}
-
-impl fmt::Display for ProcessingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProcessingError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
-            ProcessingError::TransformationFailed(msg) => write!(f, "Transformation failed: {}", msg),
-            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
-        }
-    }
-}
-
-impl Error for ProcessingError {}
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    threshold: f64,
-    max_items: usize,
+    data: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+pub struct ValidationRule {
+    field_name: String,
+    min_value: f64,
+    max_value: f64,
+    required: bool,
 }
 
 impl DataProcessor {
-    pub fn new(threshold: f64, max_items: usize) -> Result<Self, ProcessingError> {
-        if threshold < 0.0 || threshold > 1.0 {
-            return Err(ProcessingError::InvalidInput(
-                "Threshold must be between 0.0 and 1.0".to_string(),
-            ));
-        }
-        if max_items == 0 {
-            return Err(ProcessingError::InvalidInput(
-                "Max items must be greater than zero".to_string(),
-            ));
-        }
-        Ok(Self {
-            threshold,
-            max_items,
-        })
-    }
-
-    pub fn process_data(&self, input: &[f64]) -> Result<Vec<f64>, ProcessingError> {
-        if input.len() > self.max_items {
-            return Err(ProcessingError::ValidationError(format!(
-                "Input length {} exceeds maximum allowed {}",
-                input.len(),
-                self.max_items
-            )));
-        }
-
-        let filtered: Vec<f64> = input
-            .iter()
-            .filter(|&&value| value >= self.threshold)
-            .cloned()
-            .collect();
-
-        if filtered.is_empty() {
-            return Err(ProcessingError::TransformationFailed(
-                "No items passed the threshold filter".to_string(),
-            ));
-        }
-
-        let normalized = self.normalize_values(&filtered)?;
-        Ok(normalized)
-    }
-
-    fn normalize_values(&self, values: &[f64]) -> Result<Vec<f64>, ProcessingError> {
-        let max_value = values
-            .iter()
-            .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-
-        if max_value <= 0.0 {
-            return Err(ProcessingError::TransformationFailed(
-                "Cannot normalize non-positive values".to_string(),
-            ));
-        }
-
-        let normalized: Vec<f64> = values
-            .iter()
-            .map(|&value| value / max_value)
-            .collect();
-
-        Ok(normalized)
-    }
-
-    pub fn calculate_statistics(&self, data: &[f64]) -> Result<(f64, f64, f64), ProcessingError> {
-        if data.is_empty() {
-            return Err(ProcessingError::InvalidInput(
-                "Cannot calculate statistics for empty dataset".to_string(),
-            ));
-        }
-
-        let sum: f64 = data.iter().sum();
-        let mean = sum / data.len() as f64;
-
-        let variance: f64 = data
-            .iter()
-            .map(|&value| {
-                let diff = value - mean;
-                diff * diff
-            })
-            .sum::<f64>()
-            / data.len() as f64;
-
-        let std_dev = variance.sqrt();
-
-        Ok((mean, variance, std_dev))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_processor_creation() {
-        let processor = DataProcessor::new(0.5, 100).unwrap();
-        assert_eq!(processor.threshold, 0.5);
-        assert_eq!(processor.max_items, 100);
-    }
-
-    #[test]
-    fn test_invalid_threshold() {
-        let result = DataProcessor::new(1.5, 100);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_process_data() {
-        let processor = DataProcessor::new(0.3, 10).unwrap();
-        let input = vec![0.1, 0.4, 0.5, 0.2, 0.8];
-        let result = processor.process_data(&input).unwrap();
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn test_calculate_statistics() {
-        let processor = DataProcessor::new(0.0, 100).unwrap();
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let (mean, variance, std_dev) = processor.calculate_statistics(&data).unwrap();
-        assert_eq!(mean, 3.0);
-        assert_eq!(variance, 2.0);
-        assert_eq!(std_dev, 2.0_f64.sqrt());
-    }
-}use std::error::Error;
-use std::fs::File;
-use std::path::Path;
-
-pub struct DataSet {
-    values: Vec<f64>,
-}
-
-impl DataSet {
     pub fn new() -> Self {
-        DataSet { values: Vec::new() }
+        DataProcessor {
+            data: HashMap::new(),
+            validation_rules: Vec::new(),
+        }
     }
 
-    pub fn from_csv<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
-        let file = File::open(path)?;
-        let mut rdr = csv::Reader::from_reader(file);
-        let mut values = Vec::new();
+    pub fn add_dataset(&mut self, name: String, values: Vec<f64>) {
+        self.data.insert(name, values);
+    }
 
-        for result in rdr.records() {
-            let record = result?;
-            if let Some(field) = record.get(0) {
-                if let Ok(num) = field.parse::<f64>() {
-                    values.push(num);
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn validate_all(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        for rule in &self.validation_rules {
+            match self.data.get(&rule.field_name) {
+                Some(values) => {
+                    if rule.required && values.is_empty() {
+                        errors.push(format!("Field '{}' is required but empty", rule.field_name));
+                    }
+
+                    for (index, &value) in values.iter().enumerate() {
+                        if value < rule.min_value || value > rule.max_value {
+                            errors.push(format!(
+                                "Value {} at index {} in field '{}' is out of range [{}, {}]",
+                                value, index, rule.field_name, rule.min_value, rule.max_value
+                            ));
+                        }
+                    }
                 }
+                None if rule.required => {
+                    errors.push(format!("Required field '{}' not found", rule.field_name));
+                }
+                None => {}
             }
         }
 
-        Ok(DataSet { values })
-    }
-
-    pub fn add_value(&mut self, value: f64) {
-        self.values.push(value);
-    }
-
-    pub fn calculate_mean(&self) -> Option<f64> {
-        if self.values.is_empty() {
-            return None;
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
-        let sum: f64 = self.values.iter().sum();
-        Some(sum / self.values.len() as f64)
     }
 
-    pub fn calculate_standard_deviation(&self) -> Option<f64> {
-        if self.values.len() < 2 {
-            return None;
+    pub fn normalize_data(&mut self) {
+        for values in self.data.values_mut() {
+            if let Some(&max) = values.iter().max_by(|a, b| a.partial_cmp(b).unwrap()) {
+                if max != 0.0 {
+                    for value in values.iter_mut() {
+                        *value /= max;
+                    }
+                }
+            }
         }
-        
-        let mean = self.calculate_mean()?;
-        let variance: f64 = self.values
-            .iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / (self.values.len() - 1) as f64;
-        
-        Some(variance.sqrt())
     }
 
-    pub fn get_summary(&self) -> String {
-        let mean_str = match self.calculate_mean() {
-            Some(m) => format!("{:.4}", m),
-            None => "N/A".to_string(),
-        };
-        
-        let std_dev_str = match self.calculate_standard_deviation() {
-            Some(sd) => format!("{:.4}", sd),
-            None => "N/A".to_string(),
-        };
-        
-        format!(
-            "Data Summary:\n  Count: {}\n  Mean: {}\n  Std Dev: {}",
-            self.values.len(),
-            mean_str,
-            std_dev_str
-        )
+    pub fn calculate_statistics(&self) -> HashMap<String, Statistics> {
+        let mut stats = HashMap::new();
+
+        for (name, values) in &self.data {
+            if values.is_empty() {
+                continue;
+            }
+
+            let sum: f64 = values.iter().sum();
+            let count = values.len() as f64;
+            let mean = sum / count;
+
+            let variance: f64 = values.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / count;
+
+            stats.insert(name.clone(), Statistics {
+                mean,
+                variance,
+                min: *values.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
+                max: *values.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
+                count: values.len(),
+            });
+        }
+
+        stats
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
+pub struct Statistics {
+    pub mean: f64,
+    pub variance: f64,
+    pub min: f64,
+    pub max: f64,
+    pub count: usize,
+}
 
-    #[test]
-    fn test_empty_dataset() {
-        let ds = DataSet::new();
-        assert_eq!(ds.calculate_mean(), None);
-        assert_eq!(ds.calculate_standard_deviation(), None);
-    }
-
-    #[test]
-    fn test_basic_calculations() {
-        let mut ds = DataSet::new();
-        ds.add_value(10.0);
-        ds.add_value(20.0);
-        ds.add_value(30.0);
-        
-        assert_eq!(ds.calculate_mean(), Some(20.0));
-        assert!(ds.calculate_standard_deviation().unwrap() > 0.0);
-    }
-
-    #[test]
-    fn test_csv_parsing() -> Result<(), Box<dyn Error>> {
-        let mut temp_file = NamedTempFile::new()?;
-        writeln!(temp_file, "value\n10.5\n20.3\n15.7")?;
-        
-        let ds = DataSet::from_csv(temp_file.path())?;
-        assert_eq!(ds.values.len(), 3);
-        assert_eq!(ds.values[0], 10.5);
-        
-        Ok(())
+impl ValidationRule {
+    pub fn new(field_name: String, min_value: f64, max_value: f64, required: bool) -> Self {
+        ValidationRule {
+            field_name,
+            min_value,
+            max_value,
+            required,
+        }
     }
 }
