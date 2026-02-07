@@ -1,29 +1,29 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub logging: LoggingConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub timeout_seconds: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct DatabaseConfig {
     pub url: String,
     pub max_connections: u32,
-    pub pool_timeout_seconds: u64,
+    pub pool_timeout_seconds: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct LoggingConfig {
     pub level: String,
     pub file_path: Option<String>,
@@ -53,13 +53,9 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| ConfigError::IoError(e.to_string()))?;
-        
-        let config: AppConfig = toml::from_str(&content)
-            .map_err(|e| ConfigError::ParseError(e.to_string()))?;
-        
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = fs::read_to_string(path)?;
+        let config: AppConfig = toml::from_str(&content)?;
         config.validate()?;
         Ok(config)
     }
@@ -74,40 +70,23 @@ impl AppConfig {
         }
     }
 
-    fn validate(&self) -> Result<(), ConfigError> {
+    fn validate(&self) -> Result<(), String> {
         if self.server.port == 0 {
-            return Err(ConfigError::ValidationError("Port cannot be 0".to_string()));
+            return Err("Server port cannot be 0".to_string());
         }
         
         if self.database.max_connections == 0 {
-            return Err(ConfigError::ValidationError("Max connections cannot be 0".to_string()));
+            return Err("Database max connections cannot be 0".to_string());
         }
         
-        if let Some(ref path) = self.logging.file_path {
-            if path.is_empty() {
-                return Err(ConfigError::ValidationError("Log file path cannot be empty".to_string()));
-            }
+        if !["error", "warn", "info", "debug", "trace"].contains(&self.logging.level.as_str()) {
+            return Err(format!("Invalid log level: {}", self.logging.level));
         }
         
         Ok(())
     }
-}
-
-#[derive(Debug)]
-pub enum ConfigError {
-    IoError(String),
-    ParseError(String),
-    ValidationError(String),
-}
-
-impl std::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConfigError::IoError(msg) => write!(f, "IO error: {}", msg),
-            ConfigError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            ConfigError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
-        }
+    
+    pub fn server_address(&self) -> String {
+        format!("{}:{}", self.server.host, self.server.port)
     }
 }
-
-impl std::error::Error for ConfigError {}
