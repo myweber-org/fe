@@ -417,3 +417,210 @@ mod tests {
         assert_eq!(filtered.len(), 2);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+    pub valid: bool,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: &str) -> Self {
+        let valid = value >= 0.0 && !category.is_empty();
+        DataRecord {
+            id,
+            value,
+            category: category.to_string(),
+            valid,
+        }
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if line_num == 0 {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 3 {
+                continue;
+            }
+
+            let id = parts[0].parse::<u32>().unwrap_or(0);
+            let value = parts[1].parse::<f64>().unwrap_or(0.0);
+            let category = parts[2].trim();
+
+            let record = DataRecord::new(id, value, category);
+            self.records.push(record);
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    pub fn filter_valid(&self) -> Vec<&DataRecord> {
+        self.records.iter().filter(|r| r.valid).collect()
+    }
+
+    pub fn calculate_average(&self) -> Option<f64> {
+        let valid_records: Vec<&DataRecord> = self.filter_valid();
+        
+        if valid_records.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = valid_records.iter().map(|r| r.value).sum();
+        Some(sum / valid_records.len() as f64)
+    }
+
+    pub fn group_by_category(&self) -> std::collections::HashMap<String, Vec<&DataRecord>> {
+        let mut groups = std::collections::HashMap::new();
+        
+        for record in &self.records {
+            if record.valid {
+                groups
+                    .entry(record.category.clone())
+                    .or_insert_with(Vec::new)
+                    .push(record);
+            }
+        }
+        
+        groups
+    }
+
+    pub fn statistics(&self) -> Statistics {
+        let valid_records = self.filter_valid();
+        let count = valid_records.len();
+        
+        if count == 0 {
+            return Statistics::default();
+        }
+
+        let values: Vec<f64> = valid_records.iter().map(|r| r.value).collect();
+        let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let sum: f64 = values.iter().sum();
+        let avg = sum / count as f64;
+
+        Statistics {
+            count,
+            min,
+            max,
+            avg,
+            sum,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct Statistics {
+    pub count: usize,
+    pub min: f64,
+    pub max: f64,
+    pub avg: f64,
+    pub sum: f64,
+}
+
+impl std::fmt::Display for Statistics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Records: {}, Min: {:.2}, Max: {:.2}, Avg: {:.2}, Sum: {:.2}",
+            self.count, self.min, self.max, self.avg, self.sum
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_record_validation() {
+        let valid_record = DataRecord::new(1, 42.5, "category_a");
+        assert!(valid_record.valid);
+
+        let invalid_value = DataRecord::new(2, -10.0, "category_b");
+        assert!(!invalid_value.valid);
+
+        let invalid_category = DataRecord::new(3, 15.0, "");
+        assert!(!invalid_category.valid);
+    }
+
+    #[test]
+    fn test_csv_loading() {
+        let mut csv_content = "id,value,category\n".to_string();
+        csv_content.push_str("1,42.5,category_a\n");
+        csv_content.push_str("2,-10.0,category_b\n");
+        csv_content.push_str("3,15.0,\n");
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "{}", csv_content).unwrap();
+        
+        let mut processor = DataProcessor::new();
+        let result = processor.load_from_csv(temp_file.path());
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 3);
+        assert_eq!(processor.records.len(), 3);
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let mut processor = DataProcessor::new();
+        processor.records.push(DataRecord::new(1, 10.0, "cat_a"));
+        processor.records.push(DataRecord::new(2, 20.0, "cat_b"));
+        processor.records.push(DataRecord::new(3, 30.0, "cat_a"));
+        processor.records.push(DataRecord::new(4, -5.0, "cat_c"));
+
+        let stats = processor.statistics();
+        
+        assert_eq!(stats.count, 3);
+        assert_eq!(stats.min, 10.0);
+        assert_eq!(stats.max, 30.0);
+        assert_eq!(stats.avg, 20.0);
+        assert_eq!(stats.sum, 60.0);
+    }
+
+    #[test]
+    fn test_grouping() {
+        let mut processor = DataProcessor::new();
+        processor.records.push(DataRecord::new(1, 10.0, "cat_a"));
+        processor.records.push(DataRecord::new(2, 20.0, "cat_b"));
+        processor.records.push(DataRecord::new(3, 30.0, "cat_a"));
+        processor.records.push(DataRecord::new(4, -5.0, "cat_c"));
+
+        let groups = processor.group_by_category();
+        
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups.get("cat_a").unwrap().len(), 2);
+        assert_eq!(groups.get("cat_b").unwrap().len(), 1);
+        assert!(groups.get("cat_c").is_none());
+    }
+}
