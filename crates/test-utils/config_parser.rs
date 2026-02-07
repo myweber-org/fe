@@ -385,4 +385,194 @@ mod tests {
         assert_eq!(config.server.host, loaded_config.server.host);
         assert_eq!(config.server.port, loaded_config.server.port);
     }
+}use std::collections::HashMap;
+use std::fs;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("File not found: {0}")]
+    FileNotFound(String),
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub max_connections: usize,
+    pub timeout_seconds: u64,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig {
+            host: String::from("127.0.0.1"),
+            port: 8080,
+            max_connections: 100,
+            timeout_seconds: 30,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DatabaseConfig {
+    pub url: String,
+    pub pool_size: u32,
+    pub enable_logging: bool,
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        DatabaseConfig {
+            url: String::from("postgresql://localhost:5432/mydb"),
+            pool_size: 10,
+            enable_logging: false,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ApplicationConfig {
+    pub server: ServerConfig,
+    pub database: DatabaseConfig,
+    pub features: HashMap<String, bool>,
+}
+
+impl Default for ApplicationConfig {
+    fn default() -> Self {
+        ApplicationConfig {
+            server: ServerConfig::default(),
+            database: DatabaseConfig::default(),
+            features: HashMap::from([
+                (String::from("caching"), true),
+                (String::from("monitoring"), false),
+            ]),
+        }
+    }
+}
+
+pub struct ConfigParser;
+
+impl ConfigParser {
+    pub fn load_from_file(path: &str) -> Result<ApplicationConfig, ConfigError> {
+        let content = fs::read_to_string(path)
+            .map_err(|_| ConfigError::FileNotFound(path.to_string()))?;
+
+        let config: ApplicationConfig = toml::from_str(&content)
+            .map_err(|e| ConfigError::InvalidConfig(e.to_string()))?;
+
+        Self::validate_config(&config)?;
+        Ok(config)
+    }
+
+    pub fn save_to_file(config: &ApplicationConfig, path: &str) -> Result<(), ConfigError> {
+        let content = toml::to_string_pretty(config)
+            .map_err(|e| ConfigError::SerializationError(e.to_string()))?;
+
+        fs::write(path, content)
+            .map_err(|e| ConfigError::SerializationError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    fn validate_config(config: &ApplicationConfig) -> Result<(), ConfigError> {
+        if config.server.port == 0 {
+            return Err(ConfigError::InvalidConfig("Port cannot be zero".to_string()));
+        }
+
+        if config.server.max_connections == 0 {
+            return Err(ConfigError::InvalidConfig("Max connections cannot be zero".to_string()));
+        }
+
+        if config.database.pool_size == 0 {
+            return Err(ConfigError::InvalidConfig("Database pool size cannot be zero".to_string()));
+        }
+
+        Ok(())
+    }
+
+    pub fn merge_with_defaults(config: ApplicationConfig) -> ApplicationConfig {
+        let mut result = ApplicationConfig::default();
+
+        if config.server.port != 0 {
+            result.server.port = config.server.port;
+        }
+        if !config.server.host.is_empty() {
+            result.server.host = config.server.host;
+        }
+        if config.server.max_connections != 0 {
+            result.server.max_connections = config.server.max_connections;
+        }
+        if config.server.timeout_seconds != 0 {
+            result.server.timeout_seconds = config.server.timeout_seconds;
+        }
+
+        if !config.database.url.is_empty() {
+            result.database.url = config.database.url;
+        }
+        if config.database.pool_size != 0 {
+            result.database.pool_size = config.database.pool_size;
+        }
+        result.database.enable_logging = config.database.enable_logging;
+
+        for (key, value) in config.features {
+            result.features.insert(key, value);
+        }
+
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_default_config() {
+        let config = ApplicationConfig::default();
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.database.pool_size, 10);
+        assert!(config.features.get("caching").unwrap());
+    }
+
+    #[test]
+    fn test_config_serialization() {
+        let config = ApplicationConfig::default();
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        ConfigParser::save_to_file(&config, path).unwrap();
+        let loaded = ConfigParser::load_from_file(path).unwrap();
+
+        assert_eq!(config.server.port, loaded.server.port);
+        assert_eq!(config.database.url, loaded.database.url);
+    }
+
+    #[test]
+    fn test_config_validation() {
+        let mut config = ApplicationConfig::default();
+        config.server.port = 0;
+
+        let result = ConfigParser::validate_config(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_merge_with_defaults() {
+        let mut config = ApplicationConfig::default();
+        config.server.port = 9000;
+        config.features.insert("new_feature".to_string(), true);
+
+        let merged = ConfigParser::merge_with_defaults(config);
+        assert_eq!(merged.server.port, 9000);
+        assert_eq!(merged.server.host, "127.0.0.1");
+        assert!(merged.features.get("new_feature").unwrap());
+        assert!(merged.features.get("caching").unwrap());
+    }
 }
