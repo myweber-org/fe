@@ -111,4 +111,78 @@ mod tests {
 
         assert_eq!(result["key"], "second");
     }
+}use std::collections::HashMap;
+use serde_json::{Value, Map};
+
+pub fn deep_merge(target: &mut Value, source: &Value) {
+    match (target, source) {
+        (Value::Object(t), Value::Object(s)) => {
+            let t_map = t.as_object_mut().unwrap();
+            let s_map = s.as_object().unwrap();
+            
+            for (key, value) in s_map {
+                if t_map.contains_key(key) {
+                    deep_merge(t_map.get_mut(key).unwrap(), value);
+                } else {
+                    t_map.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        (target, source) => {
+            *target = source.clone();
+        }
+    }
+}
+
+pub fn merge_multiple(json_objects: Vec<Value>) -> Value {
+    let mut result = Value::Object(Map::new());
+    
+    for obj in json_objects {
+        deep_merge(&mut result, &obj);
+    }
+    
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_basic_merge() {
+        let obj1 = json!({"a": 1, "b": {"c": 2}});
+        let obj2 = json!({"b": {"d": 3}, "e": 4});
+        
+        let mut merged = obj1.clone();
+        deep_merge(&mut merged, &obj2);
+        
+        assert_eq!(merged["a"], 1);
+        assert_eq!(merged["b"]["c"], 2);
+        assert_eq!(merged["b"]["d"], 3);
+        assert_eq!(merged["e"], 4);
+    }
+
+    #[test]
+    fn test_overwrite_primitive() {
+        let mut target = json!({"a": 1});
+        let source = json!({"a": 2});
+        
+        deep_merge(&mut target, &source);
+        assert_eq!(target["a"], 2);
+    }
+
+    #[test]
+    fn test_multiple_merge() {
+        let objects = vec![
+            json!({"a": 1}),
+            json!({"b": 2}),
+            json!({"a": 3, "c": 4})
+        ];
+        
+        let result = merge_multiple(objects);
+        assert_eq!(result["a"], 3);
+        assert_eq!(result["b"], 2);
+        assert_eq!(result["c"], 4);
+    }
 }
