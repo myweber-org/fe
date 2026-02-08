@@ -492,3 +492,108 @@ mod tests {
         assert_eq!(alpha_records.len(), 2);
     }
 }
+use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+impl Record {
+    pub fn new(id: u32, name: String, value: f64, active: bool) -> Self {
+        Record {
+            id,
+            name,
+            value,
+            active,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.is_empty() {
+            return Err("Name cannot be empty".to_string());
+        }
+        if self.value < 0.0 {
+            return Err("Value must be non-negative".to_string());
+        }
+        Ok(())
+    }
+}
+
+pub struct DataProcessor;
+
+impl DataProcessor {
+    pub fn load_from_csv<P: AsRef<Path>>(path: P) -> Result<Vec<Record>, Box<dyn Error>> {
+        let mut reader = Reader::from_path(path)?;
+        let mut records = Vec::new();
+
+        for result in reader.deserialize() {
+            let record: Record = result?;
+            record.validate()?;
+            records.push(record);
+        }
+
+        Ok(records)
+    }
+
+    pub fn save_to_csv<P: AsRef<Path>>(records: &[Record], path: P) -> Result<(), Box<dyn Error>> {
+        let mut writer = Writer::from_path(path)?;
+
+        for record in records {
+            writer.serialize(record)?;
+        }
+
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub fn filter_active(records: &[Record]) -> Vec<&Record> {
+        records.iter().filter(|r| r.active).collect()
+    }
+
+    pub fn calculate_total(records: &[Record]) -> f64 {
+        records.iter().map(|r| r.value).sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = Record::new(1, "Test".to_string(), 100.0, true);
+        assert!(valid_record.validate().is_ok());
+
+        let invalid_record = Record::new(2, "".to_string(), -50.0, false);
+        assert!(invalid_record.validate().is_err());
+    }
+
+    #[test]
+    fn test_csv_operations() -> Result<(), Box<dyn Error>> {
+        let records = vec![
+            Record::new(1, "Alice".to_string(), 150.0, true),
+            Record::new(2, "Bob".to_string(), 200.0, false),
+            Record::new(3, "Charlie".to_string(), 300.0, true),
+        ];
+
+        let temp_file = NamedTempFile::new()?;
+        let path = temp_file.path();
+
+        DataProcessor::save_to_csv(&records, path)?;
+        let loaded_records = DataProcessor::load_from_csv(path)?;
+
+        assert_eq!(loaded_records.len(), 3);
+        assert_eq!(DataProcessor::calculate_total(&loaded_records), 650.0);
+        assert_eq!(DataProcessor::filter_active(&loaded_records).len(), 2);
+
+        Ok(())
+    }
+}
