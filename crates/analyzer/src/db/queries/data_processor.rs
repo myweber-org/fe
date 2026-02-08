@@ -494,3 +494,197 @@ mod tests {
         assert!((variance - 66.666).abs() < 0.001);
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Error, Debug)]
+pub enum ProcessingError {
+    #[error("Invalid data format")]
+    InvalidFormat,
+    #[error("Data validation failed: {0}")]
+    ValidationFailed(String),
+    #[error("Transformation error: {0}")]
+    TransformationError(String),
+}
+
+pub struct DataProcessor {
+    validation_rules: Vec<ValidationRule>,
+    transformation_pipeline: Vec<Transformation>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            validation_rules: Vec::new(),
+            transformation_pipeline: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn add_transformation(&mut self, transformation: Transformation) {
+        self.transformation_pipeline.push(transformation);
+    }
+
+    pub fn process(&self, record: &mut DataRecord) -> Result<(), ProcessingError> {
+        for rule in &self.validation_rules {
+            rule.validate(record)?;
+        }
+
+        for transformation in &self.transformation_pipeline {
+            transformation.apply(record)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn batch_process(&self, records: &mut [DataRecord]) -> Vec<Result<(), ProcessingError>> {
+        records
+            .iter_mut()
+            .map(|record| self.process(record))
+            .collect()
+    }
+}
+
+pub trait ValidationRule {
+    fn validate(&self, record: &DataRecord) -> Result<(), ProcessingError>;
+}
+
+pub trait Transformation {
+    fn apply(&self, record: &mut DataRecord) -> Result<(), ProcessingError>;
+}
+
+pub struct TimestampValidator {
+    min_timestamp: i64,
+    max_timestamp: i64,
+}
+
+impl TimestampValidator {
+    pub fn new(min: i64, max: i64) -> Self {
+        TimestampValidator {
+            min_timestamp: min,
+            max_timestamp: max,
+        }
+    }
+}
+
+impl ValidationRule for TimestampValidator {
+    fn validate(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.timestamp < self.min_timestamp || record.timestamp > self.max_timestamp {
+            Err(ProcessingError::ValidationFailed(format!(
+                "Timestamp {} out of range [{}, {}]",
+                record.timestamp, self.min_timestamp, self.max_timestamp
+            )))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub struct NormalizationTransformation {
+    factor: f64,
+}
+
+impl NormalizationTransformation {
+    pub fn new(factor: f64) -> Self {
+        NormalizationTransformation { factor }
+    }
+}
+
+impl Transformation for NormalizationTransformation {
+    fn apply(&self, record: &mut DataRecord) -> Result<(), ProcessingError> {
+        if self.factor == 0.0 {
+            return Err(ProcessingError::TransformationError(
+                "Normalization factor cannot be zero".to_string(),
+            ));
+        }
+
+        for value in record.values.iter_mut() {
+            *value /= self.factor;
+        }
+
+        Ok(())
+    }
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> HashMap<String, f64> {
+    let mut stats = HashMap::new();
+
+    if records.is_empty() {
+        return stats;
+    }
+
+    let total_values: usize = records.iter().map(|r| r.values.len()).sum();
+    let sum: f64 = records.iter().flat_map(|r| &r.values).sum();
+    let avg = sum / total_values as f64;
+
+    let variance: f64 = records
+        .iter()
+        .flat_map(|r| &r.values)
+        .map(|v| (v - avg).powi(2))
+        .sum::<f64>()
+        / total_values as f64;
+
+    stats.insert("mean".to_string(), avg);
+    stats.insert("variance".to_string(), variance);
+    stats.insert("total_records".to_string(), records.len() as f64);
+    stats.insert("total_values".to_string(), total_values as f64);
+
+    stats
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        processor.add_validation_rule(Box::new(TimestampValidator::new(0, 1000)));
+        processor.add_transformation(Box::new(NormalizationTransformation::new(10.0)));
+
+        let mut record = DataRecord {
+            id: 1,
+            timestamp: 500,
+            values: vec![20.0, 30.0, 40.0],
+            metadata: HashMap::new(),
+        };
+
+        let result = processor.process(&mut record);
+        assert!(result.is_ok());
+        assert_eq!(record.values, vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let records = vec![
+            DataRecord {
+                id: 1,
+                timestamp: 100,
+                values: vec![1.0, 2.0, 3.0],
+                metadata: HashMap::new(),
+            },
+            DataRecord {
+                id: 2,
+                timestamp: 200,
+                values: vec![4.0, 5.0, 6.0],
+                metadata: HashMap::new(),
+            },
+        ];
+
+        let stats = calculate_statistics(&records);
+        assert_eq!(stats["mean"], 3.5);
+        assert_eq!(stats["total_records"], 2.0);
+    }
+}
