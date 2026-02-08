@@ -3,114 +3,126 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-#[derive(Debug, Clone)]
-pub struct CsvRecord {
-    pub columns: Vec<String>,
-}
-
 #[derive(Debug)]
 pub struct CsvParser {
     delimiter: char,
     has_header: bool,
-    header: Option<Vec<String>>,
 }
 
 impl CsvParser {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
+    pub fn new() -> Self {
         CsvParser {
-            delimiter,
-            has_header,
-            header: None,
+            delimiter: ',',
+            has_header: true,
         }
     }
 
-    pub fn parse_file<P: AsRef<Path>>(&mut self, path: P) -> Result<Vec<CsvRecord>, Box<dyn Error>> {
+    pub fn delimiter(mut self, delimiter: char) -> Self {
+        self.delimiter = delimiter;
+        self
+    }
+
+    pub fn has_header(mut self, has_header: bool) -> Self {
+        self.has_header = has_header;
+        self
+    }
+
+    pub fn parse_file<P: AsRef<Path>>(&self, path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut records = Vec::new();
-        let mut lines = reader.lines().enumerate();
 
-        if self.has_header {
-            if let Some((_, first_line)) = lines.next() {
-                let header_line = first_line?;
-                self.header = Some(self.parse_line(&header_line)?);
-            }
-        }
-
-        for (line_num, line_result) in lines {
-            let line = line_result?;
-            let columns = self.parse_line(&line)?;
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
             
-            if !columns.is_empty() {
-                records.push(CsvRecord { columns });
-            } else {
-                eprintln!("Warning: Empty line at position {}", line_num + 1);
+            if line_num == 0 && self.has_header {
+                continue;
+            }
+
+            let record: Vec<String> = line
+                .split(self.delimiter)
+                .map(|field| field.trim().to_string())
+                .collect();
+
+            if !record.is_empty() {
+                records.push(record);
             }
         }
 
         Ok(records)
     }
 
-    fn parse_line(&self, line: &str) -> Result<Vec<String>, Box<dyn Error>> {
-        let mut columns = Vec::new();
-        let mut current = String::new();
-        let mut in_quotes = false;
-        let mut chars = line.chars().peekable();
+    pub fn parse_string(&self, content: &str) -> Vec<Vec<String>> {
+        let mut records = Vec::new();
+        
+        for line in content.lines() {
+            let record: Vec<String> = line
+                .split(self.delimiter)
+                .map(|field| field.trim().to_string())
+                .collect();
 
-        while let Some(ch) = chars.next() {
-            match ch {
-                '"' => {
-                    if in_quotes && chars.peek() == Some(&'"') {
-                        current.push('"');
-                        chars.next();
-                    } else {
-                        in_quotes = !in_quotes;
-                    }
-                }
-                _ if ch == self.delimiter && !in_quotes => {
-                    columns.push(current.trim().to_string());
-                    current.clear();
-                }
-                _ => {
-                    current.push(ch);
-                }
+            if !record.is_empty() {
+                records.push(record);
             }
         }
 
-        columns.push(current.trim().to_string());
-        Ok(columns)
+        records
     }
+}
 
-    pub fn get_header(&self) -> Option<&Vec<String>> {
-        self.header.as_ref()
-    }
+pub fn calculate_column_average(records: &[Vec<String>], column_index: usize) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut count = 0;
 
-    pub fn validate_records(&self, records: &[CsvRecord]) -> Result<(), String> {
-        if let Some(header) = &self.header {
-            let expected_len = header.len();
-            for (i, record) in records.iter().enumerate() {
-                if record.columns.len() != expected_len {
-                    return Err(format!(
-                        "Record {} has {} columns, expected {}",
-                        i + 1,
-                        record.columns.len(),
-                        expected_len
-                    ));
-                }
+    for record in records {
+        if column_index < record.len() {
+            if let Ok(value) = record[column_index].parse::<f64>() {
+                sum += value;
+                count += 1;
             }
         }
-        Ok(())
+    }
+
+    if count > 0 {
+        Some(sum / count as f64)
+    } else {
+        None
     }
 }
 
-pub fn count_records(records: &[CsvRecord]) -> usize {
-    records.len()
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-pub fn get_column_data(records: &[CsvRecord], column_index: usize) -> Vec<&str> {
-    records
-        .iter()
-        .filter_map(|record| record.columns.get(column_index))
-        .map(|s| s.as_str())
-        .collect()
+    #[test]
+    fn test_csv_parsing() {
+        let parser = CsvParser::new();
+        let test_data = "name,age,city\nJohn,25,New York\nJane,30,London";
+        let records = parser.parse_string(test_data);
+        
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0], vec!["John", "25", "New York"]);
+        assert_eq!(records[1], vec!["Jane", "30", "London"]);
+    }
+
+    #[test]
+    fn test_custom_delimiter() {
+        let parser = CsvParser::new().delimiter(';');
+        let test_data = "name;age;city\nJohn;25;New York";
+        let records = parser.parse_string(test_data);
+        
+        assert_eq!(records[0], vec!["John", "25", "New York"]);
+    }
+
+    #[test]
+    fn test_column_average() {
+        let records = vec![
+            vec!["10.5".to_string(), "20.0".to_string()],
+            vec!["15.5".to_string(), "30.0".to_string()],
+            vec!["12.0".to_string(), "25.0".to_string()],
+        ];
+        
+        let avg = calculate_column_average(&records, 0).unwrap();
+        assert!((avg - 12.666).abs() < 0.001);
+    }
 }
