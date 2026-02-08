@@ -1,126 +1,79 @@
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-pub enum DataError {
-    #[error("Invalid data format")]
-    InvalidFormat,
-    #[error("Missing required field: {0}")]
-    MissingField(String),
-    #[error("Validation failed: {0}")]
-    ValidationFailed(String),
-}
+use std::error::Error;
+use std::fmt;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DataRecord {
-    pub id: u64,
+    pub id: u32,
+    pub value: f64,
     pub timestamp: i64,
-    pub values: HashMap<String, f64>,
-    pub tags: Vec<String>,
 }
 
-impl DataRecord {
-    pub fn new(id: u64, timestamp: i64) -> Self {
-        Self {
-            id,
-            timestamp,
-            values: HashMap::new(),
-            tags: Vec::new(),
-        }
-    }
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidValue,
+    InvalidTimestamp,
+    ValidationFailed(String),
+}
 
-    pub fn add_value(&mut self, key: String, value: f64) {
-        self.values.insert(key, value);
-    }
-
-    pub fn add_tag(&mut self, tag: String) {
-        self.tags.push(tag);
-    }
-
-    pub fn validate(&self) -> Result<(), DataError> {
-        if self.values.is_empty() {
-            return Err(DataError::ValidationFailed(
-                "Record must contain at least one value".to_string(),
-            ));
-        }
-
-        if self.timestamp < 0 {
-            return Err(DataError::ValidationFailed(
-                "Timestamp cannot be negative".to_string(),
-            ));
-        }
-
-        for (key, value) in &self.values {
-            if key.trim().is_empty() {
-                return Err(DataError::ValidationFailed(
-                    "Value key cannot be empty".to_string(),
-                ));
-            }
-            if !value.is_finite() {
-                return Err(DataError::ValidationFailed(format!(
-                    "Value for '{}' must be finite",
-                    key
-                )));
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn normalize_values(&mut self) {
-        let sum: f64 = self.values.values().sum();
-        if sum != 0.0 {
-            for value in self.values.values_mut() {
-                *value /= sum;
-            }
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidValue => write!(f, "Invalid numeric value"),
+            ProcessingError::InvalidTimestamp => write!(f, "Invalid timestamp"),
+            ProcessingError::ValidationFailed(msg) => write!(f, "Validation failed: {}", msg),
         }
     }
 }
+
+impl Error for ProcessingError {}
 
 pub struct DataProcessor {
-    records: Vec<DataRecord>,
+    threshold: f64,
 }
 
 impl DataProcessor {
-    pub fn new() -> Self {
-        Self {
-            records: Vec::new(),
-        }
+    pub fn new(threshold: f64) -> Self {
+        DataProcessor { threshold }
     }
 
-    pub fn add_record(&mut self, record: DataRecord) -> Result<(), DataError> {
-        record.validate()?;
-        self.records.push(record);
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.value.is_nan() || record.value.is_infinite() {
+            return Err(ProcessingError::InvalidValue);
+        }
+
+        if record.timestamp < 0 {
+            return Err(ProcessingError::InvalidTimestamp);
+        }
+
+        if record.value.abs() > self.threshold {
+            return Err(ProcessingError::ValidationFailed(
+                format!("Value {} exceeds threshold {}", record.value, self.threshold)
+            ));
+        }
+
         Ok(())
     }
 
-    pub fn process_records(&mut self) -> HashMap<String, f64> {
-        let mut aggregated = HashMap::new();
+    pub fn transform_record(&self, record: &DataRecord) -> DataRecord {
+        DataRecord {
+            id: record.id,
+            value: record.value * 2.0,
+            timestamp: record.timestamp + 3600,
+        }
+    }
 
-        for record in &self.records {
-            for (key, value) in &record.values {
-                *aggregated.entry(key.clone()).or_insert(0.0) += value;
-            }
+    pub fn process_records(&self, records: Vec<DataRecord>) -> Result<Vec<DataRecord>, ProcessingError> {
+        let mut processed = Vec::with_capacity(records.len());
+
+        for record in records {
+            self.validate_record(&record)?;
+            let transformed = self.transform_record(&record);
+            processed.push(transformed);
         }
 
-        aggregated
-    }
-
-    pub fn filter_by_tag(&self, tag: &str) -> Vec<&DataRecord> {
-        self.records
-            .iter()
-            .filter(|record| record.tags.contains(&tag.to_string()))
-            .collect()
-    }
-
-    pub fn clear(&mut self) {
-        self.records.clear();
-    }
-
-    pub fn record_count(&self) -> usize {
-        self.records.len()
+        Ok(processed)
     }
 }
 
@@ -129,26 +82,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_record_validation() {
-        let mut record = DataRecord::new(1, 1234567890);
-        record.add_value("temperature".to_string(), 25.5);
-        assert!(record.validate().is_ok());
+    fn test_valid_record_processing() {
+        let processor = DataProcessor::new(1000.0);
+        let record = DataRecord {
+            id: 1,
+            value: 500.0,
+            timestamp: 1609459200,
+        };
+
+        assert!(processor.validate_record(&record).is_ok());
+        
+        let transformed = processor.transform_record(&record);
+        assert_eq!(transformed.value, 1000.0);
+        assert_eq!(transformed.timestamp, 1609459200 + 3600);
     }
 
     #[test]
-    fn test_record_validation_fails() {
-        let record = DataRecord::new(1, 1234567890);
-        assert!(record.validate().is_err());
+    fn test_invalid_value() {
+        let processor = DataProcessor::new(100.0);
+        let record = DataRecord {
+            id: 1,
+            value: f64::NAN,
+            timestamp: 1609459200,
+        };
+
+        assert!(processor.validate_record(&record).is_err());
     }
 
     #[test]
-    fn test_data_processor() {
-        let mut processor = DataProcessor::new();
-        let mut record = DataRecord::new(1, 1234567890);
-        record.add_value("pressure".to_string(), 1013.25);
-        record.add_tag("sensor".to_string());
+    fn test_threshold_exceeded() {
+        let processor = DataProcessor::new(100.0);
+        let record = DataRecord {
+            id: 1,
+            value: 150.0,
+            timestamp: 1609459200,
+        };
 
-        assert!(processor.add_record(record).is_ok());
-        assert_eq!(processor.record_count(), 1);
+        match processor.validate_record(&record) {
+            Err(ProcessingError::ValidationFailed(_)) => (),
+            _ => panic!("Expected ValidationFailed error"),
+        }
     }
 }
