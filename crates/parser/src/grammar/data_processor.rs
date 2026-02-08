@@ -1,67 +1,79 @@
-
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
+    file_path: String,
 }
 
 impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
+    pub fn new(file_path: &str) -> Self {
         DataProcessor {
-            delimiter,
-            has_header,
+            file_path: file_path.to_string(),
         }
     }
 
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
+    pub fn process_csv(&self, filter_column: usize, filter_value: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let path = Path::new(&self.file_path);
+        let file = File::open(path)?;
         let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        let mut lines = reader.lines().enumerate();
 
-        if self.has_header {
-            lines.next();
-        }
+        let mut results = Vec::new();
+        let mut line_count = 0;
 
-        for (line_number, line) in lines {
-            let line_content = line?;
-            let fields: Vec<String> = line_content
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
+        for line in reader.lines() {
+            let line = line?;
+            line_count += 1;
 
-            if fields.iter().any(|f| f.is_empty()) {
-                return Err(format!("Empty field detected at line {}", line_number + 1).into());
+            if line_count == 1 {
+                continue;
             }
 
-            records.push(fields);
+            let columns: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
+
+            if columns.len() > filter_column {
+                if columns[filter_column] == filter_value {
+                    results.push(columns);
+                }
+            }
         }
 
-        if records.is_empty() {
-            return Err("No valid data records found".into());
-        }
-
-        Ok(records)
+        Ok(results)
     }
 
-    pub fn validate_records(&self, records: &[Vec<String>]) -> Result<(), Box<dyn Error>> {
-        if records.is_empty() {
-            return Err("Empty record set".into());
-        }
+    pub fn calculate_average(&self, column_index: usize) -> Result<f64, Box<dyn Error>> {
+        let path = Path::new(&self.file_path);
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
 
-        let expected_len = records[0].len();
-        for (idx, record) in records.iter().enumerate() {
-            if record.len() != expected_len {
-                return Err(format!("Record {} has {} fields, expected {}", 
-                    idx + 1, record.len(), expected_len).into());
+        let mut sum = 0.0;
+        let mut count = 0;
+        let mut line_count = 0;
+
+        for line in reader.lines() {
+            let line = line?;
+            line_count += 1;
+
+            if line_count == 1 {
+                continue;
+            }
+
+            let columns: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
+
+            if columns.len() > column_index {
+                if let Ok(value) = columns[column_index].parse::<f64>() {
+                    sum += value;
+                    count += 1;
+                }
             }
         }
 
-        Ok(())
+        if count > 0 {
+            Ok(sum / count as f64)
+        } else {
+            Ok(0.0)
+        }
     }
 }
 
@@ -72,29 +84,32 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_valid_csv() {
+    fn test_process_csv() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "John,30,New York").unwrap();
-        writeln!(temp_file, "Alice,25,London").unwrap();
+        writeln!(temp_file, "id,name,value").unwrap();
+        writeln!(temp_file, "1,test,100").unwrap();
+        writeln!(temp_file, "2,example,200").unwrap();
+        writeln!(temp_file, "3,test,150").unwrap();
 
-        let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path());
-        assert!(result.is_ok());
-        
-        let records = result.unwrap();
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0], vec!["John", "30", "New York"]);
+        let processor = DataProcessor::new(temp_file.path().to_str().unwrap());
+        let result = processor.process_csv(1, "test").unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0][0], "1");
+        assert_eq!(result[1][0], "3");
     }
 
     #[test]
-    fn test_empty_field_detection() {
+    fn test_calculate_average() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "John,,New York").unwrap();
+        writeln!(temp_file, "id,value").unwrap();
+        writeln!(temp_file, "1,10.5").unwrap();
+        writeln!(temp_file, "2,20.5").unwrap();
+        writeln!(temp_file, "3,30.5").unwrap();
 
-        let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path());
-        assert!(result.is_err());
+        let processor = DataProcessor::new(temp_file.path().to_str().unwrap());
+        let average = processor.calculate_average(1).unwrap();
+
+        assert!((average - 20.5).abs() < 0.001);
     }
 }
