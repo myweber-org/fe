@@ -185,3 +185,153 @@ mod tests {
         assert_eq!(data[3], 1.0);
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    validation_rules: HashMap<String, ValidationRule>,
+    transformation_pipeline: Vec<Transformation>,
+}
+
+pub struct ValidationRule {
+    field_name: String,
+    validator: Box<dyn Fn(&str) -> bool>,
+    error_message: String,
+}
+
+pub enum Transformation {
+    TrimWhitespace,
+    Lowercase,
+    Uppercase,
+    ReplaceAll { pattern: String, replacement: String },
+    Custom(Box<dyn Fn(String) -> String>),
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            validation_rules: HashMap::new(),
+            transformation_pipeline: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.insert(rule.field_name.clone(), rule);
+    }
+
+    pub fn add_transformation(&mut self, transformation: Transformation) {
+        self.transformation_pipeline.push(transformation);
+    }
+
+    pub fn process_record(&self, record: &mut HashMap<String, String>) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        for (field_name, validation_rule) in &self.validation_rules {
+            if let Some(value) = record.get(field_name) {
+                if !(validation_rule.validator)(value) {
+                    errors.push(format!("{}: {}", field_name, validation_rule.error_message));
+                }
+            }
+        }
+
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        for transformation in &self.transformation_pipeline {
+            self.apply_transformation(record, transformation);
+        }
+
+        Ok(())
+    }
+
+    fn apply_transformation(&self, record: &mut HashMap<String, String>, transformation: &Transformation) {
+        match transformation {
+            Transformation::TrimWhitespace => {
+                for value in record.values_mut() {
+                    *value = value.trim().to_string();
+                }
+            }
+            Transformation::Lowercase => {
+                for value in record.values_mut() {
+                    *value = value.to_lowercase();
+                }
+            }
+            Transformation::Uppercase => {
+                for value in record.values_mut() {
+                    *value = value.to_uppercase();
+                }
+            }
+            Transformation::ReplaceAll { pattern, replacement } => {
+                for value in record.values_mut() {
+                    *value = value.replace(pattern, replacement);
+                }
+            }
+            Transformation::Custom(func) => {
+                for value in record.values_mut() {
+                    *value = func(value.clone());
+                }
+            }
+        }
+    }
+}
+
+impl ValidationRule {
+    pub fn new<F>(field_name: String, validator: F, error_message: String) -> Self
+    where
+        F: Fn(&str) -> bool + 'static,
+    {
+        ValidationRule {
+            field_name,
+            validator: Box::new(validator),
+            error_message,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        
+        processor.add_validation_rule(ValidationRule::new(
+            "email".to_string(),
+            |value| value.contains('@'),
+            "Email must contain @ symbol".to_string(),
+        ));
+
+        processor.add_transformation(Transformation::TrimWhitespace);
+        processor.add_transformation(Transformation::Lowercase);
+
+        let mut test_record = HashMap::new();
+        test_record.insert("email".to_string(), "  TEST@EXAMPLE.COM  ".to_string());
+        test_record.insert("name".to_string(), "  John Doe  ".to_string());
+
+        let result = processor.process_record(&mut test_record);
+        assert!(result.is_ok());
+        assert_eq!(test_record.get("email"), Some(&"test@example.com".to_string()));
+        assert_eq!(test_record.get("name"), Some(&"john doe".to_string()));
+    }
+
+    #[test]
+    fn test_validation_failure() {
+        let mut processor = DataProcessor::new();
+        
+        processor.add_validation_rule(ValidationRule::new(
+            "email".to_string(),
+            |value| value.contains('@'),
+            "Invalid email format".to_string(),
+        ));
+
+        let mut invalid_record = HashMap::new();
+        invalid_record.insert("email".to_string(), "invalid-email".to_string());
+
+        let result = processor.process_record(&mut invalid_record);
+        assert!(result.is_err());
+        if let Err(errors) = result {
+            assert!(errors[0].contains("Invalid email format"));
+        }
+    }
+}
