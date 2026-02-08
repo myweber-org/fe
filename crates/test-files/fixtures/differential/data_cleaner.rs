@@ -1,96 +1,105 @@
 
-use std::collections::HashMap;
+use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
 
-pub struct DataCleaner {
-    data: HashMap<String, Vec<Option<String>>>,
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    age: u8,
+    active: bool,
 }
 
-impl DataCleaner {
-    pub fn new(data: HashMap<String, Vec<Option<String>>>) -> Self {
-        DataCleaner { data }
+fn clean_csv_data(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(Path::new(input_path))?;
+    let mut rdr = ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(input_file);
+
+    let output_file = File::create(Path::new(output_path))?;
+    let mut wtr = WriterBuilder::new()
+        .has_headers(true)
+        .from_writer(output_file);
+
+    for result in rdr.deserialize() {
+        let mut record: Record = result?;
+        
+        // Data cleaning operations
+        record.name = record.name.trim().to_string();
+        if record.name.is_empty() {
+            record.name = "Unknown".to_string();
+        }
+        
+        if record.age > 120 {
+            record.age = 120;
+        }
+        
+        wtr.serialize(&record)?;
     }
 
-    pub fn clean(&mut self) -> HashMap<String, Vec<String>> {
-        let mut cleaned_data = HashMap::new();
+    wtr.flush()?;
+    Ok(())
+}
 
-        for (column, values) in &self.data {
-            let cleaned_values: Vec<String> = values
-                .iter()
-                .filter_map(|val| {
-                    val.as_ref().map(|s| {
-                        let trimmed = s.trim();
-                        if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed.to_string())
-                        }
-                    })
-                })
-                .flatten()
-                .collect();
+fn validate_record(record: &Record) -> bool {
+    !record.name.is_empty() && record.age > 0 && record.age <= 120
+}
 
-            if !cleaned_values.is_empty() {
-                cleaned_data.insert(column.clone(), cleaned_values);
-            }
-        }
-
-        cleaned_data
+fn main() -> Result<(), Box<dyn Error>> {
+    let input = "data/raw.csv";
+    let output = "data/cleaned.csv";
+    
+    match clean_csv_data(input, output) {
+        Ok(_) => println!("Data cleaning completed successfully"),
+        Err(e) => eprintln!("Error during data cleaning: {}", e),
     }
-
-    pub fn remove_columns_with_all_null(&mut self) -> Vec<String> {
-        let mut removed_columns = Vec::new();
-        let mut columns_to_remove = Vec::new();
-
-        for (column, values) in &self.data {
-            let all_null = values.iter().all(|val| val.is_none());
-            if all_null {
-                columns_to_remove.push(column.clone());
-            }
-        }
-
-        for column in columns_to_remove {
-            self.data.remove(&column);
-            removed_columns.push(column);
-        }
-
-        removed_columns
-    }
+    
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
 
     #[test]
-    fn test_cleaner_removes_nulls_and_trims() {
-        let mut data = HashMap::new();
-        data.insert(
-            "name".to_string(),
-            vec![
-                Some("  John  ".to_string()),
-                None,
-                Some("Jane".to_string()),
-                Some("  ".to_string()),
-            ],
+    fn test_clean_csv_data() {
+        let input_data = "id,name,age,active\n1,  John Doe  ,30,true\n2,,150,false\n";
+        
+        let mut input_file = NamedTempFile::new().unwrap();
+        write!(input_file, "{}", input_data).unwrap();
+        
+        let output_file = NamedTempFile::new().unwrap();
+        
+        let result = clean_csv_data(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap()
         );
-
-        let mut cleaner = DataCleaner::new(data);
-        let cleaned = cleaner.clean();
-
-        assert_eq!(cleaned.get("name").unwrap(), &vec!["John", "Jane"]);
+        
+        assert!(result.is_ok());
     }
 
     #[test]
-    fn test_remove_all_null_columns() {
-        let mut data = HashMap::new();
-        data.insert("valid".to_string(), vec![Some("data".to_string())]);
-        data.insert("empty".to_string(), vec![None, None, None]);
-
-        let mut cleaner = DataCleaner::new(data);
-        let removed = cleaner.remove_columns_with_all_null();
-
-        assert_eq!(removed, vec!["empty"]);
-        assert_eq!(cleaner.data.len(), 1);
-        assert!(cleaner.data.contains_key("valid"));
+    fn test_validate_record() {
+        let valid_record = Record {
+            id: 1,
+            name: "Test".to_string(),
+            age: 25,
+            active: true,
+        };
+        
+        let invalid_record = Record {
+            id: 2,
+            name: "".to_string(),
+            age: 0,
+            active: false,
+        };
+        
+        assert!(validate_record(&valid_record));
+        assert!(!validate_record(&invalid_record));
     }
 }
