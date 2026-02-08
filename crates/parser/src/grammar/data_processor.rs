@@ -3,77 +3,106 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub timestamp: u64,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64, timestamp: u64) -> Self {
+        DataRecord {
+            id,
+            name,
+            value,
+            timestamp,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        !self.name.is_empty() && self.value >= 0.0 && self.timestamp > 0
+    }
+}
+
 pub struct DataProcessor {
-    file_path: String,
+    records: Vec<DataRecord>,
 }
 
 impl DataProcessor {
-    pub fn new(file_path: &str) -> Self {
+    pub fn new() -> Self {
         DataProcessor {
-            file_path: file_path.to_string(),
+            records: Vec::new(),
         }
     }
 
-    pub fn process_csv(&self, filter_column: usize, filter_value: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let path = Path::new(&self.file_path);
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-
-        let mut results = Vec::new();
-        let mut line_count = 0;
-
-        for line in reader.lines() {
-            let line = line?;
-            line_count += 1;
-
-            if line_count == 1 {
-                continue;
-            }
-
-            let columns: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
-
-            if columns.len() > filter_column {
-                if columns[filter_column] == filter_value {
-                    results.push(columns);
-                }
-            }
-        }
-
-        Ok(results)
-    }
-
-    pub fn calculate_average(&self, column_index: usize) -> Result<f64, Box<dyn Error>> {
-        let path = Path::new(&self.file_path);
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-
-        let mut sum = 0.0;
         let mut count = 0;
-        let mut line_count = 0;
 
-        for line in reader.lines() {
+        for (line_num, line) in reader.lines().enumerate() {
             let line = line?;
-            line_count += 1;
-
-            if line_count == 1 {
+            if line_num == 0 {
                 continue;
             }
 
-            let columns: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 4 {
+                continue;
+            }
 
-            if columns.len() > column_index {
-                if let Ok(value) = columns[column_index].parse::<f64>() {
-                    sum += value;
-                    count += 1;
-                }
+            let id = match parts[0].parse::<u32>() {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+
+            let name = parts[1].to_string();
+            
+            let value = match parts[2].parse::<f64>() {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+
+            let timestamp = match parts[3].parse::<u64>() {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+
+            let record = DataRecord::new(id, name, value, timestamp);
+            if record.is_valid() {
+                self.records.push(record);
+                count += 1;
             }
         }
 
-        if count > 0 {
-            Ok(sum / count as f64)
-        } else {
-            Ok(0.0)
+        Ok(count)
+    }
+
+    pub fn filter_by_value(&self, min_value: f64, max_value: f64) -> Vec<DataRecord> {
+        self.records
+            .iter()
+            .filter(|r| r.value >= min_value && r.value <= max_value)
+            .cloned()
+            .collect()
+    }
+
+    pub fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
         }
+
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    pub fn get_records_count(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
     }
 }
 
@@ -84,32 +113,37 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_csv() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,name,value").unwrap();
-        writeln!(temp_file, "1,test,100").unwrap();
-        writeln!(temp_file, "2,example,200").unwrap();
-        writeln!(temp_file, "3,test,150").unwrap();
+    fn test_data_record_validation() {
+        let valid_record = DataRecord::new(1, "test".to_string(), 10.5, 1234567890);
+        assert!(valid_record.is_valid());
 
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap());
-        let result = processor.process_csv(1, "test").unwrap();
-
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0][0], "1");
-        assert_eq!(result[1][0], "3");
+        let invalid_record = DataRecord::new(2, "".to_string(), -5.0, 0);
+        assert!(!invalid_record.is_valid());
     }
 
     #[test]
-    fn test_calculate_average() {
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        assert_eq!(processor.get_records_count(), 0);
+
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,value").unwrap();
-        writeln!(temp_file, "1,10.5").unwrap();
-        writeln!(temp_file, "2,20.5").unwrap();
-        writeln!(temp_file, "3,30.5").unwrap();
+        writeln!(temp_file, "id,name,value,timestamp").unwrap();
+        writeln!(temp_file, "1,item1,10.5,1000").unwrap();
+        writeln!(temp_file, "2,item2,20.3,2000").unwrap();
+        writeln!(temp_file, "3,item3,30.7,3000").unwrap();
 
-        let processor = DataProcessor::new(temp_file.path().to_str().unwrap());
-        let average = processor.calculate_average(1).unwrap();
+        let count = processor.load_from_csv(temp_file.path()).unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(processor.get_records_count(), 3);
 
-        assert!((average - 20.5).abs() < 0.001);
+        let filtered = processor.filter_by_value(15.0, 25.0);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, 2);
+
+        let avg = processor.calculate_average().unwrap();
+        assert!((avg - 20.5).abs() < 0.01);
+
+        processor.clear();
+        assert_eq!(processor.get_records_count(), 0);
     }
 }
