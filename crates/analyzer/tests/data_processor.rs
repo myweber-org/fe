@@ -230,3 +230,154 @@ mod tests {
         assert_eq!(std_dev, 2.0_f64.sqrt());
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    id: u32,
+    values: Vec<f64>,
+    metadata: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidData(String),
+    TransformationError(String),
+    ValidationFailed(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
+            ProcessingError::TransformationError(msg) => write!(f, "Transformation error: {}", msg),
+            ProcessingError::ValidationFailed(msg) => write!(f, "Validation failed: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+impl DataRecord {
+    pub fn new(id: u32, values: Vec<f64>) -> Self {
+        DataRecord {
+            id,
+            values,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+
+    pub fn validate(&self) -> Result<(), ProcessingError> {
+        if self.values.is_empty() {
+            return Err(ProcessingError::InvalidData("Empty values vector".to_string()));
+        }
+
+        if self.values.iter().any(|&v| v.is_nan() || v.is_infinite()) {
+            return Err(ProcessingError::InvalidData("Invalid numeric values".to_string()));
+        }
+
+        Ok(())
+    }
+
+    pub fn normalize(&mut self) -> Result<(), ProcessingError> {
+        self.validate()?;
+
+        let sum: f64 = self.values.iter().sum();
+        if sum == 0.0 {
+            return Err(ProcessingError::TransformationError(
+                "Cannot normalize zero-sum vector".to_string(),
+            ));
+        }
+
+        for value in self.values.iter_mut() {
+            *value /= sum;
+        }
+
+        Ok(())
+    }
+
+    pub fn calculate_statistics(&self) -> Result<HashMap<String, f64>, ProcessingError> {
+        self.validate()?;
+
+        let count = self.values.len() as f64;
+        let sum: f64 = self.values.iter().sum();
+        let mean = sum / count;
+
+        let variance: f64 = self
+            .values
+            .iter()
+            .map(|&v| (v - mean).powi(2))
+            .sum::<f64>()
+            / count;
+
+        let mut sorted_values = self.values.clone();
+        sorted_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let median = if count as usize % 2 == 0 {
+            let mid = count as usize / 2;
+            (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
+        } else {
+            sorted_values[count as usize / 2]
+        };
+
+        let mut stats = HashMap::new();
+        stats.insert("count".to_string(), count);
+        stats.insert("sum".to_string(), sum);
+        stats.insert("mean".to_string(), mean);
+        stats.insert("variance".to_string(), variance);
+        stats.insert("median".to_string(), median);
+
+        Ok(stats)
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord]) -> Result<Vec<HashMap<String, f64>>, ProcessingError> {
+    let mut results = Vec::new();
+
+    for record in records.iter_mut() {
+        record.normalize()?;
+        let stats = record.calculate_statistics()?;
+        results.push(stats);
+    }
+
+    Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record() {
+        let record = DataRecord::new(1, vec![1.0, 2.0, 3.0]);
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        let record = DataRecord::new(2, vec![f64::NAN, 2.0]);
+        assert!(record.validate().is_err());
+    }
+
+    #[test]
+    fn test_normalization() {
+        let mut record = DataRecord::new(3, vec![1.0, 2.0, 3.0]);
+        assert!(record.normalize().is_ok());
+        let sum: f64 = record.values.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let record = DataRecord::new(4, vec![1.0, 2.0, 3.0, 4.0]);
+        let stats = record.calculate_statistics().unwrap();
+        assert_eq!(stats["mean"], 2.5);
+        assert_eq!(stats["median"], 2.5);
+    }
+}
