@@ -90,3 +90,99 @@ mod tests {
         assert_eq!(config.get_or_default("MISSING", "default"), "default");
     }
 }
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub settings: HashMap<String, String>,
+}
+
+impl Config {
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = fs::read_to_string(path)?;
+        Self::from_str(&content)
+    }
+
+    pub fn from_str(content: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut settings = HashMap::new();
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            if let Some((key, value)) = trimmed.split_once('=') {
+                let key = key.trim().to_string();
+                let processed_value = Self::process_value(value.trim());
+                settings.insert(key, processed_value);
+            }
+        }
+
+        Ok(Config { settings })
+    }
+
+    fn process_value(value: &str) -> String {
+        if value.starts_with('$') {
+            let var_name = &value[1..];
+            env::var(var_name).unwrap_or_else(|_| value.to_string())
+        } else {
+            value.to_string()
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.settings.get(key)
+    }
+
+    pub fn merge(&mut self, other: Config) {
+        for (key, value) in other.settings {
+            self.settings.insert(key, value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_basic_parsing() {
+        let content = "host=localhost\nport=8080\n";
+        let config = Config::from_str(content).unwrap();
+        assert_eq!(config.get("host"), Some(&"localhost".to_string()));
+        assert_eq!(config.get("port"), Some(&"8080".to_string()));
+    }
+
+    #[test]
+    fn test_env_var_interpolation() {
+        env::set_var("API_KEY", "secret123");
+        let content = "api_key=$API_KEY\ndebug=false";
+        let config = Config::from_str(content).unwrap();
+        assert_eq!(config.get("api_key"), Some(&"secret123".to_string()));
+    }
+
+    #[test]
+    fn test_file_loading() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "database=test_db\n").unwrap();
+        
+        let config = Config::from_file(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.get("database"), Some(&"test_db".to_string()));
+    }
+
+    #[test]
+    fn test_merge_configs() {
+        let mut config1 = Config::from_str("a=1\nb=2").unwrap();
+        let config2 = Config::from_str("b=3\nc=4").unwrap();
+        
+        config1.merge(config2);
+        assert_eq!(config1.get("a"), Some(&"1".to_string()));
+        assert_eq!(config1.get("b"), Some(&"3".to_string()));
+        assert_eq!(config1.get("c"), Some(&"4".to_string()));
+    }
+}
