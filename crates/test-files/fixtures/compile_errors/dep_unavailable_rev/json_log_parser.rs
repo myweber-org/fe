@@ -1,157 +1,89 @@
-use serde_json::Value;
-use std::collections::HashMap;
+
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
+use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
 
-#[derive(Debug, Clone)]
-pub struct LogEntry {
-    pub timestamp: String,
-    pub level: String,
-    pub message: String,
-    pub fields: HashMap<String, Value>,
+#[derive(Debug, Deserialize)]
+struct LogEntry {
+    timestamp: String,
+    level: String,
+    message: String,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
-pub struct LogParser {
-    pub entries: Vec<LogEntry>,
+#[derive(Debug)]
+struct FilteredLogs {
+    entries: Vec<LogEntry>,
+    total_processed: usize,
 }
 
-impl LogParser {
-    pub fn new() -> Self {
-        LogParser {
-            entries: Vec::new(),
+fn parse_log_file(path: &str, min_level: &str, start_time: Option<DateTime<Utc>>) -> Result<FilteredLogs, Box<dyn Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut entries = Vec::new();
+    let mut total_processed = 0;
+
+    let level_order = vec!["trace", "debug", "info", "warn", "error", "fatal"];
+
+    let min_level_index = level_order
+        .iter()
+        .position(|&l| l == min_level.to_lowercase())
+        .unwrap_or(0);
+
+    for line in reader.lines() {
+        total_processed += 1;
+        let line = line?;
+        
+        if line.trim().is_empty() {
+            continue;
         }
-    }
 
-    pub fn parse_file<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
+        let entry: LogEntry = match serde_json::from_str(&line) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
 
-        for line in reader.lines() {
-            let line = line?;
-            self.parse_line(&line)?;
+        let entry_level_index = level_order
+            .iter()
+            .position(|&l| l == entry.level.to_lowercase())
+            .unwrap_or(0);
+
+        if entry_level_index < min_level_index {
+            continue;
         }
 
-        Ok(())
-    }
-
-    pub fn parse_line(&mut self, line: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let json_value: Value = serde_json::from_str(line)?;
-
-        let timestamp = json_value
-            .get("timestamp")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let level = json_value
-            .get("level")
-            .and_then(|v| v.as_str())
-            .unwrap_or("INFO")
-            .to_string()
-            .to_uppercase();
-
-        let message = json_value
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let mut fields = HashMap::new();
-        if let Some(obj) = json_value.as_object() {
-            for (key, value) in obj {
-                if key != "timestamp" && key != "level" && key != "message" {
-                    fields.insert(key.clone(), value.clone());
-                }
+        if let Some(start) = start_time {
+            let entry_time: DateTime<Utc> = entry.timestamp.parse().unwrap_or(Utc::now());
+            if entry_time < start {
+                continue;
             }
         }
 
-        self.entries.push(LogEntry {
-            timestamp,
-            level,
-            message,
-            fields,
-        });
-
-        Ok(())
+        entries.push(entry);
     }
 
-    pub fn filter_by_level(&self, level: &str) -> Vec<&LogEntry> {
-        let target_level = level.to_uppercase();
-        self.entries
-            .iter()
-            .filter(|entry| entry.level == target_level)
-            .collect()
-    }
-
-    pub fn extract_field_values(&self, field_name: &str) -> Vec<&Value> {
-        self.entries
-            .iter()
-            .filter_map(|entry| entry.fields.get(field_name))
-            .collect()
-    }
-
-    pub fn count_by_level(&self) -> HashMap<String, usize> {
-        let mut counts = HashMap::new();
-        for entry in &self.entries {
-            *counts.entry(entry.level.clone()).or_insert(0) += 1;
-        }
-        counts
-    }
-
-    pub fn get_timeline(&self) -> Vec<&str> {
-        self.entries
-            .iter()
-            .map(|entry| entry.timestamp.as_str())
-            .collect()
-    }
+    Ok(FilteredLogs {
+        entries,
+        total_processed,
+    })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_valid_json() {
-        let mut parser = LogParser::new();
-        let line = r#"{"timestamp":"2023-10-01T12:00:00Z","level":"error","message":"Something went wrong","user_id":123,"ip":"192.168.1.1"}"#;
-        
-        assert!(parser.parse_line(line).is_ok());
-        assert_eq!(parser.entries.len(), 1);
-        
-        let entry = &parser.entries[0];
-        assert_eq!(entry.level, "ERROR");
-        assert_eq!(entry.message, "Something went wrong");
-        assert_eq!(entry.fields.len(), 2);
-        assert!(entry.fields.contains_key("user_id"));
-        assert!(entry.fields.contains_key("ip"));
+fn main() -> Result<(), Box<dyn Error>> {
+    let logs = parse_log_file("application.log", "info", None)?;
+    
+    println!("Processed {} lines, found {} matching entries", 
+             logs.total_processed, 
+             logs.entries.len());
+    
+    for entry in logs.entries.iter().take(5) {
+        println!("[{}] {}: {}", 
+                 entry.timestamp, 
+                 entry.level.to_uppercase(), 
+                 entry.message);
     }
-
-    #[test]
-    fn test_filter_by_level() {
-        let mut parser = LogParser::new();
-        parser.parse_line(r#"{"level":"error","message":"Error 1"}"#).unwrap();
-        parser.parse_line(r#"{"level":"info","message":"Info 1"}"#).unwrap();
-        parser.parse_line(r#"{"level":"error","message":"Error 2"}"#).unwrap();
-        
-        let errors = parser.filter_by_level("error");
-        assert_eq!(errors.len(), 2);
-        
-        let infos = parser.filter_by_level("info");
-        assert_eq!(infos.len(), 1);
-    }
-
-    #[test]
-    fn test_count_by_level() {
-        let mut parser = LogParser::new();
-        parser.parse_line(r#"{"level":"error","message":"Error 1"}"#).unwrap();
-        parser.parse_line(r#"{"level":"info","message":"Info 1"}"#).unwrap();
-        parser.parse_line(r#"{"level":"error","message":"Error 2"}"#).unwrap();
-        parser.parse_line(r#"{"level":"warning","message":"Warning 1"}"#).unwrap();
-        
-        let counts = parser.count_by_level();
-        assert_eq!(counts.get("ERROR"), Some(&2));
-        assert_eq!(counts.get("INFO"), Some(&1));
-        assert_eq!(counts.get("WARNING"), Some(&1));
-    }
+    
+    Ok(())
 }
