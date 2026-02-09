@@ -136,3 +136,215 @@ mod tests {
         assert_eq!(max_record.unwrap().id, 2);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub category: String,
+}
+
+#[derive(Debug)]
+pub enum DataError {
+    InvalidId,
+    InvalidValue,
+    EmptyName,
+    UnknownCategory,
+    DuplicateRecord,
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataError::InvalidId => write!(f, "ID must be greater than zero"),
+            DataError::InvalidValue => write!(f, "Value must be between 0.0 and 1000.0"),
+            DataError::EmptyName => write!(f, "Name cannot be empty"),
+            DataError::UnknownCategory => write!(f, "Category not recognized"),
+            DataError::DuplicateRecord => write!(f, "Record with this ID already exists"),
+        }
+    }
+}
+
+impl Error for DataError {}
+
+pub struct DataProcessor {
+    records: HashMap<u32, DataRecord>,
+    valid_categories: Vec<String>,
+}
+
+impl DataProcessor {
+    pub fn new(categories: Vec<String>) -> Self {
+        DataProcessor {
+            records: HashMap::new(),
+            valid_categories: categories,
+        }
+    }
+
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), DataError> {
+        if record.id == 0 {
+            return Err(DataError::InvalidId);
+        }
+
+        if record.name.trim().is_empty() {
+            return Err(DataError::EmptyName);
+        }
+
+        if record.value < 0.0 || record.value > 1000.0 {
+            return Err(DataError::InvalidValue);
+        }
+
+        if !self.valid_categories.contains(&record.category) {
+            return Err(DataError::UnknownCategory);
+        }
+
+        Ok(())
+    }
+
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), DataError> {
+        self.validate_record(&record)?;
+
+        if self.records.contains_key(&record.id) {
+            return Err(DataError::DuplicateRecord);
+        }
+
+        self.records.insert(record.id, record);
+        Ok(())
+    }
+
+    pub fn get_record(&self, id: u32) -> Option<&DataRecord> {
+        self.records.get(&id)
+    }
+
+    pub fn calculate_statistics(&self) -> HashMap<String, f64> {
+        let mut stats = HashMap::new();
+        
+        if self.records.is_empty() {
+            return stats;
+        }
+
+        let count = self.records.len() as f64;
+        let sum: f64 = self.records.values().map(|r| r.value).sum();
+        let avg = sum / count;
+        
+        let min = self.records.values()
+            .map(|r| r.value)
+            .fold(f64::INFINITY, f64::min);
+            
+        let max = self.records.values()
+            .map(|r| r.value)
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        stats.insert("total_records".to_string(), count);
+        stats.insert("sum".to_string(), sum);
+        stats.insert("average".to_string(), avg);
+        stats.insert("minimum".to_string(), min);
+        stats.insert("maximum".to_string(), max);
+
+        stats
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+        self.records.values()
+            .filter(|record| record.category == category)
+            .collect()
+    }
+
+    pub fn transform_values<F>(&mut self, transform_fn: F) 
+    where
+        F: Fn(f64) -> f64,
+    {
+        for record in self.records.values_mut() {
+            record.value = transform_fn(record.value);
+        }
+    }
+
+    pub fn export_as_csv(&self) -> String {
+        let mut csv = String::from("id,name,value,category\n");
+        
+        for record in self.records.values() {
+            csv.push_str(&format!("{},{},{},{}\n", 
+                record.id, 
+                record.name, 
+                record.value, 
+                record.category));
+        }
+        
+        csv
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record_validation() {
+        let categories = vec!["A".to_string(), "B".to_string()];
+        let processor = DataProcessor::new(categories);
+        
+        let record = DataRecord {
+            id: 1,
+            name: "Test".to_string(),
+            value: 100.0,
+            category: "A".to_string(),
+        };
+        
+        assert!(processor.validate_record(&record).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_id_validation() {
+        let categories = vec!["A".to_string()];
+        let processor = DataProcessor::new(categories);
+        
+        let record = DataRecord {
+            id: 0,
+            name: "Test".to_string(),
+            value: 100.0,
+            category: "A".to_string(),
+        };
+        
+        assert!(matches!(processor.validate_record(&record), Err(DataError::InvalidId)));
+    }
+
+    #[test]
+    fn test_record_addition_and_retrieval() {
+        let mut processor = DataProcessor::new(vec!["Category1".to_string()]);
+        
+        let record = DataRecord {
+            id: 42,
+            name: "Sample".to_string(),
+            value: 250.5,
+            category: "Category1".to_string(),
+        };
+        
+        assert!(processor.add_record(record.clone()).is_ok());
+        assert_eq!(processor.get_record(42).unwrap().name, "Sample");
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let mut processor = DataProcessor::new(vec!["Test".to_string()]);
+        
+        let records = vec![
+            DataRecord { id: 1, name: "A".to_string(), value: 10.0, category: "Test".to_string() },
+            DataRecord { id: 2, name: "B".to_string(), value: 20.0, category: "Test".to_string() },
+            DataRecord { id: 3, name: "C".to_string(), value: 30.0, category: "Test".to_string() },
+        ];
+        
+        for record in records {
+            processor.add_record(record).unwrap();
+        }
+        
+        let stats = processor.calculate_statistics();
+        assert_eq!(stats["total_records"], 3.0);
+        assert_eq!(stats["sum"], 60.0);
+        assert_eq!(stats["average"], 20.0);
+        assert_eq!(stats["minimum"], 10.0);
+        assert_eq!(stats["maximum"], 30.0);
+    }
+}
