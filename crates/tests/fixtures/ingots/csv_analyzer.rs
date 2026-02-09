@@ -152,4 +152,156 @@ pub fn validate_csv_format(path: &str) -> Result<bool, Box<dyn Error>> {
     }
     
     Ok(true)
+}use std::collections::HashMap;
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+#[derive(Debug)]
+pub struct CsvStats {
+    pub row_count: usize,
+    pub column_count: usize,
+    pub column_types: HashMap<String, String>,
+    pub numeric_columns: Vec<String>,
+    pub text_columns: Vec<String>,
+}
+
+pub fn analyze_csv(file_path: &str) -> Result<CsvStats, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    
+    let header_line = match lines.next() {
+        Some(Ok(line)) => line,
+        _ => return Err("Empty CSV file".into()),
+    };
+    
+    let headers: Vec<String> = header_line
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
+    
+    let mut column_samples: HashMap<String, Vec<String>> = HashMap::new();
+    let mut row_count = 0;
+    
+    for line_result in lines {
+        let line = line_result?;
+        let values: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+        
+        if values.len() != headers.len() {
+            continue;
+        }
+        
+        for (i, value) in values.iter().enumerate() {
+            column_samples
+                .entry(headers[i].clone())
+                .or_insert_with(Vec::new)
+                .push(value.to_string());
+        }
+        
+        row_count += 1;
+    }
+    
+    let mut column_types = HashMap::new();
+    let mut numeric_columns = Vec::new();
+    let mut text_columns = Vec::new();
+    
+    for (header, samples) in column_samples {
+        let is_numeric = samples.iter().all(|s| s.parse::<f64>().is_ok());
+        let col_type = if is_numeric { "numeric" } else { "text" };
+        
+        column_types.insert(header.clone(), col_type.to_string());
+        
+        if is_numeric {
+            numeric_columns.push(header);
+        } else {
+            text_columns.push(header);
+        }
+    }
+    
+    Ok(CsvStats {
+        row_count,
+        column_count: headers.len(),
+        column_types,
+        numeric_columns,
+        text_columns,
+    })
+}
+
+pub fn filter_csv_rows<F>(
+    file_path: &str,
+    predicate: F,
+) -> Result<Vec<Vec<String>>, Box<dyn Error>>
+where
+    F: Fn(&[String]) -> bool,
+{
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    
+    let header_line = match lines.next() {
+        Some(Ok(line)) => line,
+        _ => return Ok(Vec::new()),
+    };
+    
+    let headers: Vec<String> = header_line
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
+    
+    let mut filtered_rows = Vec::new();
+    
+    for line_result in lines {
+        let line = line_result?;
+        let values: Vec<String> = line
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
+        
+        if values.len() == headers.len() && predicate(&values) {
+            filtered_rows.push(values);
+        }
+    }
+    
+    Ok(filtered_rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_analyze_csv() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,name,age,salary").unwrap();
+        writeln!(temp_file, "1,Alice,30,50000").unwrap();
+        writeln!(temp_file, "2,Bob,25,45000").unwrap();
+        writeln!(temp_file, "3,Charlie,35,60000").unwrap();
+        
+        let stats = analyze_csv(temp_file.path().to_str().unwrap()).unwrap();
+        
+        assert_eq!(stats.row_count, 3);
+        assert_eq!(stats.column_count, 4);
+        assert_eq!(stats.numeric_columns.len(), 3);
+        assert_eq!(stats.text_columns.len(), 1);
+    }
+    
+    #[test]
+    fn test_filter_csv_rows() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,name,age").unwrap();
+        writeln!(temp_file, "1,Alice,30").unwrap();
+        writeln!(temp_file, "2,Bob,25").unwrap();
+        writeln!(temp_file, "3,Charlie,35").unwrap();
+        
+        let filtered = filter_csv_rows(
+            temp_file.path().to_str().unwrap(),
+            |row| row[2].parse::<i32>().unwrap_or(0) > 30
+        ).unwrap();
+        
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0][1], "Charlie");
+    }
 }
