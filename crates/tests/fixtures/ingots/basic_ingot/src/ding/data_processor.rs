@@ -2,54 +2,97 @@
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
+    records: Vec<HashMap<String, String>>,
 }
 
 impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
+    pub fn new() -> Self {
         DataProcessor {
-            delimiter,
-            has_header,
+            records: Vec::new(),
         }
     }
 
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+    pub fn load_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
         let file = File::open(file_path)?;
         let reader = BufReader::new(file);
-        let mut records = Vec::new();
         let mut lines = reader.lines();
 
-        if self.has_header {
-            lines.next();
-        }
+        if let Some(header_result) = lines.next() {
+            let header_line = header_result?;
+            let headers: Vec<String> = header_line.split(',').map(|s| s.trim().to_string()).collect();
 
-        for line_result in lines {
-            let line = line_result?;
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-            
-            if !fields.is_empty() {
-                records.push(fields);
+            for line_result in lines {
+                let line = line_result?;
+                let values: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
+                
+                if values.len() == headers.len() {
+                    let mut record = HashMap::new();
+                    for (i, header) in headers.iter().enumerate() {
+                        record.insert(header.clone(), values[i].clone());
+                    }
+                    self.records.push(record);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    pub fn calculate_average(&self, column_name: &str) -> Option<f64> {
+        let mut sum = 0.0;
+        let mut count = 0;
+
+        for record in &self.records {
+            if let Some(value_str) = record.get(column_name) {
+                if let Ok(value) = value_str.parse::<f64>() {
+                    sum += value;
+                    count += 1;
+                }
             }
         }
 
-        Ok(records)
+        if count > 0 {
+            Some(sum / count as f64)
+        } else {
+            None
+        }
     }
 
-    pub fn validate_record(&self, record: &[String]) -> bool {
-        !record.is_empty() && record.iter().all(|field| !field.is_empty())
+    pub fn count_unique_values(&self, column_name: &str) -> HashMap<String, usize> {
+        let mut frequency_map = HashMap::new();
+        
+        for record in &self.records {
+            if let Some(value) = record.get(column_name) {
+                *frequency_map.entry(value.clone()).or_insert(0) += 1;
+            }
+        }
+        
+        frequency_map
     }
 
-    pub fn extract_column(&self, data: &[Vec<String>], column_index: usize) -> Vec<String> {
-        data.iter()
-            .filter_map(|record| record.get(column_index).cloned())
+    pub fn filter_records<F>(&self, predicate: F) -> Vec<HashMap<String, String>>
+    where
+        F: Fn(&HashMap<String, String>) -> bool,
+    {
+        self.records.iter()
+            .filter(|record| predicate(record))
+            .cloned()
             .collect()
+    }
+
+    pub fn get_record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn get_column_names(&self) -> Vec<String> {
+        if let Some(first_record) = self.records.first() {
+            first_record.keys().cloned().collect()
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -60,166 +103,34 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_process_csv() {
+    fn test_data_processor() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "Alice,30,New York").unwrap();
-        writeln!(temp_file, "Bob,25,London").unwrap();
-
-        let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path()).unwrap();
-
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["Alice", "30", "New York"]);
-        assert_eq!(result[1], vec!["Bob", "25", "London"]);
-    }
-
-    #[test]
-    fn test_validate_record() {
-        let processor = DataProcessor::new(',', false);
-        let valid_record = vec!["data".to_string(), "value".to_string()];
-        let invalid_record = vec!["".to_string(), "value".to_string()];
-
-        assert!(processor.validate_record(&valid_record));
-        assert!(!processor.validate_record(&invalid_record));
-    }
-
-    #[test]
-    fn test_extract_column() {
-        let processor = DataProcessor::new(',', false);
-        let data = vec![
-            vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            vec!["d".to_string(), "e".to_string(), "f".to_string()],
-        ];
-
-        let column = processor.extract_column(&data, 1);
-        assert_eq!(column, vec!["b".to_string(), "e".to_string()]);
-    }
-}
-use std::collections::HashMap;
-
-pub struct DataProcessor {
-    cache: HashMap<String, Vec<f64>>,
-    validation_rules: Vec<ValidationRule>,
-}
-
-pub struct ValidationRule {
-    field_name: String,
-    min_value: f64,
-    max_value: f64,
-    required: bool,
-}
-
-impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor {
-            cache: HashMap::new(),
-            validation_rules: Vec::new(),
-        }
-    }
-
-    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
-        self.validation_rules.push(rule);
-    }
-
-    pub fn process_dataset(&mut self, dataset_name: &str, data: Vec<f64>) -> Result<Vec<f64>, String> {
-        if data.is_empty() {
-            return Err("Dataset cannot be empty".to_string());
-        }
-
-        for rule in &self.validation_rules {
-            if rule.required && data.iter().any(|&x| x.is_nan()) {
-                return Err(format!("Field {} contains invalid values", rule.field_name));
-            }
-
-            if let Some(&value) = data.iter().find(|&&x| x < rule.min_value || x > rule.max_value) {
-                return Err(format!("Value {} out of range for field {}", value, rule.field_name));
-            }
-        }
-
-        let processed_data: Vec<f64> = data
-            .iter()
-            .map(|&x| {
-                if x.is_nan() {
-                    0.0
-                } else {
-                    x * 1.5
-                }
-            })
-            .collect();
-
-        self.cache.insert(dataset_name.to_string(), processed_data.clone());
-        Ok(processed_data)
-    }
-
-    pub fn get_cached_data(&self, dataset_name: &str) -> Option<&Vec<f64>> {
-        self.cache.get(dataset_name)
-    }
-
-    pub fn calculate_statistics(&self, dataset_name: &str) -> Option<DatasetStatistics> {
-        self.cache.get(dataset_name).map(|data| {
-            let sum: f64 = data.iter().sum();
-            let count = data.len() as f64;
-            let mean = sum / count;
-            
-            let variance: f64 = data.iter()
-                .map(|&x| (x - mean).powi(2))
-                .sum::<f64>() / count;
-            
-            DatasetStatistics {
-                mean,
-                variance,
-                min: *data.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
-                max: *data.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap(),
-                count: data.len(),
-            }
-        })
-    }
-}
-
-pub struct DatasetStatistics {
-    pub mean: f64,
-    pub variance: f64,
-    pub min: f64,
-    pub max: f64,
-    pub count: usize,
-}
-
-impl ValidationRule {
-    pub fn new(field_name: &str, min_value: f64, max_value: f64, required: bool) -> Self {
-        ValidationRule {
-            field_name: field_name.to_string(),
-            min_value,
-            max_value,
-            required,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_data_processing() {
+        writeln!(temp_file, "name,age,score").unwrap();
+        writeln!(temp_file, "Alice,25,85.5").unwrap();
+        writeln!(temp_file, "Bob,30,92.0").unwrap();
+        writeln!(temp_file, "Charlie,25,78.5").unwrap();
+        
+        let file_path = temp_file.path().to_str().unwrap();
+        
         let mut processor = DataProcessor::new();
-        processor.add_validation_rule(ValidationRule::new("temperature", -50.0, 100.0, true));
-        
-        let data = vec![20.5, 25.0, 30.2, 18.7];
-        let result = processor.process_dataset("weather_data", data);
-        
+        let result = processor.load_csv(file_path);
         assert!(result.is_ok());
-        assert_eq!(processor.get_cached_data("weather_data").unwrap().len(), 4);
-    }
-
-    #[test]
-    fn test_validation_failure() {
-        let mut processor = DataProcessor::new();
-        processor.add_validation_rule(ValidationRule::new("pressure", 900.0, 1100.0, true));
         
-        let invalid_data = vec![850.0, 950.0, 1200.0];
-        let result = processor.process_dataset("pressure_data", invalid_data);
+        assert_eq!(processor.get_record_count(), 3);
         
-        assert!(result.is_err());
+        let avg_age = processor.calculate_average("age");
+        assert_eq!(avg_age, Some(26.666666666666668));
+        
+        let age_frequency = processor.count_unique_values("age");
+        assert_eq!(age_frequency.get("25"), Some(&2));
+        assert_eq!(age_frequency.get("30"), Some(&1));
+        
+        let filtered = processor.filter_records(|record| {
+            record.get("age").map_or(false, |age| age == "25")
+        });
+        assert_eq!(filtered.len(), 2);
+        
+        let columns = processor.get_column_names();
+        assert_eq!(columns, vec!["name", "age", "score"]);
     }
 }
