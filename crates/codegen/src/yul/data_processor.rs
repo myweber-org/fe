@@ -1,257 +1,102 @@
 
 use std::collections::HashMap;
-use std::error::Error;
-use std::fmt;
-
-#[derive(Debug, Clone)]
-pub struct DataRecord {
-    pub id: u32,
-    pub name: String,
-    pub value: f64,
-    pub category: String,
-}
-
-#[derive(Debug)]
-pub enum ProcessingError {
-    InvalidData(String),
-    TransformationFailed(String),
-    ValidationError(String),
-}
-
-impl fmt::Display for ProcessingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProcessingError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
-            ProcessingError::TransformationFailed(msg) => write!(f, "Transformation failed: {}", msg),
-            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
-        }
-    }
-}
-
-impl Error for ProcessingError {}
 
 pub struct DataProcessor {
-    records: Vec<DataRecord>,
-    category_stats: HashMap<String, CategoryStatistics>,
-}
-
-#[derive(Debug, Clone)]
-pub struct CategoryStatistics {
-    pub count: usize,
-    pub total_value: f64,
-    pub average_value: f64,
+    validators: HashMap<String, Box<dyn Fn(&str) -> bool>>,
+    transformers: HashMap<String, Box<dyn Fn(String) -> String>>,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
-        DataProcessor {
-            records: Vec::new(),
-            category_stats: HashMap::new(),
+        let mut processor = DataProcessor {
+            validators: HashMap::new(),
+            transformers: HashMap::new(),
+        };
+        
+        processor.register_default_validators();
+        processor.register_default_transformers();
+        
+        processor
+    }
+    
+    fn register_default_validators(&mut self) {
+        self.validators.insert(
+            "email".to_string(),
+            Box::new(|input: &str| {
+                input.contains('@') && input.contains('.')
+            })
+        );
+        
+        self.validators.insert(
+            "numeric".to_string(),
+            Box::new(|input: &str| {
+                input.chars().all(|c| c.is_ascii_digit())
+            })
+        );
+    }
+    
+    fn register_default_transformers(&mut self) {
+        self.transformers.insert(
+            "uppercase".to_string(),
+            Box::new(|input: String| {
+                input.to_uppercase()
+            })
+        );
+        
+        self.transformers.insert(
+            "trim".to_string(),
+            Box::new(|input: String| {
+                input.trim().to_string()
+            })
+        );
+    }
+    
+    pub fn validate(&self, validator_name: &str, input: &str) -> bool {
+        match self.validators.get(validator_name) {
+            Some(validator) => validator(input),
+            None => false,
         }
     }
-
-    pub fn add_record(&mut self, record: DataRecord) -> Result<(), ProcessingError> {
-        self.validate_record(&record)?;
-        self.records.push(record.clone());
-        self.update_category_stats(&record);
-        Ok(())
-    }
-
-    pub fn process_records(&mut self) -> Result<(), ProcessingError> {
-        if self.records.is_empty() {
-            return Err(ProcessingError::InvalidData("No records to process".to_string()));
-        }
-
-        self.calculate_category_statistics();
-        self.normalize_values()?;
-        Ok(())
-    }
-
-    pub fn get_category_statistics(&self, category: &str) -> Option<&CategoryStatistics> {
-        self.category_stats.get(category)
-    }
-
-    pub fn get_all_statistics(&self) -> &HashMap<String, CategoryStatistics> {
-        &self.category_stats
-    }
-
-    pub fn filter_by_threshold(&self, threshold: f64) -> Vec<&DataRecord> {
-        self.records
-            .iter()
-            .filter(|record| record.value >= threshold)
-            .collect()
-    }
-
-    fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
-        if record.name.is_empty() {
-            return Err(ProcessingError::ValidationError(
-                "Record name cannot be empty".to_string(),
-            ));
-        }
-
-        if record.value < 0.0 {
-            return Err(ProcessingError::ValidationError(
-                "Record value cannot be negative".to_string(),
-            ));
-        }
-
-        if record.category.is_empty() {
-            return Err(ProcessingError::ValidationError(
-                "Record category cannot be empty".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-
-    fn update_category_stats(&mut self, record: &DataRecord) {
-        let stats = self.category_stats
-            .entry(record.category.clone())
-            .or_insert(CategoryStatistics {
-                count: 0,
-                total_value: 0.0,
-                average_value: 0.0,
-            });
-
-        stats.count += 1;
-        stats.total_value += record.value;
-    }
-
-    fn calculate_category_statistics(&mut self) {
-        for (_, stats) in self.category_stats.iter_mut() {
-            if stats.count > 0 {
-                stats.average_value = stats.total_value / stats.count as f64;
-            }
+    
+    pub fn transform(&self, transformer_name: &str, input: String) -> String {
+        match self.transformers.get(transformer_name) {
+            Some(transformer) => transformer(input),
+            None => input,
         }
     }
-
-    fn normalize_values(&mut self) -> Result<(), ProcessingError> {
-        if self.records.is_empty() {
-            return Ok(());
+    
+    pub fn process_data(&self, input: &str) -> Option<String> {
+        if self.validate("email", input) {
+            let trimmed = self.transform("trim", input.to_string());
+            Some(self.transform("uppercase", trimmed))
+        } else {
+            None
         }
-
-        let max_value = self.records
-            .iter()
-            .map(|r| r.value)
-            .fold(f64::MIN, |a, b| a.max(b));
-
-        if max_value <= 0.0 {
-            return Err(ProcessingError::TransformationFailed(
-                "Cannot normalize with non-positive maximum value".to_string(),
-            ));
-        }
-
-        for record in &mut self.records {
-            record.value = record.value / max_value;
-        }
-
-        Ok(())
-    }
-}
-
-impl Default for DataProcessor {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    
     #[test]
-    fn test_add_valid_record() {
-        let mut processor = DataProcessor::new();
-        let record = DataRecord {
-            id: 1,
-            name: "Test Record".to_string(),
-            value: 100.0,
-            category: "A".to_string(),
-        };
-
-        assert!(processor.add_record(record).is_ok());
+    fn test_email_validation() {
+        let processor = DataProcessor::new();
+        assert!(processor.validate("email", "test@example.com"));
+        assert!(!processor.validate("email", "invalid-email"));
     }
-
+    
     #[test]
-    fn test_add_invalid_record() {
-        let mut processor = DataProcessor::new();
-        let record = DataRecord {
-            id: 1,
-            name: "".to_string(),
-            value: 100.0,
-            category: "A".to_string(),
-        };
-
-        assert!(processor.add_record(record).is_err());
+    fn test_numeric_validation() {
+        let processor = DataProcessor::new();
+        assert!(processor.validate("numeric", "12345"));
+        assert!(!processor.validate("numeric", "123abc"));
     }
-
+    
     #[test]
-    fn test_process_records() {
-        let mut processor = DataProcessor::new();
-        
-        let records = vec![
-            DataRecord {
-                id: 1,
-                name: "Record 1".to_string(),
-                value: 50.0,
-                category: "A".to_string(),
-            },
-            DataRecord {
-                id: 2,
-                name: "Record 2".to_string(),
-                value: 150.0,
-                category: "A".to_string(),
-            },
-            DataRecord {
-                id: 3,
-                name: "Record 3".to_string(),
-                value: 75.0,
-                category: "B".to_string(),
-            },
-        ];
-
-        for record in records {
-            processor.add_record(record).unwrap();
-        }
-
-        assert!(processor.process_records().is_ok());
-        
-        let stats_a = processor.get_category_statistics("A").unwrap();
-        assert_eq!(stats_a.count, 2);
-        assert_eq!(stats_a.total_value, 200.0);
-        assert_eq!(stats_a.average_value, 100.0);
-    }
-
-    #[test]
-    fn test_filter_by_threshold() {
-        let mut processor = DataProcessor::new();
-        
-        let records = vec![
-            DataRecord {
-                id: 1,
-                name: "Record 1".to_string(),
-                value: 30.0,
-                category: "A".to_string(),
-            },
-            DataRecord {
-                id: 2,
-                name: "Record 2".to_string(),
-                value: 70.0,
-                category: "A".to_string(),
-            },
-            DataRecord {
-                id: 3,
-                name: "Record 3".to_string(),
-                value: 90.0,
-                category: "B".to_string(),
-            },
-        ];
-
-        for record in records {
-            processor.add_record(record).unwrap();
-        }
-
-        let filtered = processor.filter_by_threshold(50.0);
-        assert_eq!(filtered.len(), 2);
+    fn test_data_processing() {
+        let processor = DataProcessor::new();
+        let result = processor.process_data("  user@domain.com  ");
+        assert_eq!(result, Some("USER@DOMAIN.COM".to_string()));
     }
 }
