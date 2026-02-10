@@ -195,4 +195,102 @@ mod tests {
         let parsed: Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed.as_array().unwrap().len(), 3);
     }
+}use serde_json::{Map, Value};
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
+
+    for &file_path in file_paths {
+        if !Path::new(file_path).exists() {
+            eprintln!("Warning: File {} not found, skipping.", file_path);
+            continue;
+        }
+
+        let content = fs::read_to_string(file_path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                if merged_map.contains_key(&key) {
+                    eprintln!("Warning: Key '{}' already exists, overwriting.", key);
+                }
+                merged_map.insert(key, value);
+            }
+        } else {
+            return Err("Root of JSON file is not an object".into());
+        }
+    }
+
+    Ok(Value::Object(merged_map))
+}
+
+pub fn merge_json_with_strategy(
+    file_paths: &[&str],
+    strategy: MergeStrategy,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut accumulator: HashMap<String, Vec<Value>> = HashMap::new();
+
+    for &file_path in file_paths {
+        if !Path::new(file_path).exists() {
+            eprintln!("Warning: File {} not found, skipping.", file_path);
+            continue;
+        }
+
+        let content = fs::read_to_string(file_path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                accumulator.entry(key).or_default().push(value);
+            }
+        } else {
+            return Err("Root of JSON file is not an object".into());
+        }
+    }
+
+    let merged_map = match strategy {
+        MergeStrategy::Overwrite => {
+            let mut map = Map::new();
+            for (key, values) in accumulator {
+                if let Some(last) = values.last() {
+                    map.insert(key, last.clone());
+                }
+            }
+            map
+        }
+        MergeStrategy::CombineArrays => {
+            let mut map = Map::new();
+            for (key, values) in accumulator {
+                map.insert(key, Value::Array(values));
+            }
+            map
+        }
+        MergeStrategy::MergeObjects => {
+            let mut map = Map::new();
+            for (key, values) in accumulator {
+                let mut combined = Map::new();
+                for value in values {
+                    if let Value::Object(obj) = value {
+                        for (sub_key, sub_value) in obj {
+                            combined.insert(sub_key, sub_value);
+                        }
+                    }
+                }
+                map.insert(key, Value::Object(combined));
+            }
+            map
+        }
+    };
+
+    Ok(Value::Object(merged_map))
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MergeStrategy {
+    Overwrite,
+    CombineArrays,
+    MergeObjects,
 }
