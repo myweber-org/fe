@@ -259,4 +259,117 @@ impl AppConfig {
         let protocol = if self.server.enable_ssl { "https" } else { "http" };
         format!("{}://{}:{}", protocol, self.server.address, self.server.port)
     }
+}use std::collections::HashMap;
+use std::fs;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub server: ServerConfig,
+    pub database: DatabaseConfig,
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DatabaseConfig {
+    pub url: String,
+    pub max_connections: u32,
+    pub pool_timeout_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    pub level: String,
+    pub file_path: Option<String>,
+    pub max_file_size_mb: u64,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        AppConfig {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 8080,
+                timeout_seconds: 30,
+            },
+            database: DatabaseConfig {
+                url: "postgresql://localhost:5432/mydb".to_string(),
+                max_connections: 10,
+                pool_timeout_seconds: 10,
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                file_path: None,
+                max_file_size_mb: 100,
+            },
+        }
+    }
+}
+
+pub fn load_config(path: &str) -> Result<AppConfig, Box<dyn std::error::Error>> {
+    let content = fs::read_to_string(path)?;
+    let config: AppConfig = toml::from_str(&content)?;
+    validate_config(&config)?;
+    Ok(config)
+}
+
+pub fn load_config_with_defaults(path: &str) -> Result<AppConfig, Box<dyn std::error::Error>> {
+    match load_config(path) {
+        Ok(config) => Ok(config),
+        Err(_) => {
+            println!("Using default configuration");
+            Ok(AppConfig::default())
+        }
+    }
+}
+
+fn validate_config(config: &AppConfig) -> Result<(), String> {
+    if config.server.port == 0 {
+        return Err("Server port cannot be zero".to_string());
+    }
+    
+    if config.database.max_connections == 0 {
+        return Err("Database max connections cannot be zero".to_string());
+    }
+    
+    if !["error", "warn", "info", "debug", "trace"].contains(&config.logging.level.as_str()) {
+        return Err(format!("Invalid log level: {}", config.logging.level));
+    }
+    
+    Ok(())
+}
+
+pub fn generate_default_config(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let default_config = AppConfig::default();
+    let toml_content = toml::to_string_pretty(&default_config)?;
+    fs::write(path, toml_content)?;
+    Ok(())
+}
+
+pub fn merge_configs(base: AppConfig, overrides: HashMap<String, String>) -> AppConfig {
+    let mut config = base;
+    
+    for (key, value) in overrides {
+        match key.as_str() {
+            "server.host" => config.server.host = value,
+            "server.port" => config.server.port = value.parse().unwrap_or(config.server.port),
+            "server.timeout_seconds" => config.server.timeout_seconds = value.parse().unwrap_or(config.server.timeout_seconds),
+            "database.url" => config.database.url = value,
+            "database.max_connections" => config.database.max_connections = value.parse().unwrap_or(config.database.max_connections),
+            "database.pool_timeout_seconds" => config.database.pool_timeout_seconds = value.parse().unwrap_or(config.database.pool_timeout_seconds),
+            "logging.level" => config.logging.level = value,
+            "logging.file_path" => config.logging.file_path = Some(value),
+            "logging.max_file_size_mb" => config.logging.max_file_size_mb = value.parse().unwrap_or(config.logging.max_file_size_mb),
+            _ => println!("Unknown config key: {}", key),
+        }
+    }
+    
+    config
 }
