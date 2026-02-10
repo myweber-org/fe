@@ -72,3 +72,62 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Data cleaning completed successfully");
     Ok(())
 }
+use std::collections::HashSet;
+
+pub struct DataCleaner {
+    pub items: Vec<String>,
+}
+
+impl DataCleaner {
+    pub fn new() -> Self {
+        DataCleaner { items: Vec::new() }
+    }
+
+    pub fn add_item(&mut self, item: &str) {
+        self.items.push(item.to_string());
+    }
+
+    pub fn remove_duplicates(&mut self) {
+        let mut seen = HashSet::new();
+        self.items.retain(|item| seen.insert(item.clone()));
+    }
+
+    pub fn normalize_strings(&mut self) {
+        for item in &mut self.items {
+            *item = item.trim().to_lowercase();
+        }
+    }
+
+    pub fn clean(&mut self) {
+        self.normalize_strings();
+        self.remove_duplicates();
+        self.items.sort();
+    }
+
+    pub fn get_results(&self) -> &Vec<String> {
+        &self.items
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_cleaner() {
+        let mut cleaner = DataCleaner::new();
+        cleaner.add_item("  Apple ");
+        cleaner.add_item("banana");
+        cleaner.add_item("  apple ");
+        cleaner.add_item("Banana");
+        cleaner.add_item("cherry");
+
+        cleaner.clean();
+
+        let results = cleaner.get_results();
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], "apple");
+        assert_eq!(results[1], "banana");
+        assert_eq!(results[2], "cherry");
+    }
+}
