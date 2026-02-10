@@ -1,159 +1,170 @@
 
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, Key, Nonce,
+    Aes256Gcm, Key, Nonce
 };
-use std::fs;
-use std::io::{self, Write};
+use chacha20poly1305::{ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce};
+use rand::RngCore;
 
-const NONCE_SIZE: usize = 12;
-
-pub fn encrypt_file(input_path: &str, output_path: &str) -> io::Result<()> {
-    let key = Key::<Aes256Gcm>::generate(&mut OsRng);
-    let cipher = Aes256Gcm::new(&key);
-    let nonce = Nonce::from_slice(&[0u8; NONCE_SIZE]);
-
-    let plaintext = fs::read(input_path)?;
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_ref())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    let mut output = fs::File::create(output_path)?;
-    output.write_all(&key)?;
-    output.write_all(nonce)?;
-    output.write_all(&ciphertext)?;
-
-    Ok(())
+pub enum CipherAlgorithm {
+    Aes256Gcm,
+    ChaCha20Poly1305,
 }
 
-pub fn decrypt_file(input_path: &str, output_path: &str) -> io::Result<()> {
-    let data = fs::read(input_path)?;
-    if data.len() < 32 + NONCE_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "File too short",
-        ));
+pub struct EncryptionResult {
+    pub ciphertext: Vec<u8>,
+    pub nonce: Vec<u8>,
+    pub algorithm: CipherAlgorithm,
+}
+
+pub fn encrypt_data(
+    plaintext: &[u8],
+    algorithm: CipherAlgorithm,
+    key: Option<&[u8]>,
+) -> Result<EncryptionResult, Box<dyn std::error::Error>> {
+    let mut rng = OsRng;
+    
+    match algorithm {
+        CipherAlgorithm::Aes256Gcm => {
+            let key = if let Some(k) = key {
+                if k.len() != 32 {
+                    return Err("AES-256-GCM requires 32-byte key".into());
+                }
+                Key::<Aes256Gcm>::from_slice(k)
+            } else {
+                let mut random_key = [0u8; 32];
+                rng.fill_bytes(&mut random_key);
+                Key::<Aes256Gcm>::from_slice(&random_key)
+            };
+            
+            let cipher = Aes256Gcm::new(key);
+            let mut nonce_bytes = [0u8; 12];
+            rng.fill_bytes(&mut nonce_bytes);
+            let nonce = Nonce::from_slice(&nonce_bytes);
+            
+            let ciphertext = cipher
+                .encrypt(nonce, plaintext)
+                .map_err(|e| format!("Encryption failed: {}", e))?;
+            
+            Ok(EncryptionResult {
+                ciphertext,
+                nonce: nonce_bytes.to_vec(),
+                algorithm: CipherAlgorithm::Aes256Gcm,
+            })
+        }
+        
+        CipherAlgorithm::ChaCha20Poly1305 => {
+            let key = if let Some(k) = key {
+                if k.len() != 32 {
+                    return Err("ChaCha20Poly1305 requires 32-byte key".into());
+                }
+                ChaChaKey::from_slice(k)
+            } else {
+                let mut random_key = [0u8; 32];
+                rng.fill_bytes(&mut random_key);
+                ChaChaKey::from_slice(&random_key)
+            };
+            
+            let cipher = ChaCha20Poly1305::new(key);
+            let mut nonce_bytes = [0u8; 12];
+            rng.fill_bytes(&mut nonce_bytes);
+            let nonce = ChaChaNonce::from_slice(&nonce_bytes);
+            
+            let ciphertext = cipher
+                .encrypt(nonce, plaintext)
+                .map_err(|e| format!("Encryption failed: {}", e))?;
+            
+            Ok(EncryptionResult {
+                ciphertext,
+                nonce: nonce_bytes.to_vec(),
+                algorithm: CipherAlgorithm::ChaCha20Poly1305,
+            })
+        }
     }
+}
 
-    let key = Key::<Aes256Gcm>::from_slice(&data[..32]);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&data[32..32 + NONCE_SIZE]);
-    let ciphertext = &data[32 + NONCE_SIZE..];
-
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    fs::write(output_path, plaintext)?;
-    Ok(())
+pub fn decrypt_data(
+    encrypted: &EncryptionResult,
+    key: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    match encrypted.algorithm {
+        CipherAlgorithm::Aes256Gcm => {
+            if key.len() != 32 {
+                return Err("AES-256-GCM requires 32-byte key".into());
+            }
+            
+            let cipher_key = Key::<Aes256Gcm>::from_slice(key);
+            let cipher = Aes256Gcm::new(cipher_key);
+            let nonce = Nonce::from_slice(&encrypted.nonce);
+            
+            cipher
+                .decrypt(nonce, encrypted.ciphertext.as_ref())
+                .map_err(|e| format!("Decryption failed: {}", e).into())
+        }
+        
+        CipherAlgorithm::ChaCha20Poly1305 => {
+            if key.len() != 32 {
+                return Err("ChaCha20Poly1305 requires 32-byte key".into());
+            }
+            
+            let cipher_key = ChaChaKey::from_slice(key);
+            let cipher = ChaCha20Poly1305::new(cipher_key);
+            let nonce = ChaChaNonce::from_slice(&encrypted.nonce);
+            
+            cipher
+                .decrypt(nonce, encrypted.ciphertext.as_ref())
+                .map_err(|e| format!("Decryption failed: {}", e).into())
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
-
+    
     #[test]
-    fn test_encryption_roundtrip() {
-        let plaintext = b"Secret data for encryption test";
-        let input_file = NamedTempFile::new().unwrap();
-        let encrypted_file = NamedTempFile::new().unwrap();
-        let decrypted_file = NamedTempFile::new().unwrap();
-
-        fs::write(input_file.path(), plaintext).unwrap();
-        encrypt_file(
-            input_file.path().to_str().unwrap(),
-            encrypted_file.path().to_str().unwrap(),
-        )
-        .unwrap();
-        decrypt_file(
-            encrypted_file.path().to_str().unwrap(),
-            decrypted_file.path().to_str().unwrap(),
-        )
-        .unwrap();
-
-        let result = fs::read(decrypted_file.path()).unwrap();
-        assert_eq!(plaintext.to_vec(), result);
+    fn test_aes_encryption_decryption() {
+        let plaintext = b"Secret message for AES";
+        let key = b"32-byte-key-for-aes-256-gcm-test!!";
+        
+        let encrypted = encrypt_data(
+            plaintext,
+            CipherAlgorithm::Aes256Gcm,
+            Some(key),
+        ).unwrap();
+        
+        let decrypted = decrypt_data(&encrypted, key).unwrap();
+        
+        assert_eq!(plaintext.to_vec(), decrypted);
     }
-}
-use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, Key, Nonce,
-};
-use std::fs;
-use std::io::{self, Read, Write};
-
-const NONCE_SIZE: usize = 12;
-
-pub fn encrypt_file(input_path: &str, output_path: &str) -> io::Result<()> {
-    let mut file = fs::File::open(input_path)?;
-    let mut plaintext = Vec::new();
-    file.read_to_end(&mut plaintext)?;
-
-    let key = Aes256Gcm::generate_key(&mut OsRng);
-    let cipher = Aes256Gcm::new(&key);
-    let nonce = Nonce::from_slice(&[0u8; NONCE_SIZE]);
-
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_ref())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    let mut output_file = fs::File::create(output_path)?;
-    output_file.write_all(&key)?;
-    output_file.write_all(&ciphertext)?;
-
-    Ok(())
-}
-
-pub fn decrypt_file(input_path: &str, output_path: &str) -> io::Result<()> {
-    let mut file = fs::File::open(input_path)?;
-    let mut content = Vec::new();
-    file.read_to_end(&mut content)?;
-
-    if content.len() < 32 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "File too short",
-        ));
-    }
-
-    let (key_bytes, ciphertext) = content.split_at(32);
-    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&[0u8; NONCE_SIZE]);
-
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    let mut output_file = fs::File::create(output_path)?;
-    output_file.write_all(&plaintext)?;
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
+    
     #[test]
-    fn test_encryption_roundtrip() {
-        let test_data = b"Hello, secure world!";
-        let input_path = "test_input.txt";
-        let encrypted_path = "test_encrypted.bin";
-        let decrypted_path = "test_decrypted.txt";
-
-        fs::write(input_path, test_data).unwrap();
-
-        encrypt_file(input_path, encrypted_path).unwrap();
-        decrypt_file(encrypted_path, decrypted_path).unwrap();
-
-        let decrypted_data = fs::read(decrypted_path).unwrap();
-        assert_eq!(decrypted_data, test_data);
-
-        fs::remove_file(input_path).unwrap();
-        fs::remove_file(encrypted_path).unwrap();
-        fs::remove_file(decrypted_path).unwrap();
+    fn test_chacha_encryption_decryption() {
+        let plaintext = b"Secret message for ChaCha";
+        let key = b"32-byte-key-for-chacha-test-123!!";
+        
+        let encrypted = encrypt_data(
+            plaintext,
+            CipherAlgorithm::ChaCha20Poly1305,
+            Some(key),
+        ).unwrap();
+        
+        let decrypted = decrypt_data(&encrypted, key).unwrap();
+        
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+    
+    #[test]
+    fn test_key_generation() {
+        let plaintext = b"Message with generated key";
+        
+        let encrypted = encrypt_data(
+            plaintext,
+            CipherAlgorithm::Aes256Gcm,
+            None,
+        ).unwrap();
+        
+        assert_eq!(encrypted.nonce.len(), 12);
+        assert!(!encrypted.ciphertext.is_empty());
     }
 }
