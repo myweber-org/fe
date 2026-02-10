@@ -737,3 +737,144 @@ mod tests {
         assert!((std_dev - 8.164965).abs() < 0.0001);
     }
 }
+use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Record {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub category: String,
+}
+
+impl Record {
+    pub fn is_valid(&self) -> bool {
+        !self.name.is_empty() && self.value >= 0.0 && !self.category.is_empty()
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<Record>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+        
+        let mut count = 0;
+        for result in rdr.deserialize() {
+            let record: Record = result?;
+            if record.is_valid() {
+                self.records.push(record);
+                count += 1;
+            }
+        }
+        
+        Ok(count)
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<Record> {
+        self.records
+            .iter()
+            .filter(|r| r.category == category)
+            .cloned()
+            .collect()
+    }
+
+    pub fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+        
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    pub fn save_to_csv<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn Error>> {
+        let file = File::create(path)?;
+        let mut wtr = WriterBuilder::new().has_headers(true).from_writer(file);
+        
+        for record in &self.records {
+            wtr.serialize(record)?;
+        }
+        
+        wtr.flush()?;
+        Ok(())
+    }
+
+    pub fn get_statistics(&self) -> Statistics {
+        let count = self.records.len();
+        let avg = self.calculate_average().unwrap_or(0.0);
+        let max = self.records.iter().map(|r| r.value).fold(0.0, f64::max);
+        let min = self.records.iter().map(|r| r.value).fold(f64::INFINITY, f64::min);
+        
+        Statistics {
+            count,
+            average: avg,
+            maximum: max,
+            minimum: min,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Statistics {
+    pub count: usize,
+    pub average: f64,
+    pub maximum: f64,
+    pub minimum: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = Record {
+            id: 1,
+            name: "Test".to_string(),
+            value: 10.5,
+            category: "A".to_string(),
+        };
+        assert!(valid_record.is_valid());
+
+        let invalid_record = Record {
+            id: 2,
+            name: "".to_string(),
+            value: -5.0,
+            category: "B".to_string(),
+        };
+        assert!(!invalid_record.is_valid());
+    }
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        let test_data = "id,name,value,category\n1,Item1,10.5,A\n2,Item2,20.3,B\n3,Item3,15.7,A";
+        
+        let temp_file = NamedTempFile::new().unwrap();
+        std::fs::write(temp_file.path(), test_data).unwrap();
+        
+        let loaded = processor.load_from_csv(temp_file.path()).unwrap();
+        assert_eq!(loaded, 3);
+        
+        let category_a = processor.filter_by_category("A");
+        assert_eq!(category_a.len(), 2);
+        
+        let avg = processor.calculate_average().unwrap();
+        assert!((avg - 15.5).abs() < 0.1);
+    }
+}
