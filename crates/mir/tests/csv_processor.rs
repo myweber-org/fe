@@ -1,98 +1,78 @@
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::io::{BufRead, BufReader};
 
 pub struct CsvProcessor {
-    delimiter: char,
-    has_headers: bool,
+    headers: Vec<String>,
+    records: Vec<Vec<String>>,
 }
 
 impl CsvProcessor {
-    pub fn new(delimiter: char, has_headers: bool) -> Self {
-        CsvProcessor {
-            delimiter,
-            has_headers,
-        }
-    }
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
 
-    pub fn clean_file<P: AsRef<Path>>(
-        &self,
-        input_path: P,
-        output_path: P,
-    ) -> Result<usize, Box<dyn Error>> {
-        let input_file = File::open(input_path)?;
-        let reader = BufReader::new(input_file);
-        let mut output_file = File::create(output_path)?;
+        let headers = match lines.next() {
+            Some(Ok(line)) => line.split(',').map(|s| s.trim().to_string()).collect(),
+            Some(Err(e)) => return Err(Box::new(e)),
+            None => return Err("Empty CSV file".into()),
+        };
 
-        let mut cleaned_count = 0;
-        let mut lines = reader.lines().enumerate();
-
-        if self.has_headers {
-            if let Some((_, header_result)) = lines.next() {
-                let header = header_result?;
-                writeln!(output_file, "{}", header)?;
-            }
-        }
-
-        for (line_num, line_result) in lines {
+        let mut records = Vec::new();
+        for line_result in lines {
             let line = line_result?;
-            let record: Vec<&str> = line.split(self.delimiter).collect();
-
-            if self.is_valid_record(&record) {
-                writeln!(output_file, "{}", line)?;
-            } else {
-                eprintln!("Removing invalid record at line {}", line_num + 1);
-                cleaned_count += 1;
+            let fields: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
+            if fields.len() == headers.len() {
+                records.push(fields);
             }
         }
 
-        Ok(cleaned_count)
+        Ok(CsvProcessor { headers, records })
     }
 
-    fn is_valid_record(&self, record: &[&str]) -> bool {
-        if record.is_empty() {
-            return false;
-        }
+    pub fn filter_by_column(&self, column_name: &str, predicate: impl Fn(&str) -> bool) -> Vec<Vec<String>> {
+        let column_index = match self.headers.iter().position(|h| h == column_name) {
+            Some(idx) => idx,
+            None => return Vec::new(),
+        };
 
-        for field in record {
-            let trimmed = field.trim();
-            if trimmed.is_empty() || trimmed.contains('\0') {
-                return false;
-            }
-        }
+        self.records
+            .iter()
+            .filter(|record| predicate(&record[column_index]))
+            .cloned()
+            .collect()
+    }
 
-        true
+    pub fn get_headers(&self) -> &[String] {
+        &self.headers
+    }
+
+    pub fn record_count(&self) -> usize {
+        self.records.len()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
+    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_csv_cleaning() {
-        let input_data = "name,age,city\nJohn,25,New York\n,30,London\nAlice,,Paris\nBob,35,\0City";
-        let mut input_file = NamedTempFile::new().unwrap();
-        write!(input_file, "{}", input_data).unwrap();
+    fn test_csv_processing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "Alice,30,New York").unwrap();
+        writeln!(temp_file, "Bob,25,London").unwrap();
+        writeln!(temp_file, "Charlie,35,Tokyo").unwrap();
 
-        let output_file = NamedTempFile::new().unwrap();
+        let processor = CsvProcessor::from_file(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(processor.record_count(), 3);
+        assert_eq!(processor.get_headers(), &["name", "age", "city"]);
 
-        let processor = CsvProcessor::new(',', true);
-        let cleaned = processor
-            .clean_file(input_file.path(), output_file.path())
-            .unwrap();
-
-        assert_eq!(cleaned, 3);
-
-        let mut output_content = String::new();
-        File::open(output_file.path())
-            .unwrap()
-            .read_to_string(&mut output_content)
-            .unwrap();
-
-        assert_eq!(output_content, "name,age,city\nJohn,25,New York\n");
+        let filtered = processor.filter_by_column("age", |age| age.parse::<u32>().unwrap() > 30);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0], vec!["Charlie", "35", "Tokyo"]);
     }
 }
