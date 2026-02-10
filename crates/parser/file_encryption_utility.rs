@@ -1,91 +1,192 @@
+
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
 };
-use chacha20poly1305::{ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce};
-use std::error::Error;
+use argon2::{
+    password_hash::{rand_core::OsRng as ArgonRng, PasswordHasher, SaltString},
+    Argon2,
+};
+use std::{
+    fs::{self, File},
+    io::{Read, Write},
+    path::Path,
+};
 
-#[derive(Debug)]
-pub enum EncryptionAlgorithm {
-    Aes256Gcm,
-    ChaCha20Poly1305,
-}
+const NONCE_SIZE: usize = 12;
+const SALT_SIZE: usize = 16;
 
 pub struct EncryptionResult {
-    pub ciphertext: Vec<u8>,
-    pub nonce: Vec<u8>,
+    pub encrypted_data: Vec<u8>,
+    pub nonce: [u8; NONCE_SIZE],
+    pub salt: [u8; SALT_SIZE],
 }
 
-pub fn encrypt_data(
-    plaintext: &[u8],
-    algorithm: EncryptionAlgorithm,
-) -> Result<EncryptionResult, Box<dyn Error>> {
-    match algorithm {
-        EncryptionAlgorithm::Aes256Gcm => {
-            let key = Aes256Gcm::generate_key(&mut OsRng);
-            let cipher = Aes256Gcm::new(&key);
-            let nonce = Nonce::from_slice(&[0u8; 12]);
-            let ciphertext = cipher.encrypt(nonce, plaintext)?;
-            
-            Ok(EncryptionResult {
-                ciphertext,
-                nonce: nonce.to_vec(),
-            })
-        }
-        EncryptionAlgorithm::ChaCha20Poly1305 => {
-            let key = ChaCha20Poly1305::generate_key(&mut OsRng);
-            let cipher = ChaCha20Poly1305::new(&key);
-            let nonce = ChaChaNonce::from_slice(&[0u8; 12]);
-            let ciphertext = cipher.encrypt(nonce, plaintext)?;
-            
-            Ok(EncryptionResult {
-                ciphertext,
-                nonce: nonce.to_vec(),
-            })
-        }
-    }
+pub fn derive_key(password: &str, salt: &[u8]) -> Result<Key<Aes256Gcm>, String> {
+    let salt_str = SaltString::encode_b64(salt).map_err(|e| e.to_string())?;
+    let argon2 = Argon2::default();
+    let password_hash = argon2
+        .hash_password(password.as_bytes(), &salt_str)
+        .map_err(|e| e.to_string())?;
+
+    let hash_bytes = password_hash.hash.ok_or("Hash generation failed")?;
+    let key_bytes: [u8; 32] = hash_bytes.as_bytes()[..32]
+        .try_into()
+        .map_err(|_| "Hash too short")?;
+
+    Ok(Key::<Aes256Gcm>::from_slice(&key_bytes).clone())
 }
 
-pub fn decrypt_data(
-    ciphertext: &[u8],
-    nonce: &[u8],
-    algorithm: EncryptionAlgorithm,
-) -> Result<Vec<u8>, Box<dyn Error>> {
-    match algorithm {
-        EncryptionAlgorithm::Aes256Gcm => {
-            let key = Aes256Gcm::generate_key(&mut OsRng);
-            let cipher = Aes256Gcm::new(&key);
-            let nonce = Nonce::from_slice(nonce);
-            let plaintext = cipher.decrypt(nonce, ciphertext)?;
-            Ok(plaintext)
-        }
-        EncryptionAlgorithm::ChaCha20Poly1305 => {
-            let key = ChaCha20Poly1305::generate_key(&mut OsRng);
-            let cipher = ChaCha20Poly1305::new(&key);
-            let nonce = ChaChaNonce::from_slice(nonce);
-            let plaintext = cipher.decrypt(nonce, ciphertext)?;
-            Ok(plaintext)
+pub fn encrypt_file(
+    input_path: &Path,
+    output_path: &Path,
+    password: &str,
+) -> Result<EncryptionResult, String> {
+    let mut file = File::open(input_path).map_err(|e| e.to_string())?;
+    let mut plaintext = Vec::new();
+    file.read_to_end(&mut plaintext).map_err(|e| e.to_string())?;
+
+    let mut rng = OsRng;
+    let mut nonce = [0u8; NONCE_SIZE];
+    let mut salt = [0u8; SALT_SIZE];
+    rng.fill_bytes(&mut nonce);
+    rng.fill_bytes(&mut salt);
+
+    let key = derive_key(password, &salt)?;
+    let cipher = Aes256Gcm::new(&key);
+    let nonce_obj = Nonce::from_slice(&nonce);
+
+    let encrypted_data = cipher
+        .encrypt(nonce_obj, plaintext.as_ref())
+        .map_err(|e| e.to_string())?;
+
+    let mut output_file = File::create(output_path).map_err(|e| e.to_string())?;
+    output_file
+        .write_all(&encrypted_data)
+        .map_err(|e| e.to_string())?;
+
+    Ok(EncryptionResult {
+        encrypted_data,
+        nonce,
+        salt,
+    })
+}
+
+pub fn decrypt_file(
+    input_path: &Path,
+    output_path: &Path,
+    password: &str,
+    nonce: &[u8; NONCE_SIZE],
+    salt: &[u8; SALT_SIZE],
+) -> Result<Vec<u8>, String> {
+    let mut file = File::open(input_path).map_err(|e| e.to_string())?;
+    let mut ciphertext = Vec::new();
+    file.read_to_end(&mut ciphertext).map_err(|e| e.to_string())?;
+
+    let key = derive_key(password, salt)?;
+    let cipher = Aes256Gcm::new(&key);
+    let nonce_obj = Nonce::from_slice(nonce);
+
+    let decrypted_data = cipher
+        .decrypt(nonce_obj, ciphertext.as_ref())
+        .map_err(|e| e.to_string())?;
+
+    let mut output_file = File::create(output_path).map_err(|e| e.to_string())?;
+    output_file
+        .write_all(&decrypted_data)
+        .map_err(|e| e.to_string())?;
+
+    Ok(decrypted_data)
+}
+
+pub fn encrypt_directory(
+    dir_path: &Path,
+    password: &str,
+    output_dir: &Path,
+) -> Result<Vec<EncryptionResult>, String> {
+    if !dir_path.is_dir() {
+        return Err("Provided path is not a directory".to_string());
+    }
+
+    fs::create_dir_all(output_dir).map_err(|e| e.to_string())?;
+    let mut results = Vec::new();
+
+    for entry in fs::read_dir(dir_path).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+
+        if path.is_file() {
+            let output_path = output_dir.join(path.file_name().ok_or("Invalid filename")?);
+            let result = encrypt_file(&path, &output_path, password)?;
+            results.push(result);
         }
     }
+
+    Ok(results)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_aes_encryption_decryption() {
-        let plaintext = b"Test secret message";
-        let result = encrypt_data(plaintext, EncryptionAlgorithm::Aes256Gcm).unwrap();
-        let decrypted = decrypt_data(&result.ciphertext, &result.nonce, EncryptionAlgorithm::Aes256Gcm).unwrap();
-        assert_eq!(plaintext.to_vec(), decrypted);
+    fn test_encryption_decryption() {
+        let test_data = b"Test encryption data";
+        let password = "secure_password_123";
+
+        let mut input_file = NamedTempFile::new().unwrap();
+        input_file.write_all(test_data).unwrap();
+
+        let output_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+
+        let encrypt_result = encrypt_file(
+            input_file.path(),
+            output_file.path(),
+            password,
+        )
+        .unwrap();
+
+        let decrypted_data = decrypt_file(
+            output_file.path(),
+            decrypted_file.path(),
+            password,
+            &encrypt_result.nonce,
+            &encrypt_result.salt,
+        )
+        .unwrap();
+
+        assert_eq!(decrypted_data, test_data);
     }
 
     #[test]
-    fn test_chacha_encryption_decryption() {
-        let plaintext = b"Another secret message";
-        let result = encrypt_data(plaintext, EncryptionAlgorithm::ChaCha20Poly1305).unwrap();
-        let decrypted = decrypt_data(&result.ciphertext, &result.nonce, EncryptionAlgorithm::ChaCha20Poly1305).unwrap();
-        assert_eq!(plaintext.to_vec(), decrypted);
+    fn test_wrong_password() {
+        let test_data = b"Test data";
+        let password = "correct_password";
+        let wrong_password = "wrong_password";
+
+        let mut input_file = NamedTempFile::new().unwrap();
+        input_file.write_all(test_data).unwrap();
+
+        let output_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+
+        let encrypt_result = encrypt_file(
+            input_file.path(),
+            output_file.path(),
+            password,
+        )
+        .unwrap();
+
+        let result = decrypt_file(
+            output_file.path(),
+            decrypted_file.path(),
+            wrong_password,
+            &encrypt_result.nonce,
+            &encrypt_result.salt,
+        );
+
+        assert!(result.is_err());
     }
 }
