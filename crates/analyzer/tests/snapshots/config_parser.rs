@@ -285,4 +285,64 @@ mod tests {
         let result = config.load_from_file(temp_file.path().to_str().unwrap());
         assert!(result.is_err());
     }
+}use std::fs;
+use std::collections::HashMap;
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+pub struct AppConfig {
+    pub server: ServerConfig,
+    pub database: DatabaseConfig,
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub enable_ssl: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DatabaseConfig {
+    pub url: String,
+    pub max_connections: u32,
+    pub timeout_seconds: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoggingConfig {
+    pub level: String,
+    pub file_path: Option<String>,
+    pub enable_console: bool,
+}
+
+impl AppConfig {
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = fs::read_to_string(path)?;
+        let config: AppConfig = toml::from_str(&content)?;
+        Ok(config)
+    }
+
+    pub fn to_env_vars(&self) -> HashMap<String, String> {
+        let mut vars = HashMap::new();
+        vars.insert("SERVER_HOST".to_string(), self.server.host.clone());
+        vars.insert("SERVER_PORT".to_string(), self.server.port.to_string());
+        vars.insert("DB_URL".to_string(), self.database.url.clone());
+        vars.insert("LOG_LEVEL".to_string(), self.logging.level.clone());
+        vars
+    }
+}
+
+pub fn validate_config(config: &AppConfig) -> Result<(), String> {
+    if config.server.port == 0 {
+        return Err("Server port cannot be zero".to_string());
+    }
+    if config.database.max_connections == 0 {
+        return Err("Database max connections must be positive".to_string());
+    }
+    if !["error", "warn", "info", "debug", "trace"].contains(&config.logging.level.as_str()) {
+        return Err("Invalid log level specified".to_string());
+    }
+    Ok(())
 }
