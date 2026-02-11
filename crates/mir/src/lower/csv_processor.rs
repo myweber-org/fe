@@ -1,122 +1,116 @@
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
-use csv::{ReaderBuilder, WriterBuilder};
+use std::io::{self, BufRead, BufReader};
+use std::path::Path;
 
-pub struct CsvProcessor {
-    input_path: String,
-    output_path: String,
+pub struct CsvFilter {
+    delimiter: char,
+    has_header: bool,
 }
 
-impl CsvProcessor {
-    pub fn new(input_path: &str, output_path: &str) -> Self {
-        CsvProcessor {
-            input_path: input_path.to_string(),
-            output_path: output_path.to_string(),
+impl CsvFilter {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        CsvFilter {
+            delimiter,
+            has_header,
         }
     }
 
-    pub fn filter_by_column_value(&self, column_name: &str, target_value: &str) -> Result<(), Box<dyn Error>> {
-        let input_file = File::open(&self.input_path)?;
-        let reader = BufReader::new(input_file);
-        let mut csv_reader = ReaderBuilder::new().has_headers(true).from_reader(reader);
-        
-        let output_file = File::create(&self.output_path)?;
-        let writer = BufWriter::new(output_file);
-        let mut csv_writer = WriterBuilder::new().from_writer(writer);
-        
-        let headers = csv_reader.headers()?.clone();
-        csv_writer.write_record(&headers)?;
-        
-        let column_index = headers.iter()
-            .position(|h| h == column_name)
-            .ok_or_else(|| format!("Column '{}' not found", column_name))?;
-        
-        for result in csv_reader.records() {
-            let record = result?;
-            if record.get(column_index) == Some(target_value) {
-                csv_writer.write_record(&record)?;
+    pub fn filter_rows<P: AsRef<Path>>(
+        &self,
+        file_path: P,
+        predicate: impl Fn(&[String]) -> bool,
+    ) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
+
+        if self.has_header {
+            lines.next();
+        }
+
+        let mut filtered = Vec::new();
+        for line_result in lines {
+            let line = line_result?;
+            let fields: Vec<String> = line
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if predicate(&fields) {
+                filtered.push(fields);
             }
         }
-        
-        csv_writer.flush()?;
-        Ok(())
+
+        Ok(filtered)
     }
 
-    pub fn transform_column<F>(&self, column_name: &str, transform_fn: F) -> Result<(), Box<dyn Error>>
-    where
-        F: Fn(&str) -> String,
-    {
-        let input_file = File::open(&self.input_path)?;
-        let reader = BufReader::new(input_file);
-        let mut csv_reader = ReaderBuilder::new().has_headers(true).from_reader(reader);
-        
-        let output_file = File::create(&self.output_path)?;
-        let writer = BufWriter::new(output_file);
-        let mut csv_writer = WriterBuilder::new().from_writer(writer);
-        
-        let headers = csv_reader.headers()?.clone();
-        csv_writer.write_record(&headers)?;
-        
-        let column_index = headers.iter()
-            .position(|h| h == column_name)
-            .ok_or_else(|| format!("Column '{}' not found", column_name))?;
-        
-        for result in csv_reader.records() {
-            let mut record = result?.clone();
-            if let Some(value) = record.get(column_index) {
-                let transformed = transform_fn(value);
-                record[column_index] = transformed.into();
-            }
-            csv_writer.write_record(&record)?;
-        }
-        
-        csv_writer.flush()?;
-        Ok(())
+    pub fn count_matching_rows<P: AsRef<Path>>(
+        &self,
+        file_path: P,
+        predicate: impl Fn(&[String]) -> bool,
+    ) -> Result<usize, Box<dyn Error>> {
+        let filtered = self.filter_rows(file_path, predicate)?;
+        Ok(filtered.len())
     }
+}
+
+pub fn parse_csv_line(line: &str, delimiter: char) -> Vec<String> {
+    line.split(delimiter)
+        .map(|field| field.trim().to_string())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_filter_by_column_value() {
-        let input_data = "name,age,city\nAlice,30,London\nBob,25,Paris\nCharlie,35,London";
-        let input_file = NamedTempFile::new().unwrap();
-        fs::write(input_file.path(), input_data).unwrap();
-        
-        let output_file = NamedTempFile::new().unwrap();
-        let processor = CsvProcessor::new(
-            input_file.path().to_str().unwrap(),
-            output_file.path().to_str().unwrap()
-        );
-        
-        processor.filter_by_column_value("city", "London").unwrap();
-        
-        let output = fs::read_to_string(output_file.path()).unwrap();
-        let expected = "name,age,city\nAlice,30,London\nCharlie,35,London\n";
-        assert_eq!(output, expected);
+    fn test_filter_rows() -> Result<(), Box<dyn Error>> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "name,age,city")?;
+        writeln!(temp_file, "Alice,30,London")?;
+        writeln!(temp_file, "Bob,25,Paris")?;
+        writeln!(temp_file, "Charlie,35,London")?;
+
+        let filter = CsvFilter::new(',', true);
+        let result = filter.filter_rows(temp_file.path(), |fields| {
+            fields.get(2).map(|city| city == "London").unwrap_or(false)
+        })?;
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0][0], "Alice");
+        assert_eq!(result[1][0], "Charlie");
+        Ok(())
     }
 
     #[test]
-    fn test_transform_column() {
-        let input_data = "name,score\nAlice,85\nBob,92";
-        let input_file = NamedTempFile::new().unwrap();
-        fs::write(input_file.path(), input_data).unwrap();
-        
-        let output_file = NamedTempFile::new().unwrap();
-        let processor = CsvProcessor::new(
-            input_file.path().to_str().unwrap(),
-            output_file.path().to_str().unwrap()
-        );
-        
-        processor.transform_column("score", |s| format!("Grade: {}", s)).unwrap();
-        
-        let output = fs::read_to_string(output_file.path()).unwrap();
-        let expected = "name,score\nAlice,Grade: 85\nBob,Grade: 92\n";
-        assert_eq!(output, expected);
+    fn test_count_matching_rows() -> Result<(), Box<dyn Error>> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "id,value")?;
+        writeln!(temp_file, "1,100")?;
+        writeln!(temp_file, "2,200")?;
+        writeln!(temp_file, "3,150")?;
+
+        let filter = CsvFilter::new(',', true);
+        let count = filter.count_matching_rows(temp_file.path(), |fields| {
+            fields
+                .get(1)
+                .and_then(|v| v.parse::<i32>().ok())
+                .map(|n| n > 150)
+                .unwrap_or(false)
+        })?;
+
+        assert_eq!(count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_csv_line() {
+        let line = "apple,banana,cherry";
+        let result = parse_csv_line(line, ',');
+        assert_eq!(result, vec!["apple", "banana", "cherry"]);
     }
 }
