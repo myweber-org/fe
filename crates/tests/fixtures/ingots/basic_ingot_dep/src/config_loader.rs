@@ -165,3 +165,86 @@ mod tests {
         assert_eq!(config.server.port, 8080);
     }
 }
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+
+pub struct Config {
+    pub database_url: String,
+    pub api_key: String,
+    pub debug_mode: bool,
+    pub port: u16,
+}
+
+impl Config {
+    pub fn from_file(path: &str) -> Result<Self, String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+
+        let mut parsed = HashMap::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.splitn(2, '=').collect();
+            if parts.len() != 2 {
+                return Err(format!("Invalid config line: {}", line));
+            }
+
+            let key = parts[0].trim().to_string();
+            let mut value = parts[1].trim().to_string();
+
+            if value.starts_with("${") && value.ends_with('}') {
+                let env_var = &value[2..value.len() - 1];
+                value = env::var(env_var)
+                    .map_err(|_| format!("Environment variable {} not found", env_var))?;
+            }
+
+            parsed.insert(key, value);
+        }
+
+        let database_url = parsed
+            .get("DATABASE_URL")
+            .ok_or("Missing DATABASE_URL")?
+            .clone();
+
+        let api_key = parsed
+            .get("API_KEY")
+            .ok_or("Missing API_KEY")?
+            .clone();
+
+        let debug_mode = parsed
+            .get("DEBUG")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+
+        let port = parsed
+            .get("PORT")
+            .map(|v| v.parse::<u16>())
+            .transpose()
+            .map_err(|e| format!("Invalid PORT value: {}", e))?
+            .unwrap_or(8080);
+
+        Ok(Config {
+            database_url,
+            api_key,
+            debug_mode,
+            port,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.database_url.is_empty() {
+            return Err("DATABASE_URL cannot be empty".to_string());
+        }
+        if self.api_key.len() < 16 {
+            return Err("API_KEY must be at least 16 characters".to_string());
+        }
+        if self.port == 0 {
+            return Err("PORT cannot be zero".to_string());
+        }
+        Ok(())
+    }
+}
