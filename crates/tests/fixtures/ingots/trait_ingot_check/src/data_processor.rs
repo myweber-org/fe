@@ -977,4 +977,137 @@ mod tests {
         assert_eq!(stats.variance, 2.0);
         assert_eq!(stats.std_dev, 2.0_f64.sqrt());
     }
+}use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    id: u32,
+    value: f64,
+    timestamp: i64,
+}
+
+#[derive(Debug)]
+pub enum DataError {
+    InvalidId,
+    InvalidValue,
+    InvalidTimestamp,
+    TransformationError(String),
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataError::InvalidId => write!(f, "Invalid record ID"),
+            DataError::InvalidValue => write!(f, "Invalid data value"),
+            DataError::InvalidTimestamp => write!(f, "Invalid timestamp"),
+            DataError::TransformationError(msg) => write!(f, "Transformation error: {}", msg),
+        }
+    }
+}
+
+impl Error for DataError {}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, timestamp: i64) -> Result<Self, DataError> {
+        if id == 0 {
+            return Err(DataError::InvalidId);
+        }
+        if !value.is_finite() {
+            return Err(DataError::InvalidValue);
+        }
+        if timestamp < 0 {
+            return Err(DataError::InvalidTimestamp);
+        }
+
+        Ok(Self {
+            id,
+            value,
+            timestamp,
+        })
+    }
+
+    pub fn transform(&self, multiplier: f64) -> Result<Self, DataError> {
+        if !multiplier.is_finite() || multiplier <= 0.0 {
+            return Err(DataError::TransformationError(
+                "Invalid multiplier value".to_string(),
+            ));
+        }
+
+        let new_value = self.value * multiplier;
+        Ok(Self {
+            id: self.id,
+            value: new_value,
+            timestamp: self.timestamp,
+        })
+    }
+
+    pub fn normalize(&self, max_value: f64) -> Result<f64, DataError> {
+        if max_value <= 0.0 || !max_value.is_finite() {
+            return Err(DataError::TransformationError(
+                "Invalid max value for normalization".to_string(),
+            ));
+        }
+
+        if self.value > max_value {
+            return Err(DataError::TransformationError(
+                "Value exceeds maximum allowed".to_string(),
+            ));
+        }
+
+        Ok(self.value / max_value)
+    }
+}
+
+pub fn process_records(records: &[DataRecord]) -> Vec<Result<DataRecord, DataError>> {
+    records
+        .iter()
+        .map(|record| record.transform(2.0))
+        .collect()
+}
+
+pub fn validate_record_batch(records: &[DataRecord]) -> Result<(), DataError> {
+    for record in records {
+        if record.id == 0 {
+            return Err(DataError::InvalidId);
+        }
+        if !record.value.is_finite() {
+            return Err(DataError::InvalidValue);
+        }
+        if record.timestamp < 0 {
+            return Err(DataError::InvalidTimestamp);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(1, 42.5, 1234567890);
+        assert!(record.is_ok());
+    }
+
+    #[test]
+    fn test_invalid_id() {
+        let record = DataRecord::new(0, 42.5, 1234567890);
+        assert!(matches!(record, Err(DataError::InvalidId)));
+    }
+
+    #[test]
+    fn test_record_transformation() {
+        let record = DataRecord::new(1, 10.0, 1234567890).unwrap();
+        let transformed = record.transform(3.0).unwrap();
+        assert_eq!(transformed.value, 30.0);
+    }
+
+    #[test]
+    fn test_normalization() {
+        let record = DataRecord::new(1, 50.0, 1234567890).unwrap();
+        let normalized = record.normalize(100.0).unwrap();
+        assert_eq!(normalized, 0.5);
+    }
 }
