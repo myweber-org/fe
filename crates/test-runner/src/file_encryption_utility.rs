@@ -272,4 +272,117 @@ mod tests {
 
         assert_eq!(decrypted_content, original_content);
     }
+}use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use chacha20poly1305::{ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce};
+use std::error::Error;
+
+pub enum CipherType {
+    Aes256Gcm,
+    ChaCha20Poly1305,
+}
+
+pub struct EncryptionResult {
+    pub ciphertext: Vec<u8>,
+    pub nonce: Vec<u8>,
+}
+
+pub fn encrypt_data(
+    plaintext: &[u8],
+    key: &[u8],
+    cipher_type: CipherType,
+) -> Result<EncryptionResult, Box<dyn Error>> {
+    match cipher_type {
+        CipherType::Aes256Gcm => {
+            let key = Key::<Aes256Gcm>::from_slice(key);
+            let cipher = Aes256Gcm::new(key);
+            let nonce = Nonce::generate(&mut OsRng);
+            let ciphertext = cipher
+                .encrypt(&nonce, plaintext)
+                .map_err(|e| format!("Encryption failed: {}", e))?;
+            Ok(EncryptionResult {
+                ciphertext,
+                nonce: nonce.to_vec(),
+            })
+        }
+        CipherType::ChaCha20Poly1305 => {
+            let key = ChaChaKey::from_slice(key);
+            let cipher = ChaCha20Poly1305::new(key);
+            let nonce = ChaChaNonce::generate(&mut OsRng);
+            let ciphertext = cipher
+                .encrypt(&nonce, plaintext)
+                .map_err(|e| format!("Encryption failed: {}", e))?;
+            Ok(EncryptionResult {
+                ciphertext,
+                nonce: nonce.to_vec(),
+            })
+        }
+    }
+}
+
+pub fn decrypt_data(
+    ciphertext: &[u8],
+    key: &[u8],
+    nonce: &[u8],
+    cipher_type: CipherType,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    match cipher_type {
+        CipherType::Aes256Gcm => {
+            let key = Key::<Aes256Gcm>::from_slice(key);
+            let cipher = Aes256Gcm::new(key);
+            let nonce = Nonce::from_slice(nonce);
+            cipher
+                .decrypt(nonce, ciphertext)
+                .map_err(|e| format!("Decryption failed: {}", e).into())
+        }
+        CipherType::ChaCha20Poly1305 => {
+            let key = ChaChaKey::from_slice(key);
+            let cipher = ChaCha20Poly1305::new(key);
+            let nonce = ChaChaNonce::from_slice(nonce);
+            cipher
+                .decrypt(nonce, ciphertext)
+                .map_err(|e| format!("Decryption failed: {}", e).into())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn generate_key() -> Vec<u8> {
+        let mut key = vec![0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        key
+    }
+
+    #[test]
+    fn test_aes_encryption_decryption() {
+        let key = generate_key();
+        let plaintext = b"Secret message for AES";
+        let result = encrypt_data(plaintext, &key, CipherType::Aes256Gcm).unwrap();
+        let decrypted = decrypt_data(&result.ciphertext, &key, &result.nonce, CipherType::Aes256Gcm).unwrap();
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn test_chacha_encryption_decryption() {
+        let key = generate_key();
+        let plaintext = b"Secret message for ChaCha";
+        let result = encrypt_data(plaintext, &key, CipherType::ChaCha20Poly1305).unwrap();
+        let decrypted = decrypt_data(&result.ciphertext, &key, &result.nonce, CipherType::ChaCha20Poly1305).unwrap();
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn test_wrong_key_fails() {
+        let key = generate_key();
+        let wrong_key = generate_key();
+        let plaintext = b"Test message";
+        let result = encrypt_data(plaintext, &key, CipherType::Aes256Gcm).unwrap();
+        let decryption_result = decrypt_data(&result.ciphertext, &wrong_key, &result.nonce, CipherType::Aes256Gcm);
+        assert!(decryption_result.is_err());
+    }
 }
