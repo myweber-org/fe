@@ -30,32 +30,34 @@ mod tests {
 
     #[test]
     fn test_valid_json() {
-        let schema = r#"{
+        let schema = r#"
+        {
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
                 "age": {"type": "number"}
             },
             "required": ["name"]
-        }"#;
-        
-        let data = r#"{"name": "Alice", "age": 30}"#;
-        
-        assert!(validate_json(schema, data).is_ok());
+        }
+        "#;
+
+        let valid_data = r#"{"name": "Alice", "age": 30}"#;
+        assert!(validate_json(schema, valid_data).is_ok());
     }
 
     #[test]
     fn test_invalid_json() {
-        let schema = r#"{
+        let schema = r#"
+        {
             "type": "object",
             "properties": {
                 "name": {"type": "string"}
             },
             "required": ["name"]
-        }"#;
-        
-        let data = r#"{"age": 30}"#;
-        
-        assert!(validate_json(schema, data).is_err());
+        }
+        "#;
+
+        let invalid_data = r#"{"age": 30}"#;
+        assert!(validate_json(schema, invalid_data).is_err());
     }
 }
