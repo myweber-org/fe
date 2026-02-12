@@ -217,4 +217,99 @@ mod tests {
         let result = processor.process_numeric_data("invalid", &data);
         assert!(result.is_err());
     }
+}use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+pub struct DataProcessor {
+    data: Vec<f64>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor { data: Vec::new() }
+    }
+
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
+        let file = File::open(path)?;
+        let mut rdr = csv::Reader::from_reader(file);
+        
+        for result in rdr.records() {
+            let record = result?;
+            if let Some(value) = record.get(0) {
+                if let Ok(num) = value.parse::<f64>() {
+                    self.data.push(num);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.data.is_empty() {
+            return None;
+        }
+        let sum: f64 = self.data.iter().sum();
+        Some(sum / self.data.len() as f64)
+    }
+
+    pub fn calculate_std_dev(&self) -> Option<f64> {
+        if self.data.len() < 2 {
+            return None;
+        }
+        
+        let mean = self.calculate_mean()?;
+        let variance: f64 = self.data
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / (self.data.len() - 1) as f64;
+        
+        Some(variance.sqrt())
+    }
+
+    pub fn filter_outliers(&mut self, threshold: f64) {
+        if let (Some(mean), Some(std_dev)) = (self.calculate_mean(), self.calculate_std_dev()) {
+            self.data.retain(|&x| {
+                let z_score = (x - mean).abs() / std_dev;
+                z_score <= threshold
+            });
+        }
+    }
+
+    pub fn get_summary(&self) -> String {
+        let mean = self.calculate_mean().unwrap_or(0.0);
+        let std_dev = self.calculate_std_dev().unwrap_or(0.0);
+        let min = self.data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = self.data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        
+        format!(
+            "Statistics:\n  Count: {}\n  Mean: {:.4}\n  Std Dev: {:.4}\n  Min: {:.4}\n  Max: {:.4}",
+            self.data.len(),
+            mean,
+            std_dev,
+            min,
+            max
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "value\n10.5\n20.3\n15.7\n25.1\n18.9").unwrap();
+        
+        processor.load_from_csv(temp_file.path()).unwrap();
+        
+        assert_eq!(processor.data.len(), 5);
+        assert!((processor.calculate_mean().unwrap() - 18.1).abs() < 0.01);
+        assert!(processor.calculate_std_dev().unwrap() > 0.0);
+    }
 }
