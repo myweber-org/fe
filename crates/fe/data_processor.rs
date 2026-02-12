@@ -351,3 +351,147 @@ pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
     
     (mean, variance, std_dev)
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug)]
+pub struct DataRecord {
+    id: u32,
+    value: f64,
+    timestamp: String,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, timestamp: String) -> Result<Self, String> {
+        if value < 0.0 {
+            return Err("Value cannot be negative".to_string());
+        }
+        if timestamp.is_empty() {
+            return Err("Timestamp cannot be empty".to_string());
+        }
+        Ok(DataRecord {
+            id,
+            value,
+            timestamp,
+        })
+    }
+}
+
+pub fn process_csv_file<P: AsRef<Path>>(path: P) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    let mut line_number = 0;
+
+    for line in reader.lines() {
+        line_number += 1;
+        let line = line?;
+        
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 3 {
+            return Err(format!("Invalid format at line {}", line_number).into());
+        }
+
+        let id = parts[0].parse::<u32>()
+            .map_err(|e| format!("Invalid ID at line {}: {}", line_number, e))?;
+        
+        let value = parts[1].parse::<f64>()
+            .map_err(|e| format!("Invalid value at line {}: {}", line_number, e))?;
+        
+        let timestamp = parts[2].trim().to_string();
+
+        match DataRecord::new(id, value, timestamp) {
+            Ok(record) => records.push(record),
+            Err(e) => return Err(format!("Validation error at line {}: {}", line_number, e).into()),
+        }
+    }
+
+    Ok(records)
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
+    if records.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let count = records.len() as f64;
+    let mean = sum / count;
+
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+
+    let std_dev = variance.sqrt();
+
+    (mean, variance, std_dev)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(1, 42.5, "2024-01-15T10:30:00Z".to_string());
+        assert!(record.is_ok());
+        let record = record.unwrap();
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 42.5);
+        assert_eq!(record.timestamp, "2024-01-15T10:30:00Z");
+    }
+
+    #[test]
+    fn test_invalid_record_negative_value() {
+        let record = DataRecord::new(1, -5.0, "2024-01-15T10:30:00Z".to_string());
+        assert!(record.is_err());
+        assert_eq!(record.unwrap_err(), "Value cannot be negative");
+    }
+
+    #[test]
+    fn test_process_csv_file() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "# Sample data").unwrap();
+        writeln!(temp_file, "1,42.5,2024-01-15T10:30:00Z").unwrap();
+        writeln!(temp_file, "2,18.3,2024-01-15T11:15:00Z").unwrap();
+        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file, "3,91.7,2024-01-15T12:45:00Z").unwrap();
+
+        let records = process_csv_file(temp_file.path()).unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].id, 1);
+        assert_eq!(records[1].value, 18.3);
+        assert_eq!(records[2].timestamp, "2024-01-15T12:45:00Z");
+    }
+
+    #[test]
+    fn test_calculate_statistics() {
+        let records = vec![
+            DataRecord::new(1, 10.0, "t1".to_string()).unwrap(),
+            DataRecord::new(2, 20.0, "t2".to_string()).unwrap(),
+            DataRecord::new(3, 30.0, "t3".to_string()).unwrap(),
+        ];
+
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        assert_eq!(mean, 20.0);
+        assert_eq!(variance, 66.66666666666667);
+        assert_eq!(std_dev, 8.16496580927726);
+    }
+
+    #[test]
+    fn test_empty_statistics() {
+        let records: Vec<DataRecord> = vec![];
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        assert_eq!(mean, 0.0);
+        assert_eq!(variance, 0.0);
+        assert_eq!(std_dev, 0.0);
+    }
+}
