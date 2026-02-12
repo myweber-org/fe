@@ -129,3 +129,82 @@ mod tests {
         assert_eq!(cleaner.normalize_text("  HELLO World  "), "hello world");
     }
 }
+use std::collections::HashSet;
+
+pub struct DataCleaner {
+    pub remove_duplicates: bool,
+    pub validate_emails: bool,
+}
+
+impl DataCleaner {
+    pub fn new() -> Self {
+        DataCleaner {
+            remove_duplicates: true,
+            validate_emails: false,
+        }
+    }
+
+    pub fn deduplicate_strings(&self, items: Vec<String>) -> Vec<String> {
+        if !self.remove_duplicates {
+            return items;
+        }
+
+        let mut seen = HashSet::new();
+        items
+            .into_iter()
+            .filter(|item| seen.insert(item.clone()))
+            .collect()
+    }
+
+    pub fn is_valid_email(&self, email: &str) -> bool {
+        if !self.validate_emails {
+            return true;
+        }
+
+        let parts: Vec<&str> = email.split('@').collect();
+        if parts.len() != 2 {
+            return false;
+        }
+
+        let domain_parts: Vec<&str> = parts[1].split('.').collect();
+        domain_parts.len() >= 2 && !email.contains(' ')
+    }
+
+    pub fn clean_data(&self, emails: Vec<String>) -> Vec<String> {
+        let mut cleaned = self.deduplicate_strings(emails);
+        
+        if self.validate_emails {
+            cleaned.retain(|email| self.is_valid_email(email));
+        }
+
+        cleaned
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deduplication() {
+        let cleaner = DataCleaner::new();
+        let data = vec![
+            "test@example.com".to_string(),
+            "test@example.com".to_string(),
+            "other@domain.org".to_string(),
+        ];
+        
+        let result = cleaner.deduplicate_strings(data);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_email_validation() {
+        let mut cleaner = DataCleaner::new();
+        cleaner.validate_emails = true;
+        
+        assert!(cleaner.is_valid_email("user@example.com"));
+        assert!(!cleaner.is_valid_email("invalid email@example.com"));
+        assert!(!cleaner.is_valid_email("user@com"));
+    }
+}
