@@ -832,3 +832,130 @@ pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
         .filter(|r| r.category == category)
         .collect()
 }
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, PartialEq)]
+pub enum ValidationError {
+    EmptyField,
+    InvalidEmail,
+    OutOfRange,
+    InvalidFormat,
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidationError::EmptyField => write!(f, "Field cannot be empty"),
+            ValidationError::InvalidEmail => write!(f, "Invalid email format"),
+            ValidationError::OutOfRange => write!(f, "Value out of acceptable range"),
+            ValidationError::InvalidFormat => write!(f, "Invalid data format"),
+        }
+    }
+}
+
+impl Error for ValidationError {}
+
+pub struct UserData {
+    pub username: String,
+    pub email: String,
+    pub age: u8,
+    pub score: f64,
+}
+
+impl UserData {
+    pub fn new(username: String, email: String, age: u8, score: f64) -> Result<Self, ValidationError> {
+        if username.trim().is_empty() {
+            return Err(ValidationError::EmptyField);
+        }
+        
+        if !email.contains('@') || !email.contains('.') {
+            return Err(ValidationError::InvalidEmail);
+        }
+        
+        if age > 120 {
+            return Err(ValidationError::OutOfRange);
+        }
+        
+        if score < 0.0 || score > 100.0 {
+            return Err(ValidationError::OutOfRange);
+        }
+        
+        Ok(Self {
+            username,
+            email,
+            age,
+            score,
+        })
+    }
+    
+    pub fn normalize_score(&self) -> f64 {
+        (self.score / 100.0).clamp(0.0, 1.0)
+    }
+    
+    pub fn categorize_age(&self) -> &'static str {
+        match self.age {
+            0..=12 => "Child",
+            13..=19 => "Teenager",
+            20..=64 => "Adult",
+            _ => "Senior",
+        }
+    }
+}
+
+pub fn process_data_string(input: &str) -> Result<String, ValidationError> {
+    if input.trim().is_empty() {
+        return Err(ValidationError::EmptyField);
+    }
+    
+    let processed = input
+        .trim()
+        .to_uppercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>();
+    
+    if processed.is_empty() {
+        Err(ValidationError::InvalidFormat)
+    } else {
+        Ok(processed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_valid_user_data() {
+        let user = UserData::new(
+            "john_doe".to_string(),
+            "john@example.com".to_string(),
+            30,
+            85.5
+        ).unwrap();
+        
+        assert_eq!(user.username, "john_doe");
+        assert_eq!(user.normalize_score(), 0.855);
+        assert_eq!(user.categorize_age(), "Adult");
+    }
+    
+    #[test]
+    fn test_invalid_email() {
+        let result = UserData::new(
+            "test".to_string(),
+            "invalid-email".to_string(),
+            25,
+            50.0
+        );
+        
+        assert_eq!(result, Err(ValidationError::InvalidEmail));
+    }
+    
+    #[test]
+    fn test_process_data_string() {
+        let input = "  Hello, World! 123  ";
+        let result = process_data_string(input).unwrap();
+        assert_eq!(result, "HELLO WORLD 123");
+    }
+}
