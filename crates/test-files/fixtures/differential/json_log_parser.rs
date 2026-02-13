@@ -136,4 +136,112 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].message, "Failed to connect");
     }
+}use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, Deserialize)]
+pub struct LogEntry {
+    timestamp: String,
+    level: String,
+    service: String,
+    message: String,
+    #[serde(default)]
+    metadata: serde_json::Value,
+}
+
+#[derive(Debug)]
+pub enum ParseError {
+    Io(std::io::Error),
+    Json(serde_json::Error),
+    MalformedLine(usize, String),
+}
+
+impl From<std::io::Error> for ParseError {
+    fn from(err: std::io::Error) -> Self {
+        ParseError::Io(err)
+    }
+}
+
+impl From<serde_json::Error> for ParseError {
+    fn from(err: serde_json::Error) -> Self {
+        ParseError::Json(err)
+    }
+}
+
+pub struct LogParser {
+    path: String,
+}
+
+impl LogParser {
+    pub fn new(path: impl Into<String>) -> Self {
+        LogParser { path: path.into() }
+    }
+
+    pub fn parse(&self) -> Result<Vec<LogEntry>, ParseError> {
+        let path = Path::new(&self.path);
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        
+        let mut entries = Vec::new();
+        for (line_num, line_result) in reader.lines().enumerate() {
+            let line = line_result?;
+            
+            if line.trim().is_empty() {
+                continue;
+            }
+            
+            match serde_json::from_str::<LogEntry>(&line) {
+                Ok(entry) => entries.push(entry),
+                Err(e) => return Err(ParseError::MalformedLine(line_num + 1, e.to_string())),
+            }
+        }
+        
+        Ok(entries)
+    }
+    
+    pub fn filter_by_level(&self, level: &str) -> Result<Vec<LogEntry>, ParseError> {
+        let entries = self.parse()?;
+        Ok(entries
+            .into_iter()
+            .filter(|entry| entry.level.to_lowercase() == level.to_lowercase())
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_parse_valid_logs() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, r#"{{"timestamp":"2024-01-15T10:30:00Z","level":"INFO","service":"api","message":"Request processed","metadata":{{"user_id":123}}}}"#).unwrap();
+        writeln!(temp_file, r#"{{"timestamp":"2024-01-15T10:31:00Z","level":"ERROR","service":"db","message":"Connection failed","metadata":{{"retry_count":3}}}}"#).unwrap();
+        
+        let parser = LogParser::new(temp_file.path().to_str().unwrap());
+        let result = parser.parse();
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].level, "INFO");
+        assert_eq!(entries[1].service, "db");
+    }
+    
+    #[test]
+    fn test_filter_by_level() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, r#"{{"timestamp":"2024-01-15T10:30:00Z","level":"INFO","service":"api","message":"Test"}}"#).unwrap();
+        writeln!(temp_file, r#"{{"timestamp":"2024-01-15T10:31:00Z","level":"ERROR","service":"db","message":"Test"}}"#).unwrap();
+        writeln!(temp_file, r#"{{"timestamp":"2024-01-15T10:32:00Z","level":"INFO","service":"cache","message":"Test"}}"#).unwrap();
+        
+        let parser = LogParser::new(temp_file.path().to_str().unwrap());
+        let errors = parser.filter_by_level("ERROR").unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].service, "db");
+    }
 }
