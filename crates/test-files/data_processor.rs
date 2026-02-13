@@ -1204,4 +1204,93 @@ mod tests {
         let average = processor.get_average_value().unwrap();
         assert!((average - 15.416666).abs() < 0.001);
     }
+}use csv::Reader;
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug)]
+pub struct DataSet {
+    pub values: Vec<f64>,
+    pub mean: f64,
+    pub variance: f64,
+}
+
+impl DataSet {
+    pub fn new(values: Vec<f64>) -> Self {
+        let mean = calculate_mean(&values);
+        let variance = calculate_variance(&values, mean);
+        DataSet {
+            values,
+            mean,
+            variance,
+        }
+    }
+
+    pub fn from_csv(file_path: &str) -> Result<Self, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let mut rdr = Reader::from_reader(file);
+        let mut values = Vec::new();
+
+        for result in rdr.records() {
+            let record = result?;
+            for field in record.iter() {
+                if let Ok(num) = field.parse::<f64>() {
+                    values.push(num);
+                }
+            }
+        }
+
+        Ok(DataSet::new(values))
+    }
+
+    pub fn standard_deviation(&self) -> f64 {
+        self.variance.sqrt()
+    }
+
+    pub fn min(&self) -> f64 {
+        self.values
+            .iter()
+            .fold(f64::INFINITY, |a, &b| a.min(b))
+    }
+
+    pub fn max(&self) -> f64 {
+        self.values
+            .iter()
+            .fold(f64::NEG_INFINITY, |a, &b| a.max(b))
+    }
+}
+
+fn calculate_mean(values: &[f64]) -> f64 {
+    let sum: f64 = values.iter().sum();
+    sum / values.len() as f64
+}
+
+fn calculate_variance(values: &[f64], mean: f64) -> f64 {
+    let squared_diff_sum: f64 = values
+        .iter()
+        .map(|&x| (x - mean).powi(2))
+        .sum();
+    squared_diff_sum / values.len() as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dataset_creation() {
+        let data = DataSet::new(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(data.mean, 3.0);
+        assert_eq!(data.variance, 2.0);
+        assert_eq!(data.standard_deviation(), 2.0_f64.sqrt());
+        assert_eq!(data.min(), 1.0);
+        assert_eq!(data.max(), 5.0);
+    }
+
+    #[test]
+    fn test_empty_dataset() {
+        let data = DataSet::new(vec![]);
+        assert!(data.mean.is_nan());
+        assert!(data.variance.is_nan());
+    }
 }
