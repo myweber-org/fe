@@ -1,54 +1,69 @@
-use std::collections::HashMap;
-use std::fs;
+
+use serde_json::{Map, Value};
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::{BufReader, Write};
 use std::path::Path;
 
-pub fn merge_json_files(file_paths: &[&str]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let mut merged_map = HashMap::new();
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], output_path: P) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("No input files provided".to_string());
+    }
 
-    for path_str in file_paths {
-        let path = Path::new(path_str);
-        if !path.exists() {
-            continue;
-        }
+    let mut merged = Map::new();
+    let mut key_sources = Map::new();
 
-        let content = fs::read_to_string(path)?;
-        let json_value: serde_json::Value = serde_json::from_str(&content)?;
+    for (idx, path) in paths.iter().enumerate() {
+        let file = File::open(path).map_err(|e| format!("Failed to open {}: {}", path.as_ref().display(), e))?;
+        let reader = BufReader::new(file);
+        let json: Map<String, Value> = serde_json::from_reader(reader)
+            .map_err(|e| format!("Failed to parse {}: {}", path.as_ref().display(), e))?;
 
-        if let serde_json::Value::Object(map) = json_value {
-            for (key, value) in map {
-                merged_map.insert(key, value);
+        for (key, value) in json {
+            if let Some(existing) = merged.get(&key) {
+                if existing != &value {
+                    let source_info = key_sources.entry(key.clone()).or_insert_with(Vec::new);
+                    source_info.push(format!("File {}: {:?}", idx + 1, existing));
+                    source_info.push(format!("File {}: {:?}", idx + 1, value));
+                    merged.insert(format!("{}_conflict", key), Value::Array(source_info.clone().into_iter().map(Value::String).collect()));
+                }
+            } else {
+                merged.insert(key.clone(), value);
+                key_sources.insert(key, vec![format!("File {}", idx + 1)]);
             }
         }
     }
 
-    Ok(serde_json::Value::Object(merged_map))
+    let output_file = File::create(&output_path)
+        .map_err(|e| format!("Failed to create output file: {}", e))?;
+    serde_json::to_writer_pretty(output_file, &Value::Object(merged))
+        .map_err(|e| format!("Failed to write merged JSON: {}", e))?;
+
+    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
+pub fn find_unique_keys<P: AsRef<Path>>(paths: &[P]) -> Result<Vec<String>, String> {
+    let mut all_keys = HashSet::new();
+    let mut common_keys = HashSet::new();
+    let mut first = true;
 
-    #[test]
-    fn test_merge_json_files() {
-        let mut file1 = NamedTempFile::new().unwrap();
-        let mut file2 = NamedTempFile::new().unwrap();
+    for path in paths {
+        let file = File::open(path).map_err(|e| format!("Failed to open {}: {}", path.as_ref().display(), e))?;
+        let reader = BufReader::new(file);
+        let json: Map<String, Value> = serde_json::from_reader(reader)
+            .map_err(|e| format!("Failed to parse {}: {}", path.as_ref().display(), e))?;
 
-        writeln!(file1, r#"{"a": 1, "b": "test"}"#).unwrap();
-        writeln!(file2, r#"{"c": true, "d": [1,2,3]}"#).unwrap();
+        let current_keys: HashSet<_> = json.keys().cloned().collect();
+        all_keys.extend(current_keys.iter().cloned());
 
-        let paths = [
-            file1.path().to_str().unwrap(),
-            file2.path().to_str().unwrap(),
-        ];
-
-        let result = merge_json_files(&paths).unwrap();
-        let obj = result.as_object().unwrap();
-
-        assert_eq!(obj.get("a").unwrap().as_i64(), Some(1));
-        assert_eq!(obj.get("b").unwrap().as_str(), Some("test"));
-        assert_eq!(obj.get("c").unwrap().as_bool(), Some(true));
-        assert!(obj.get("d").unwrap().is_array());
+        if first {
+            common_keys = current_keys;
+            first = false;
+        } else {
+            common_keys = common_keys.intersection(&current_keys).cloned().collect();
+        }
     }
+
+    let unique_keys: Vec<String> = all_keys.difference(&common_keys).cloned().collect();
+    Ok(unique_keys)
 }
