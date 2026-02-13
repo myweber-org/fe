@@ -100,3 +100,68 @@ pub enum ConflictStrategy {
     Skip,
     MergeObjects,
 }
+use serde_json::{Map, Value};
+
+pub fn merge_json(base: &mut Value, update: &Value, resolve_conflicts: bool) -> Result<(), String> {
+    match (base, update) {
+        (Value::Object(base_map), Value::Object(update_map)) => {
+            for (key, update_value) in update_map {
+                if let Some(base_value) = base_map.get_mut(key) {
+                    if base_value == update_value {
+                        continue;
+                    }
+                    
+                    if resolve_conflicts {
+                        if let (Value::Object(_), Value::Object(_)) = (base_value, update_value) {
+                            merge_json(base_value, update_value, resolve_conflicts)?;
+                        } else {
+                            *base_value = update_value.clone();
+                        }
+                    } else {
+                        return Err(format!("Conflict detected for key '{}'", key));
+                    }
+                } else {
+                    base_map.insert(key.clone(), update_value.clone());
+                }
+            }
+            Ok(())
+        }
+        _ => Err("Both values must be JSON objects".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_merge_without_conflicts() {
+        let mut base = json!({"a": 1, "b": {"c": 2}});
+        let update = json!({"b": {"d": 3}, "e": 4});
+        
+        assert!(merge_json(&mut base, &update, false).is_ok());
+        assert_eq!(base["a"], 1);
+        assert_eq!(base["b"]["c"], 2);
+        assert_eq!(base["b"]["d"], 3);
+        assert_eq!(base["e"], 4);
+    }
+
+    #[test]
+    fn test_merge_with_conflict_resolution() {
+        let mut base = json!({"a": 1, "b": {"c": 2}});
+        let update = json!({"a": 99, "b": {"c": 100}});
+        
+        assert!(merge_json(&mut base, &update, true).is_ok());
+        assert_eq!(base["a"], 99);
+        assert_eq!(base["b"]["c"], 100);
+    }
+
+    #[test]
+    fn test_merge_conflict_without_resolution() {
+        let mut base = json!({"a": 1});
+        let update = json!({"a": 2});
+        
+        assert!(merge_json(&mut base, &update, false).is_err());
+    }
+}
