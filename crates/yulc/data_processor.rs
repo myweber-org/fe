@@ -705,3 +705,88 @@ mod tests {
         assert!(processor.get_data().is_empty());
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    filters: Vec<Box<dyn Fn(i32) -> bool>>,
+    transformers: Vec<Box<dyn Fn(i32) -> i32>>,
+    cache: HashMap<i32, i32>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            filters: Vec::new(),
+            transformers: Vec::new(),
+            cache: HashMap::new(),
+        }
+    }
+
+    pub fn add_filter<F>(&mut self, filter: F)
+    where
+        F: Fn(i32) -> bool + 'static,
+    {
+        self.filters.push(Box::new(filter));
+    }
+
+    pub fn add_transformer<F>(&mut self, transformer: F)
+    where
+        F: Fn(i32) -> i32 + 'static,
+    {
+        self.transformers.push(Box::new(transformer));
+    }
+
+    pub fn process(&mut self, data: Vec<i32>) -> Vec<i32> {
+        data.into_iter()
+            .filter(|&value| self.filters.iter().all(|f| f(value)))
+            .map(|value| {
+                if let Some(&cached) = self.cache.get(&value) {
+                    return cached;
+                }
+
+                let mut result = value;
+                for transformer in &self.transformers {
+                    result = transformer(result);
+                }
+
+                self.cache.insert(value, result);
+                result
+            })
+            .collect()
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn get_cache_stats(&self) -> (usize, usize) {
+        (self.cache.len(), self.cache.capacity())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+
+        processor.add_filter(|x| x > 0);
+        processor.add_filter(|x| x % 2 == 0);
+        processor.add_transformer(|x| x * 2);
+        processor.add_transformer(|x| x + 10);
+
+        let input = vec![-5, 2, 3, 4, 6, 8];
+        let result = processor.process(input);
+
+        assert_eq!(result, vec![14, 18, 22, 26]);
+
+        let stats = processor.get_cache_stats();
+        assert_eq!(stats.0, 4);
+
+        processor.clear_cache();
+        let stats_after_clear = processor.get_cache_stats();
+        assert_eq!(stats_after_clear.0, 0);
+    }
+}
