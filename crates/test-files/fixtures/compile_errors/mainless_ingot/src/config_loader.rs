@@ -177,4 +177,88 @@ mod tests {
         env::remove_var("APP_DATABASE_URL");
         env::remove_var("APP_SERVER_PORT");
     }
+}use std::collections::HashMap;
+use std::env;
+use std::fs;
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub database_url: String,
+    pub port: u16,
+    pub log_level: String,
+    pub features: HashMap<String, bool>,
+}
+
+impl Config {
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = fs::read_to_string(path)?;
+        let mut config = Self::default();
+        
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            
+            if let Some((key, value)) = line.split_once('=') {
+                let key = key.trim();
+                let value = value.trim();
+                config.apply_setting(key, value);
+            }
+        }
+        
+        config.override_with_env();
+        Ok(config)
+    }
+    
+    fn apply_setting(&mut self, key: &str, value: &str) {
+        match key {
+            "DATABASE_URL" => self.database_url = value.to_string(),
+            "PORT" => if let Ok(port) = value.parse() { self.port = port },
+            "LOG_LEVEL" => self.log_level = value.to_string(),
+            _ if key.starts_with("FEATURE_") => {
+                let feature_name = key.trim_start_matches("FEATURE_").to_lowercase();
+                let enabled = value.eq_ignore_ascii_case("true") || value == "1";
+                self.features.insert(feature_name, enabled);
+            }
+            _ => {}
+        }
+    }
+    
+    fn override_with_env(&mut self) {
+        if let Ok(db_url) = env::var("DATABASE_URL") {
+            self.database_url = db_url;
+        }
+        if let Ok(port) = env::var("PORT") {
+            if let Ok(port_num) = port.parse() {
+                self.port = port_num;
+            }
+        }
+        if let Ok(log_level) = env::var("LOG_LEVEL") {
+            self.log_level = log_level;
+        }
+        
+        for (key, value) in env::vars() {
+            if key.starts_with("FEATURE_") {
+                let feature_name = key.trim_start_matches("FEATURE_").to_lowercase();
+                let enabled = value.eq_ignore_ascii_case("true") || value == "1";
+                self.features.insert(feature_name, enabled);
+            }
+        }
+    }
+    
+    pub fn is_feature_enabled(&self, feature: &str) -> bool {
+        self.features.get(feature).copied().unwrap_or(false)
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            database_url: String::from("postgres://localhost:5432/mydb"),
+            port: 8080,
+            log_level: String::from("info"),
+            features: HashMap::new(),
+        }
+    }
 }
