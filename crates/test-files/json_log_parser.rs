@@ -135,4 +135,140 @@ mod tests {
         
         Ok(())
     }
+}use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+pub enum LogLevel {
+    INFO,
+    WARN,
+    ERROR,
+    DEBUG,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct LogEntry {
+    pub timestamp: DateTime<Utc>,
+    pub level: LogLevel,
+    pub message: String,
+    pub source: String,
+}
+
+pub struct LogParser {
+    pub entries: Vec<LogEntry>,
+}
+
+impl LogParser {
+    pub fn new() -> Self {
+        LogParser {
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let entry: LogEntry = serde_json::from_str(&line)?;
+            self.entries.push(entry);
+        }
+
+        Ok(())
+    }
+
+    pub fn filter_by_level(&self, level: LogLevel) -> Vec<&LogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.level == level)
+            .collect()
+    }
+
+    pub fn filter_by_time_range(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<&LogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.timestamp >= start && entry.timestamp <= end)
+            .collect()
+    }
+
+    pub fn count_by_level(&self) -> std::collections::HashMap<LogLevel, usize> {
+        let mut counts = std::collections::HashMap::new();
+        
+        for entry in &self.entries {
+            *counts.entry(entry.level.clone()).or_insert(0) += 1;
+        }
+        
+        counts
+    }
+
+    pub fn find_errors_with_keyword(&self, keyword: &str) -> Vec<&LogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.level == LogLevel::ERROR && entry.message.contains(keyword))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn test_filter_by_level() {
+        let mut parser = LogParser::new();
+        
+        let entry1 = LogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::INFO,
+            message: "System started".to_string(),
+            source: "system".to_string(),
+        };
+        
+        let entry2 = LogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::ERROR,
+            message: "Disk full".to_string(),
+            source: "storage".to_string(),
+        };
+        
+        parser.entries.push(entry1);
+        parser.entries.push(entry2);
+        
+        let errors = parser.filter_by_level(LogLevel::ERROR);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].message, "Disk full");
+    }
+
+    #[test]
+    fn test_filter_by_time_range() {
+        let mut parser = LogParser::new();
+        
+        let start_time = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        let mid_time = Utc.with_ymd_and_hms(2024, 1, 2, 12, 0, 0).unwrap();
+        let end_time = Utc.with_ymd_and_hms(2024, 1, 3, 0, 0, 0).unwrap();
+        
+        let entry = LogEntry {
+            timestamp: mid_time,
+            level: LogLevel::INFO,
+            message: "Test message".to_string(),
+            source: "test".to_string(),
+        };
+        
+        parser.entries.push(entry);
+        
+        let filtered = parser.filter_by_time_range(start_time, end_time);
+        assert_eq!(filtered.len(), 1);
+        
+        let filtered = parser.filter_by_time_range(end_time, end_time);
+        assert_eq!(filtered.len(), 0);
+    }
 }
