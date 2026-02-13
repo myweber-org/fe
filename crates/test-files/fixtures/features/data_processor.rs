@@ -1,79 +1,103 @@
 
-use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fmt;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, PartialEq)]
 pub struct DataRecord {
-    pub id: u32,
-    pub value: f64,
-    pub timestamp: i64,
+    id: u32,
+    value: f64,
+    category: String,
 }
 
-#[derive(Debug)]
-pub enum ProcessingError {
-    InvalidValue,
-    InvalidTimestamp,
-    ValidationFailed(String),
-}
-
-impl fmt::Display for ProcessingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProcessingError::InvalidValue => write!(f, "Invalid numeric value"),
-            ProcessingError::InvalidTimestamp => write!(f, "Invalid timestamp"),
-            ProcessingError::ValidationFailed(msg) => write!(f, "Validation failed: {}", msg),
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Result<Self, String> {
+        if value < 0.0 {
+            return Err("Value cannot be negative".to_string());
         }
+        if category.is_empty() {
+            return Err("Category cannot be empty".to_string());
+        }
+        Ok(Self { id, value, category })
     }
 }
 
-impl Error for ProcessingError {}
-
 pub struct DataProcessor {
-    threshold: f64,
+    records: Vec<DataRecord>,
 }
 
 impl DataProcessor {
-    pub fn new(threshold: f64) -> Self {
-        DataProcessor { threshold }
+    pub fn new() -> Self {
+        Self { records: Vec::new() }
     }
 
-    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
-        if record.value.is_nan() || record.value.is_infinite() {
-            return Err(ProcessingError::InvalidValue);
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            if line_num == 0 {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 3 {
+                continue;
+            }
+
+            let id = match parts[0].parse::<u32>() {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+
+            let value = match parts[1].parse::<f64>() {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+
+            let category = parts[2].to_string();
+
+            match DataRecord::new(id, value, category) {
+                Ok(record) => {
+                    self.records.push(record);
+                    count += 1;
+                }
+                Err(_) => continue,
+            }
         }
 
-        if record.timestamp < 0 {
-            return Err(ProcessingError::InvalidTimestamp);
-        }
-
-        if record.value.abs() > self.threshold {
-            return Err(ProcessingError::ValidationFailed(
-                format!("Value {} exceeds threshold {}", record.value, self.threshold)
-            ));
-        }
-
-        Ok(())
+        Ok(count)
     }
 
-    pub fn transform_record(&self, record: &DataRecord) -> DataRecord {
-        DataRecord {
-            id: record.id,
-            value: record.value * 2.0,
-            timestamp: record.timestamp + 3600,
+    pub fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
         }
+
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        Some(sum / self.records.len() as f64)
     }
 
-    pub fn process_records(&self, records: Vec<DataRecord>) -> Result<Vec<DataRecord>, ProcessingError> {
-        let mut processed = Vec::with_capacity(records.len());
+    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|r| r.category == category)
+            .collect()
+    }
 
-        for record in records {
-            self.validate_record(&record)?;
-            let transformed = self.transform_record(&record);
-            processed.push(transformed);
-        }
+    pub fn get_max_value(&self) -> Option<&DataRecord> {
+        self.records.iter().max_by(|a, b| {
+            a.value
+                .partial_cmp(&b.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    }
 
-        Ok(processed)
+    pub fn record_count(&self) -> usize {
+        self.records.len()
     }
 }
 
@@ -82,45 +106,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_valid_record_processing() {
-        let processor = DataProcessor::new(1000.0);
-        let record = DataRecord {
-            id: 1,
-            value: 500.0,
-            timestamp: 1609459200,
-        };
-
-        assert!(processor.validate_record(&record).is_ok());
-        
-        let transformed = processor.transform_record(&record);
-        assert_eq!(transformed.value, 1000.0);
-        assert_eq!(transformed.timestamp, 1609459200 + 3600);
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(1, 42.5, "test".to_string());
+        assert!(record.is_ok());
+        let record = record.unwrap();
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 42.5);
+        assert_eq!(record.category, "test");
     }
 
     #[test]
-    fn test_invalid_value() {
-        let processor = DataProcessor::new(100.0);
-        let record = DataRecord {
-            id: 1,
-            value: f64::NAN,
-            timestamp: 1609459200,
-        };
+    fn test_invalid_record_creation() {
+        let record = DataRecord::new(1, -5.0, "test".to_string());
+        assert!(record.is_err());
 
-        assert!(processor.validate_record(&record).is_err());
+        let record = DataRecord::new(1, 5.0, "".to_string());
+        assert!(record.is_err());
     }
 
     #[test]
-    fn test_threshold_exceeded() {
-        let processor = DataProcessor::new(100.0);
-        let record = DataRecord {
-            id: 1,
-            value: 150.0,
-            timestamp: 1609459200,
-        };
-
-        match processor.validate_record(&record) {
-            Err(ProcessingError::ValidationFailed(_)) => (),
-            _ => panic!("Expected ValidationFailed error"),
-        }
+    fn test_empty_processor() {
+        let processor = DataProcessor::new();
+        assert_eq!(processor.record_count(), 0);
+        assert_eq!(processor.calculate_average(), None);
+        assert_eq!(processor.get_max_value(), None);
     }
 }
