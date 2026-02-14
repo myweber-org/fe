@@ -1,143 +1,141 @@
-
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    delimiter: char,
-    has_header: bool,
+    validators: HashMap<String, Box<dyn Fn(&str) -> bool>>,
+    transformers: HashMap<String, Box<dyn Fn(String) -> String>>,
 }
 
 impl DataProcessor {
-    pub fn new(delimiter: char, has_header: bool) -> Self {
-        DataProcessor {
-            delimiter,
-            has_header,
+    pub fn new() -> Self {
+        let mut processor = DataProcessor {
+            validators: HashMap::new(),
+            transformers: HashMap::new(),
+        };
+        
+        processor.register_default_validators();
+        processor.register_default_transformers();
+        
+        processor
+    }
+    
+    fn register_default_validators(&mut self) {
+        self.validators.insert(
+            "email".to_string(),
+            Box::new(|s: &str| s.contains('@') && s.contains('.')),
+        );
+        
+        self.validators.insert(
+            "numeric".to_string(),
+            Box::new(|s: &str| s.parse::<f64>().is_ok()),
+        );
+        
+        self.validators.insert(
+            "not_empty".to_string(),
+            Box::new(|s: &str| !s.trim().is_empty()),
+        );
+    }
+    
+    fn register_default_transformers(&mut self) {
+        self.transformers.insert(
+            "uppercase".to_string(),
+            Box::new(|s: String| s.to_uppercase()),
+        );
+        
+        self.transformers.insert(
+            "trim".to_string(),
+            Box::new(|s: String| s.trim().to_string()),
+        );
+        
+        self.transformers.insert(
+            "reverse".to_string(),
+            Box::new(|s: String| s.chars().rev().collect()),
+        );
+    }
+    
+    pub fn validate(&self, validator_name: &str, data: &str) -> bool {
+        match self.validators.get(validator_name) {
+            Some(validator) => validator(data),
+            None => false,
         }
     }
-
-    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-
-        for (line_number, line) in reader.lines().enumerate() {
-            let line = line?;
-            
-            if line_number == 0 && self.has_header {
-                continue;
-            }
-
-            let fields: Vec<String> = line
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-
-            if !fields.is_empty() && !fields.iter().all(|f| f.is_empty()) {
-                records.push(fields);
-            }
-        }
-
-        Ok(records)
+    
+    pub fn transform(&self, transformer_name: &str, data: String) -> Option<String> {
+        self.transformers.get(transformer_name).map(|t| t(data))
     }
-
-    pub fn validate_records(&self, records: &[Vec<String>]) -> Result<(), String> {
-        if records.is_empty() {
-            return Err("No valid records found".to_string());
-        }
-
-        let expected_len = records[0].len();
-        for (idx, record) in records.iter().enumerate() {
-            if record.len() != expected_len {
-                return Err(format!(
-                    "Record {} has {} fields, expected {}",
-                    idx + 1,
-                    record.len(),
-                    expected_len
-                ));
+    
+    pub fn process_pipeline(&self, data: String, operations: Vec<(&str, &str)>) -> Result<String, String> {
+        let mut result = data;
+        
+        for (op_type, op_name) in operations {
+            match op_type {
+                "validate" => {
+                    if !self.validate(op_name, &result) {
+                        return Err(format!("Validation '{}' failed for data", op_name));
+                    }
+                }
+                "transform" => {
+                    result = match self.transform(op_name, result) {
+                        Some(transformed) => transformed,
+                        None => return Err(format!("Unknown transformer '{}'", op_name)),
+                    };
+                }
+                _ => return Err(format!("Unknown operation type '{}'", op_type)),
             }
         }
-
-        Ok(())
+        
+        Ok(result)
     }
-
-    pub fn calculate_statistics(&self, records: &[Vec<String>], column_index: usize) -> Result<(f64, f64), String> {
-        if records.is_empty() {
-            return Err("No records to process".to_string());
-        }
-
-        if column_index >= records[0].len() {
-            return Err(format!(
-                "Column index {} out of bounds (max {})",
-                column_index,
-                records[0].len() - 1
-            ));
-        }
-
-        let mut values = Vec::new();
-        for record in records {
-            if let Ok(value) = record[column_index].parse::<f64>() {
-                values.push(value);
-            }
-        }
-
-        if values.is_empty() {
-            return Err("No numeric values found in specified column".to_string());
-        }
-
-        let sum: f64 = values.iter().sum();
-        let mean = sum / values.len() as f64;
-        let variance: f64 = values.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / values.len() as f64;
-        let std_dev = variance.sqrt();
-
-        Ok((mean, std_dev))
+    
+    pub fn register_validator<F>(&mut self, name: &str, validator: F)
+    where
+        F: Fn(&str) -> bool + 'static,
+    {
+        self.validators.insert(name.to_string(), Box::new(validator));
+    }
+    
+    pub fn register_transformer<F>(&mut self, name: &str, transformer: F)
+    where
+        F: Fn(String) -> String + 'static,
+    {
+        self.transformers.insert(name.to_string(), Box::new(transformer));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
+    
     #[test]
-    fn test_process_file_with_header() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,score").unwrap();
-        writeln!(temp_file, "Alice,25,95.5").unwrap();
-        writeln!(temp_file, "Bob,30,87.2").unwrap();
-        
-        let processor = DataProcessor::new(',', true);
-        let result = processor.process_file(temp_file.path()).unwrap();
-        
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], vec!["Alice", "25", "95.5"]);
+    fn test_email_validation() {
+        let processor = DataProcessor::new();
+        assert!(processor.validate("email", "test@example.com"));
+        assert!(!processor.validate("email", "invalid-email"));
     }
-
+    
     #[test]
-    fn test_validate_records() {
-        let records = vec![
-            vec!["a".to_string(), "b".to_string()],
-            vec!["c".to_string(), "d".to_string()],
-        ];
-        
-        let processor = DataProcessor::new(',', false);
-        assert!(processor.validate_records(&records).is_ok());
+    fn test_numeric_validation() {
+        let processor = DataProcessor::new();
+        assert!(processor.validate("numeric", "123.45"));
+        assert!(!processor.validate("numeric", "abc"));
     }
-
+    
     #[test]
-    fn test_calculate_statistics() {
-        let records = vec![
-            vec!["10.0".to_string(), "20.0".to_string()],
-            vec!["20.0".to_string(), "30.0".to_string()],
-            vec!["30.0".to_string(), "40.0".to_string()],
-        ];
+    fn test_transformation_pipeline() {
+        let processor = DataProcessor::new();
+        let result = processor.process_pipeline(
+            "  hello  ".to_string(),
+            vec![("validate", "not_empty"), ("transform", "trim"), ("transform", "uppercase")],
+        );
         
-        let processor = DataProcessor::new(',', false);
-        let (mean, std_dev) = processor.calculate_statistics(&records, 0).unwrap();
+        assert_eq!(result, Ok("HELLO".to_string()));
+    }
+    
+    #[test]
+    fn test_custom_validator() {
+        let mut processor = DataProcessor::new();
+        processor.register_validator("even_length", |s: &str| s.len() % 2 == 0);
         
-        assert!((mean - 20.0).abs() < 0.001);
-        assert!((std_dev - 8.1649).abs() < 0.001);
+        assert!(processor.validate("even_length", "abcd"));
+        assert!(!processor.validate("even_length", "abc"));
     }
 }
