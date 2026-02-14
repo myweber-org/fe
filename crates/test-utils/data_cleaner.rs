@@ -52,3 +52,67 @@ mod tests {
         fs::remove_file(test_output).unwrap();
     }
 }
+use std::collections::HashMap;
+
+pub struct DataCleaner {
+    pub remove_nulls: bool,
+    pub trim_whitespace: bool,
+}
+
+impl DataCleaner {
+    pub fn new() -> Self {
+        DataCleaner {
+            remove_nulls: true,
+            trim_whitespace: true,
+        }
+    }
+
+    pub fn clean_string(&self, input: Option<String>) -> Option<String> {
+        match input {
+            Some(mut s) => {
+                if self.trim_whitespace {
+                    s = s.trim().to_string();
+                }
+                if s.is_empty() && self.remove_nulls {
+                    None
+                } else {
+                    Some(s)
+                }
+            }
+            None => None,
+        }
+    }
+
+    pub fn clean_hashmap(&self, data: HashMap<String, Option<String>>) -> HashMap<String, Option<String>> {
+        data.into_iter()
+            .map(|(key, value)| (key, self.clean_string(value)))
+            .filter(|(_, value)| value.is_some())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_string() {
+        let cleaner = DataCleaner::new();
+        assert_eq!(cleaner.clean_string(Some("  hello  ".to_string())), Some("hello".to_string()));
+        assert_eq!(cleaner.clean_string(Some("   ".to_string())), None);
+        assert_eq!(cleaner.clean_string(None), None);
+    }
+
+    #[test]
+    fn test_clean_hashmap() {
+        let cleaner = DataCleaner::new();
+        let mut data = HashMap::new();
+        data.insert("name".to_string(), Some("  john  ".to_string()));
+        data.insert("age".to_string(), Some("25".to_string()));
+        data.insert("empty".to_string(), Some("   ".to_string()));
+
+        let cleaned = cleaner.clean_hashmap(data);
+        assert_eq!(cleaned.get("name"), Some(&Some("john".to_string())));
+        assert_eq!(cleaned.get("empty"), None);
+    }
+}
