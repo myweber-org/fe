@@ -172,3 +172,66 @@ mod tests {
         assert_eq!(base, json!([1, 2, 3, 4, 5]));
     }
 }
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::path::Path;
+
+type JsonValue = serde_json::Value;
+
+pub fn merge_json_files(file_paths: &[&str]) -> Result<JsonValue, Box<dyn std::error::Error>> {
+    let mut merged_map = HashMap::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        let file_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let mut file = File::open(path)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+
+        let json_data: JsonValue = serde_json::from_str(&contents)?;
+        merged_map.insert(file_name, json_data);
+    }
+
+    Ok(serde_json::to_value(merged_map)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_json_files() {
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
+
+        writeln!(file1, r#"{{ "key1": "value1" }}"#).unwrap();
+        writeln!(file2, r#"{{ "key2": 42 }}"#).unwrap();
+
+        let paths = vec![
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ];
+
+        let result = merge_json_files(&paths).unwrap();
+        let result_obj = result.as_object().unwrap();
+
+        assert!(result_obj.contains_key("file1"));
+        assert!(result_obj.contains_key("file2"));
+        assert_eq!(
+            result_obj["file1"]["key1"].as_str().unwrap(),
+            "value1"
+        );
+        assert_eq!(
+            result_obj["file2"]["key2"].as_i64().unwrap(),
+            42
+        );
+    }
+}
