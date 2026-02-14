@@ -1,92 +1,82 @@
-use std::error::Error;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::collections::HashSet;
 
 pub struct DataCleaner {
-    input_path: String,
-    output_path: String,
+    pub remove_duplicates: bool,
+    pub normalize_case: bool,
 }
 
 impl DataCleaner {
-    pub fn new(input_path: &str, output_path: &str) -> Self {
+    pub fn new(remove_duplicates: bool, normalize_case: bool) -> Self {
         DataCleaner {
-            input_path: input_path.to_string(),
-            output_path: output_path.to_string(),
+            remove_duplicates,
+            normalize_case,
         }
     }
 
-    pub fn clean_csv(&self) -> Result<(), Box<dyn Error>> {
-        let input_file = File::open(&self.input_path)?;
-        let reader = BufReader::new(input_file);
-        let mut output_file = File::create(&self.output_path)?;
+    pub fn clean(&self, data: Vec<String>) -> Vec<String> {
+        let mut processed_data = data;
 
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line?;
-            
-            if line_num == 0 {
-                writeln!(output_file, "{}", line)?;
-                continue;
-            }
-
-            let cleaned_line = self.process_line(&line);
-            if !cleaned_line.is_empty() {
-                writeln!(output_file, "{}", cleaned_line)?;
-            }
+        if self.normalize_case {
+            processed_data = processed_data
+                .into_iter()
+                .map(|s| s.to_lowercase())
+                .collect();
         }
 
-        Ok(())
-    }
-
-    fn process_line(&self, line: &str) -> String {
-        let parts: Vec<&str> = line.split(',').collect();
-        let mut cleaned_parts = Vec::new();
-
-        for part in parts {
-            let trimmed = part.trim();
-            if !trimmed.is_empty() && trimmed != "null" && trimmed != "NULL" {
-                cleaned_parts.push(trimmed);
-            } else {
-                cleaned_parts.push("");
-            }
+        if self.remove_duplicates {
+            let unique_set: HashSet<String> = processed_data.into_iter().collect();
+            processed_data = unique_set.into_iter().collect();
         }
 
-        cleaned_parts.join(",")
+        processed_data.sort();
+        processed_data
     }
 
-    pub fn count_records(&self) -> Result<usize, Box<dyn Error>> {
-        let file = File::open(&self.input_path)?;
-        let reader = BufReader::new(file);
-        let count = reader.lines().count();
-        Ok(count.saturating_sub(1))
+    pub fn validate_email(&self, email: &str) -> bool {
+        let email_parts: Vec<&str> = email.split('@').collect();
+        if email_parts.len() != 2 {
+            return false;
+        }
+
+        let domain_parts: Vec<&str> = email_parts[1].split('.').collect();
+        domain_parts.len() >= 2
+            && !email_parts[0].is_empty()
+            && !email_parts[1].is_empty()
+            && email_parts[0].chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
 
     #[test]
-    fn test_data_cleaner() {
-        let test_input = "name,age,city\nJohn,25,New York\nJane,,London\nBob,30,NULL";
-        let input_path = "test_input.csv";
-        let output_path = "test_output.csv";
+    fn test_clean_with_duplicates() {
+        let cleaner = DataCleaner::new(true, false);
+        let data = vec![
+            "apple".to_string(),
+            "banana".to_string(),
+            "apple".to_string(),
+            "cherry".to_string(),
+        ];
+        let result = cleaner.clean(data);
+        assert_eq!(result, vec!["apple", "banana", "cherry"]);
+    }
 
-        let mut input_file = File::create(input_path).unwrap();
-        input_file.write_all(test_input.as_bytes()).unwrap();
+    #[test]
+    fn test_clean_with_case_normalization() {
+        let cleaner = DataCleaner::new(false, true);
+        let data = vec!["Apple".to_string(), "BANANA".to_string(), "cherry".to_string()];
+        let result = cleaner.clean(data);
+        assert_eq!(result, vec!["apple", "banana", "cherry"]);
+    }
 
-        let cleaner = DataCleaner::new(input_path, output_path);
-        cleaner.clean_csv().unwrap();
-
-        let mut output_file = File::open(output_path).unwrap();
-        let mut content = String::new();
-        output_file.read_to_string(&mut content).unwrap();
-
-        assert!(content.contains("John,25,New York"));
-        assert!(content.contains("Jane,,London"));
-        assert!(content.contains("Bob,30,"));
-
-        std::fs::remove_file(input_path).unwrap();
-        std::fs::remove_file(output_path).unwrap();
+    #[test]
+    fn test_validate_email() {
+        let cleaner = DataCleaner::new(false, false);
+        assert!(cleaner.validate_email("test@example.com"));
+        assert!(!cleaner.validate_email("invalid-email"));
+        assert!(!cleaner.validate_email("@example.com"));
+        assert!(!cleaner.validate_email("test@.com"));
     }
 }
