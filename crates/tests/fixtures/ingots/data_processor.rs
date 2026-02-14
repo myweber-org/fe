@@ -244,3 +244,125 @@ mod tests {
         assert!((std_dev - 8.164965).abs() < 0.0001);
     }
 }
+use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+fn validate_record(record: &Record) -> Result<(), String> {
+    if record.name.is_empty() {
+        return Err("Name cannot be empty".to_string());
+    }
+    if record.value < 0.0 {
+        return Err("Value must be non-negative".to_string());
+    }
+    Ok(())
+}
+
+fn process_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let mut reader = Reader::from_reader(input_file);
+    
+    let output_file = File::create(output_path)?;
+    let mut writer = Writer::from_writer(output_file);
+    
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        match validate_record(&record) {
+            Ok(_) => {
+                writer.serialize(&record)?;
+                println!("Processed record: {:?}", record);
+            }
+            Err(e) => {
+                eprintln!("Validation failed for record {:?}: {}", record, e);
+            }
+        }
+    }
+    
+    writer.flush()?;
+    Ok(())
+}
+
+fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
+    let count = records.len() as f64;
+    if count == 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+    
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let mean = sum / count;
+    
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (sum, mean, std_dev)
+}
+
+fn filter_active_records(records: Vec<Record>) -> Vec<Record> {
+    records.into_iter()
+        .filter(|r| r.active)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_record() {
+        let valid_record = Record {
+            id: 1,
+            name: "Test".to_string(),
+            value: 10.5,
+            active: true,
+        };
+        assert!(validate_record(&valid_record).is_ok());
+
+        let invalid_record = Record {
+            id: 2,
+            name: "".to_string(),
+            value: -5.0,
+            active: false,
+        };
+        assert!(validate_record(&invalid_record).is_err());
+    }
+
+    #[test]
+    fn test_calculate_statistics() {
+        let records = vec![
+            Record { id: 1, name: "A".to_string(), value: 10.0, active: true },
+            Record { id: 2, name: "B".to_string(), value: 20.0, active: true },
+            Record { id: 3, name: "C".to_string(), value: 30.0, active: false },
+        ];
+        
+        let (sum, mean, std_dev) = calculate_statistics(&records);
+        assert_eq!(sum, 60.0);
+        assert_eq!(mean, 20.0);
+        assert!((std_dev - 8.164965).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_filter_active_records() {
+        let records = vec![
+            Record { id: 1, name: "A".to_string(), value: 10.0, active: true },
+            Record { id: 2, name: "B".to_string(), value: 20.0, active: false },
+            Record { id: 3, name: "C".to_string(), value: 30.0, active: true },
+        ];
+        
+        let active_records = filter_active_records(records);
+        assert_eq!(active_records.len(), 2);
+        assert!(active_records.iter().all(|r| r.active));
+    }
+}
