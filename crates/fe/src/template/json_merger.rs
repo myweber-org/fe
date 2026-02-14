@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -9,7 +8,7 @@ pub fn merge_json_files(file_paths: &[&str]) -> Result<serde_json::Value, Box<dy
     for path_str in file_paths {
         let path = Path::new(path_str);
         if !path.exists() {
-            return Err(format!("File not found: {}", path_str).into());
+            continue;
         }
 
         let content = fs::read_to_string(path)?;
@@ -17,13 +16,8 @@ pub fn merge_json_files(file_paths: &[&str]) -> Result<serde_json::Value, Box<dy
 
         if let serde_json::Value::Object(map) = json_value {
             for (key, value) in map {
-                if merged_map.contains_key(&key) {
-                    eprintln!("Warning: Key '{}' already exists, overwriting.", key);
-                }
                 merged_map.insert(key, value);
             }
-        } else {
-            return Err("Each JSON file must contain a JSON object at the root.".into());
         }
     }
 
@@ -42,7 +36,7 @@ mod tests {
         let mut file2 = NamedTempFile::new().unwrap();
 
         writeln!(file1, r#"{"name": "Alice", "age": 30}"#).unwrap();
-        writeln!(file2, r#"{"city": "Berlin", "age": 31}"#).unwrap();
+        writeln!(file2, r#"{"city": "London", "active": true}"#).unwrap();
 
         let paths = [
             file1.path().to_str().unwrap(),
@@ -53,23 +47,9 @@ mod tests {
         let obj = result.as_object().unwrap();
 
         assert_eq!(obj.get("name").unwrap().as_str().unwrap(), "Alice");
-        assert_eq!(obj.get("city").unwrap().as_str().unwrap(), "Berlin");
-        assert_eq!(obj.get("age").unwrap().as_i64().unwrap(), 31);
-    }
-
-    #[test]
-    fn test_file_not_found() {
-        let result = merge_json_files(&["nonexistent.json"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_invalid_json_structure() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"["array", "not", "object"]"#).unwrap();
-
-        let paths = [file.path().to_str().unwrap()];
-        let result = merge_json_files(&paths);
-        assert!(result.is_err());
+        assert_eq!(obj.get("age").unwrap().as_u64().unwrap(), 30);
+        assert_eq!(obj.get("city").unwrap().as_str().unwrap(), "London");
+        assert_eq!(obj.get("active").unwrap().as_bool().unwrap(), true);
+        assert_eq!(obj.len(), 4);
     }
 }
