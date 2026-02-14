@@ -51,4 +51,50 @@ mod tests {
         let result = ping_host(Ipv4Addr::new(127, 0, 0, 1), 2);
         assert!(result.is_ok());
     }
+}use std::net::TcpStream;
+use std::time::Duration;
+use std::thread;
+
+fn check_connection(host: &str, port: u16, timeout_secs: u64) -> bool {
+    let address = format!("{}:{}", host, port);
+    
+    for attempt in 1..=3 {
+        println!("Attempt {} to connect to {}", attempt, address);
+        
+        match TcpStream::connect_timeout(
+            &address.parse().unwrap(),
+            Duration::from_secs(timeout_secs)
+        ) {
+            Ok(stream) => {
+                println!("Successfully connected to {}", address);
+                drop(stream);
+                return true;
+            }
+            Err(e) => {
+                println!("Connection failed: {}", e);
+                if attempt < 3 {
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }
+        }
+    }
+    
+    false
+}
+
+fn main() {
+    let hosts = vec![
+        ("google.com", 80),
+        ("github.com", 443),
+        ("localhost", 8080),
+    ];
+    
+    for (host, port) in hosts {
+        let status = if check_connection(host, port, 5) {
+            "REACHABLE"
+        } else {
+            "UNREACHABLE"
+        };
+        println!("{}:{} - {}", host, port, status);
+    }
 }
