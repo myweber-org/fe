@@ -443,3 +443,166 @@ mod tests {
         assert_eq!(processor.calculate_average(), 20.0);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub category: String,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidValue(f64),
+    MissingField(String),
+    CategoryNotFound(String),
+    DuplicateId(u32),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidValue(val) => write!(f, "Invalid value: {}", val),
+            ProcessingError::MissingField(field) => write!(f, "Missing required field: {}", field),
+            ProcessingError::CategoryNotFound(cat) => write!(f, "Category not found: {}", cat),
+            ProcessingError::DuplicateId(id) => write!(f, "Duplicate record ID: {}", id),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    records: HashMap<u32, DataRecord>,
+    categories: Vec<String>,
+}
+
+impl DataProcessor {
+    pub fn new(valid_categories: Vec<String>) -> Self {
+        DataProcessor {
+            records: HashMap::new(),
+            categories: valid_categories,
+        }
+    }
+
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), ProcessingError> {
+        if record.value <= 0.0 || record.value > 1000.0 {
+            return Err(ProcessingError::InvalidValue(record.value));
+        }
+
+        if !self.categories.contains(&record.category) {
+            return Err(ProcessingError::CategoryNotFound(record.category));
+        }
+
+        if self.records.contains_key(&record.id) {
+            return Err(ProcessingError::DuplicateId(record.id));
+        }
+
+        self.records.insert(record.id, record);
+        Ok(())
+    }
+
+    pub fn process_records(&self) -> HashMap<String, Vec<f64>> {
+        let mut result = HashMap::new();
+
+        for record in self.records.values() {
+            let processed_value = if record.value > 500.0 {
+                record.value * 0.9
+            } else {
+                record.value * 1.1
+            };
+
+            result
+                .entry(record.category.clone())
+                .or_insert_with(Vec::new)
+                .push(processed_value);
+        }
+
+        result
+    }
+
+    pub fn calculate_statistics(&self) -> (f64, f64, f64) {
+        let values: Vec<f64> = self.records.values().map(|r| r.value).collect();
+        
+        if values.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+
+        let sum: f64 = values.iter().sum();
+        let count = values.len() as f64;
+        let mean = sum / count;
+
+        let variance: f64 = values.iter()
+            .map(|v| (v - mean).powi(2))
+            .sum::<f64>() / count;
+
+        let std_dev = variance.sqrt();
+
+        (mean, variance, std_dev)
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+        self.records
+            .values()
+            .filter(|record| record.category == category)
+            .collect()
+    }
+
+    pub fn get_record_count(&self) -> usize {
+        self.records.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processor() {
+        let categories = vec!["electronics".to_string(), "books".to_string(), "clothing".to_string()];
+        let mut processor = DataProcessor::new(categories);
+
+        let record1 = DataRecord {
+            id: 1,
+            name: "Laptop".to_string(),
+            value: 999.99,
+            category: "electronics".to_string(),
+        };
+
+        let record2 = DataRecord {
+            id: 2,
+            name: "T-shirt".to_string(),
+            value: 29.99,
+            category: "clothing".to_string(),
+        };
+
+        assert!(processor.add_record(record1).is_ok());
+        assert!(processor.add_record(record2).is_ok());
+        assert_eq!(processor.get_record_count(), 2);
+
+        let stats = processor.calculate_statistics();
+        assert!(stats.0 > 0.0);
+
+        let electronics = processor.filter_by_category("electronics");
+        assert_eq!(electronics.len(), 1);
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        let categories = vec!["electronics".to_string()];
+        let mut processor = DataProcessor::new(categories);
+
+        let invalid_record = DataRecord {
+            id: 1,
+            name: "Test".to_string(),
+            value: -10.0,
+            category: "electronics".to_string(),
+        };
+
+        assert!(processor.add_record(invalid_record).is_err());
+    }
+}
