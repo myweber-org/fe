@@ -83,4 +83,55 @@ mod tests {
         assert!(names.contains(&"Alice".to_string()));
         assert!(names.contains(&"Charlie".to_string()));
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub fn filter_csv_by_column(
+    file_path: &str,
+    column_index: usize,
+    filter_value: &str,
+) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut filtered_rows = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        let columns: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
+        
+        if columns.get(column_index).map(|s| s.as_str()) == Some(filter_value) {
+            filtered_rows.push(columns);
+        }
+    }
+
+    Ok(filtered_rows)
+}
+
+pub fn calculate_column_average(
+    file_path: &str,
+    column_index: usize,
+) -> Result<f64, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut sum = 0.0;
+    let mut count = 0;
+
+    for line in reader.lines().skip(1) {
+        let line = line?;
+        let columns: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
+        
+        if let Some(value_str) = columns.get(column_index) {
+            if let Ok(value) = value_str.parse::<f64>() {
+                sum += value;
+                count += 1;
+            }
+        }
+    }
+
+    if count > 0 {
+        Ok(sum / count as f64)
+    } else {
+        Ok(0.0)
+    }
 }
