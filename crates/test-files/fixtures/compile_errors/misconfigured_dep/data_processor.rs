@@ -269,3 +269,177 @@ mod tests {
         assert_eq!(processor.calculate_average(), Some(15.0));
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum ProcessingError {
+    #[error("Invalid input data")]
+    InvalidData,
+    #[error("Transformation failed: {0}")]
+    TransformationFailed(String),
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: HashMap<String, f64>,
+    pub tags: Vec<String>,
+}
+
+pub struct DataProcessor {
+    validation_rules: Vec<ValidationRule>,
+    transformation_pipeline: Vec<Transformation>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            validation_rules: Vec::new(),
+            transformation_pipeline: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn add_transformation(&mut self, transformation: Transformation) {
+        self.transformation_pipeline.push(transformation);
+    }
+
+    pub fn process(&self, record: &mut DataRecord) -> Result<(), ProcessingError> {
+        for rule in &self.validation_rules {
+            rule.validate(record)?;
+        }
+
+        for transformation in &self.transformation_pipeline {
+            transformation.apply(record)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn batch_process(
+        &self,
+        records: &mut [DataRecord],
+    ) -> Result<Vec<DataRecord>, ProcessingError> {
+        let mut processed = Vec::with_capacity(records.len());
+        
+        for record in records.iter_mut() {
+            self.process(record)?;
+            processed.push(record.clone());
+        }
+        
+        Ok(processed)
+    }
+}
+
+pub trait ValidationRule {
+    fn validate(&self, record: &DataRecord) -> Result<(), ProcessingError>;
+}
+
+pub trait Transformation {
+    fn apply(&self, record: &mut DataRecord) -> Result<(), ProcessingError>;
+}
+
+pub struct TimestampValidator {
+    min_timestamp: i64,
+    max_timestamp: i64,
+}
+
+impl TimestampValidator {
+    pub fn new(min: i64, max: i64) -> Self {
+        TimestampValidator {
+            min_timestamp: min,
+            max_timestamp: max,
+        }
+    }
+}
+
+impl ValidationRule for TimestampValidator {
+    fn validate(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.timestamp < self.min_timestamp || record.timestamp > self.max_timestamp {
+            Err(ProcessingError::ValidationError(format!(
+                "Timestamp {} out of range [{}, {}]",
+                record.timestamp, self.min_timestamp, self.max_timestamp
+            )))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub struct ValueNormalizer {
+    target_range: (f64, f64),
+}
+
+impl ValueNormalizer {
+    pub fn new(min: f64, max: f64) -> Self {
+        ValueNormalizer {
+            target_range: (min, max),
+        }
+    }
+}
+
+impl Transformation for ValueNormalizer {
+    fn apply(&self, record: &mut DataRecord) -> Result<(), ProcessingError> {
+        for (_, value) in record.values.iter_mut() {
+            if value.is_nan() || value.is_infinite() {
+                return Err(ProcessingError::TransformationFailed(
+                    "Invalid numeric value".to_string(),
+                ));
+            }
+            
+            *value = value.clamp(self.target_range.0, self.target_range.1);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        processor.add_validation_rule(TimestampValidator::new(0, 1000));
+        processor.add_transformation(ValueNormalizer::new(0.0, 1.0));
+
+        let mut record = DataRecord {
+            id: 1,
+            timestamp: 500,
+            values: {
+                let mut map = HashMap::new();
+                map.insert("temperature".to_string(), 1.5);
+                map.insert("pressure".to_string(), -0.2);
+                map
+            },
+            tags: vec!["sensor".to_string(), "room1".to_string()],
+        };
+
+        assert!(processor.process(&mut record).is_ok());
+        assert_eq!(*record.values.get("temperature").unwrap(), 1.0);
+        assert_eq!(*record.values.get("pressure").unwrap(), 0.0);
+    }
+
+    #[test]
+    fn test_validation_error() {
+        let mut processor = DataProcessor::new();
+        processor.add_validation_rule(TimestampValidator::new(0, 100));
+
+        let mut record = DataRecord {
+            id: 1,
+            timestamp: 200,
+            values: HashMap::new(),
+            tags: Vec::new(),
+        };
+
+        assert!(processor.process(&mut record).is_err());
+    }
+}
