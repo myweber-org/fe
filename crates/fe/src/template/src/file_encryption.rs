@@ -316,3 +316,80 @@ mod tests {
         assert_eq!(test_data.to_vec(), result);
     }
 }
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+pub fn xor_cipher(data: &mut [u8], key: &[u8]) {
+    for (i, byte) in data.iter_mut().enumerate() {
+        *byte ^= key[i % key.len()];
+    }
+}
+
+pub fn encrypt_file(input_path: &str, output_path: &str, key: &str) -> io::Result<()> {
+    let mut input_file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    input_file.read_to_end(&mut buffer)?;
+    
+    xor_cipher(&mut buffer, key.as_bytes());
+    
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&buffer)?;
+    
+    Ok(())
+}
+
+pub fn decrypt_file(input_path: &str, output_path: &str, key: &str) -> io::Result<()> {
+    encrypt_file(input_path, output_path, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_xor_cipher_symmetry() {
+        let original = b"Hello, World!";
+        let key = b"secret";
+        let mut data = original.to_vec();
+        
+        xor_cipher(&mut data, key);
+        assert_ne!(data, original);
+        
+        xor_cipher(&mut data, key);
+        assert_eq!(data, original);
+    }
+    
+    #[test]
+    fn test_file_encryption() -> io::Result<()> {
+        let input_temp = NamedTempFile::new()?;
+        let output_temp = NamedTempFile::new()?;
+        let decrypt_temp = NamedTempFile::new()?;
+        
+        let test_data = b"Test encryption data";
+        fs::write(input_temp.path(), test_data)?;
+        
+        let key = "test_key_123";
+        
+        encrypt_file(
+            input_temp.path().to_str().unwrap(),
+            output_temp.path().to_str().unwrap(),
+            key,
+        )?;
+        
+        let encrypted = fs::read(output_temp.path())?;
+        assert_ne!(encrypted, test_data);
+        
+        decrypt_file(
+            output_temp.path().to_str().unwrap(),
+            decrypt_temp.path().to_str().unwrap(),
+            key,
+        )?;
+        
+        let decrypted = fs::read(decrypt_temp.path())?;
+        assert_eq!(decrypted, test_data);
+        
+        Ok(())
+    }
+}
