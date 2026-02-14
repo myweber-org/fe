@@ -687,4 +687,101 @@ mod tests {
         assert_eq!(stats["mean"], 3.5);
         assert_eq!(stats["total_records"], 2.0);
     }
+}use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+impl Record {
+    fn is_valid(&self) -> bool {
+        !self.name.is_empty() && self.value >= 0.0
+    }
+}
+
+struct DataProcessor {
+    records: Vec<Record>,
+}
+
+impl DataProcessor {
+    fn new() -> Self {
+        DataProcessor { records: Vec::new() }
+    }
+
+    fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(Path::new(file_path))?;
+        let mut rdr = ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(file);
+
+        for result in rdr.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
+        }
+
+        Ok(())
+    }
+
+    fn filter_valid_records(&self) -> Vec<Record> {
+        self.records
+            .iter()
+            .filter(|r| r.is_valid())
+            .cloned()
+            .collect()
+    }
+
+    fn calculate_average(&self) -> Option<f64> {
+        let valid_records = self.filter_valid_records();
+        if valid_records.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = valid_records.iter().map(|r| r.value).sum();
+        Some(sum / valid_records.len() as f64)
+    }
+
+    fn export_to_csv(&self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let valid_records = self.filter_valid_records();
+        let file = File::create(Path::new(file_path))?;
+        let mut wtr = WriterBuilder::new()
+            .has_headers(true)
+            .from_writer(file);
+
+        for record in valid_records {
+            wtr.serialize(record)?;
+        }
+
+        wtr.flush()?;
+        Ok(())
+    }
+
+    fn find_by_id(&self, target_id: u32) -> Option<&Record> {
+        self.records.iter().find(|r| r.id == target_id)
+    }
+}
+
+fn process_data_sample() -> Result<(), Box<dyn Error>> {
+    let mut processor = DataProcessor::new();
+    
+    processor.load_from_csv("input_data.csv")?;
+    
+    if let Some(avg) = processor.calculate_average() {
+        println!("Average value: {:.2}", avg);
+    }
+    
+    if let Some(record) = processor.find_by_id(42) {
+        println!("Found record: {:?}", record);
+    }
+    
+    processor.export_to_csv("processed_data.csv")?;
+    
+    Ok(())
 }
