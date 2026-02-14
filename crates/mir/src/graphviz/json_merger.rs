@@ -1,56 +1,72 @@
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufReader, Read};
-use std::path::Path;
+use serde_json::{Map, Value};
 
-pub fn merge_json_files(file_paths: &[&str]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let mut merged_map = HashMap::new();
-
-    for path_str in file_paths {
-        let path = Path::new(path_str);
-        let file = File::open(path)?;
-        let mut reader = BufReader::new(file);
-        let mut contents = String::new();
-        reader.read_to_string(&mut contents)?;
-
-        let json_value: serde_json::Value = serde_json::from_str(&contents)?;
-        
-        if let serde_json::Value::Object(map) = json_value {
-            for (key, value) in map {
-                merged_map.insert(key, value);
+pub fn merge_json(base: &mut Value, update: &Value) {
+    match (base, update) {
+        (Value::Object(base_map), Value::Object(update_map)) => {
+            for (key, update_value) in update_map {
+                if let Some(base_value) = base_map.get_mut(key) {
+                    merge_json(base_value, update_value);
+                } else {
+                    base_map.insert(key.clone(), update_value.clone());
+                }
             }
+        }
+        (base, update) => *base = update.clone(),
+    }
+}
+
+pub fn merge_multiple_json(objects: Vec<Value>) -> Option<Value> {
+    let mut result = Value::Object(Map::new());
+    
+    for obj in objects {
+        if let Value::Object(_) = obj {
+            merge_json(&mut result, &obj);
         } else {
-            return Err("Each JSON file must contain a JSON object".into());
+            return None;
         }
     }
-
-    Ok(serde_json::Value::Object(merged_map))
+    
+    Some(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use tempfile::tempdir;
+    use serde_json::json;
 
     #[test]
-    fn test_merge_json_files() {
-        let dir = tempdir().unwrap();
+    fn test_basic_merge() {
+        let mut base = json!({"a": 1, "b": {"c": 2}});
+        let update = json!({"b": {"d": 3}, "e": 4});
         
-        let file1_path = dir.path().join("data1.json");
-        fs::write(&file1_path, r#"{"name": "test", "count": 42}"#).unwrap();
+        merge_json(&mut base, &update);
         
-        let file2_path = dir.path().join("data2.json");
-        fs::write(&file2_path, r#"{"enabled": true, "tags": ["rust", "json"]}"#).unwrap();
+        assert_eq!(base["a"], 1);
+        assert_eq!(base["b"]["c"], 2);
+        assert_eq!(base["b"]["d"], 3);
+        assert_eq!(base["e"], 4);
+    }
 
-        let result = merge_json_files(&[
-            file1_path.to_str().unwrap(),
-            file2_path.to_str().unwrap(),
-        ]).unwrap();
+    #[test]
+    fn test_overwrite_primitive() {
+        let mut base = json!({"a": 1});
+        let update = json!({"a": 2});
+        
+        merge_json(&mut base, &update);
+        assert_eq!(base["a"], 2);
+    }
 
-        assert_eq!(result["name"], "test");
-        assert_eq!(result["count"], 42);
-        assert_eq!(result["enabled"], true);
-        assert!(result["tags"].is_array());
+    #[test]
+    fn test_merge_multiple() {
+        let objects = vec![
+            json!({"a": 1}),
+            json!({"b": 2}),
+            json!({"a": 3, "c": 4}),
+        ];
+        
+        let result = merge_multiple_json(objects).unwrap();
+        assert_eq!(result["a"], 3);
+        assert_eq!(result["b"], 2);
+        assert_eq!(result["c"], 4);
     }
 }
