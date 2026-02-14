@@ -192,3 +192,69 @@ mod tests {
         assert_eq!(obj.get("active").unwrap(), true);
     }
 }
+use serde_json::{Map, Value};
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], output_path: P) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged = Map::new();
+    let mut conflict_log = Vec::new();
+
+    for path in paths {
+        let content = fs::read_to_string(path)?;
+        let json: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(obj) = json {
+            for (key, value) in obj {
+                if merged.contains_key(&key) {
+                    let existing = merged.get(&key).unwrap();
+                    if existing != &value {
+                        conflict_log.push(format!(
+                            "Conflict for key '{}': existing {:?}, new {:?}",
+                            key, existing, value
+                        ));
+                        merged.insert(key, Value::Array(vec![existing.clone(), value]));
+                    }
+                } else {
+                    merged.insert(key, value);
+                }
+            }
+        }
+    }
+
+    let result = Value::Object(merged);
+    let output = serde_json::to_string_pretty(&result)?;
+    fs::write(output_path, output)?;
+
+    if !conflict_log.is_empty() {
+        let log_content = conflict_log.join("\n");
+        fs::write("merge_conflicts.log", log_content)?;
+        eprintln!("Conflicts detected. See merge_conflicts.log for details.");
+    }
+
+    Ok(())
+}
+
+pub fn find_common_keys<P: AsRef<Path>>(paths: &[P]) -> Result<HashSet<String>, Box<dyn std::error::Error>> {
+    let mut common_keys: Option<HashSet<String>> = None;
+
+    for path in paths {
+        let content = fs::read_to_string(path)?;
+        let json: Value = serde_json::from_str(&content)?;
+
+        let mut current_keys = HashSet::new();
+        if let Value::Object(obj) = json {
+            for key in obj.keys() {
+                current_keys.insert(key.clone());
+            }
+        }
+
+        common_keys = match common_keys {
+            Some(existing) => Some(existing.intersection(&current_keys).cloned().collect()),
+            None => Some(current_keys),
+        };
+    }
+
+    Ok(common_keys.unwrap_or_default())
+}
