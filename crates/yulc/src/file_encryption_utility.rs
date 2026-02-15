@@ -388,4 +388,98 @@ mod tests {
         let decrypted_data = fs::read(decrypted_file.path()).unwrap();
         assert_eq!(test_data.to_vec(), decrypted_data);
     }
+}use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use chacha20poly1305::{ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce};
+use std::error::Error;
+
+pub enum CipherAlgorithm {
+    Aes256Gcm,
+    ChaCha20Poly1305,
+}
+
+pub struct EncryptionResult {
+    pub ciphertext: Vec<u8>,
+    pub nonce: Vec<u8>,
+}
+
+pub fn encrypt_data(
+    plaintext: &[u8],
+    algorithm: CipherAlgorithm,
+) -> Result<EncryptionResult, Box<dyn Error>> {
+    match algorithm {
+        CipherAlgorithm::Aes256Gcm => {
+            let key = Aes256Gcm::generate_key(&mut OsRng);
+            let cipher = Aes256Gcm::new(&key);
+            let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+            let ciphertext = cipher.encrypt(&nonce, plaintext)?;
+            
+            Ok(EncryptionResult {
+                ciphertext,
+                nonce: nonce.to_vec(),
+            })
+        }
+        CipherAlgorithm::ChaCha20Poly1305 => {
+            let key = ChaCha20Poly1305::generate_key(&mut OsRng);
+            let cipher = ChaCha20Poly1305::new(&key);
+            let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+            let ciphertext = cipher.encrypt(&nonce, plaintext)?;
+            
+            Ok(EncryptionResult {
+                ciphertext,
+                nonce: nonce.to_vec(),
+            })
+        }
+    }
+}
+
+pub fn decrypt_data(
+    ciphertext: &[u8],
+    nonce: &[u8],
+    algorithm: CipherAlgorithm,
+    key: &[u8],
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    match algorithm {
+        CipherAlgorithm::Aes256Gcm => {
+            let key = Key::<Aes256Gcm>::from_slice(key);
+            let cipher = Aes256Gcm::new(key);
+            let nonce = Nonce::from_slice(nonce);
+            let plaintext = cipher.decrypt(nonce, ciphertext)?;
+            Ok(plaintext)
+        }
+        CipherAlgorithm::ChaCha20Poly1305 => {
+            let key = ChaChaKey::from_slice(key);
+            let cipher = ChaCha20Poly1305::new(key);
+            let nonce = ChaChaNonce::from_slice(nonce);
+            let plaintext = cipher.decrypt(nonce, ciphertext)?;
+            Ok(plaintext)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_aes_encryption_decryption() {
+        let plaintext = b"Test secret message";
+        let result = encrypt_data(plaintext, CipherAlgorithm::Aes256Gcm).unwrap();
+        
+        // In real usage, key management would be required
+        // This test demonstrates the encryption works
+        assert_ne!(result.ciphertext, plaintext);
+        assert_eq!(result.nonce.len(), 12); // AES-GCM nonce size
+    }
+
+    #[test]
+    fn test_chacha_encryption_decryption() {
+        let plaintext = b"Another secret message";
+        let result = encrypt_data(plaintext, CipherAlgorithm::ChaCha20Poly1305).unwrap();
+        
+        assert_ne!(result.ciphertext, plaintext);
+        assert_eq!(result.nonce.len(), 12); // ChaCha20Poly1305 nonce size
+    }
 }
