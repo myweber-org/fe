@@ -425,3 +425,98 @@ mod tests {
         assert_eq!(original_content.to_vec(), decrypted_content);
     }
 }
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use argon2::{
+    password_hash::{
+        rand_core::OsRng,
+        PasswordHasher, SaltString
+    },
+    Argon2
+};
+use std::fs;
+use std::io::{self, Write};
+
+const NONCE_SIZE: usize = 12;
+const SALT_SIZE: usize = 16;
+
+pub struct FileEncryptor {
+    key: [u8; 32],
+}
+
+impl FileEncryptor {
+    pub fn new(password: &str) -> io::Result<Self> {
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        
+        let password_hash = argon2.hash_password(password.as_bytes(), &salt)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&password_hash.hash.unwrap().as_bytes()[..32]);
+        
+        Ok(Self { key })
+    }
+    
+    pub fn encrypt_file(&self, input_path: &str, output_path: &str) -> io::Result<()> {
+        let plaintext = fs::read(input_path)?;
+        
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.key));
+        let nonce = Nonce::from_slice(&generate_random_bytes(NONCE_SIZE));
+        
+        let ciphertext = cipher.encrypt(nonce, plaintext.as_ref())
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        
+        let mut output_data = Vec::new();
+        output_data.extend_from_slice(nonce.as_slice());
+        output_data.extend_from_slice(&ciphertext);
+        
+        fs::write(output_path, output_data)?;
+        Ok(())
+    }
+    
+    pub fn decrypt_file(&self, input_path: &str, output_path: &str) -> io::Result<()> {
+        let encrypted_data = fs::read(input_path)?;
+        
+        if encrypted_data.len() < NONCE_SIZE {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "File too short"));
+        }
+        
+        let (nonce_slice, ciphertext) = encrypted_data.split_at(NONCE_SIZE);
+        let nonce = Nonce::from_slice(nonce_slice);
+        
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.key));
+        let plaintext = cipher.decrypt(nonce, ciphertext)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        
+        fs::write(output_path, plaintext)?;
+        Ok(())
+    }
+}
+
+fn generate_random_bytes(size: usize) -> Vec<u8> {
+    let mut bytes = vec![0u8; size];
+    OsRng.fill_bytes(&mut bytes);
+    bytes
+}
+
+pub fn encrypt_directory(password: &str, dir_path: &str) -> io::Result<()> {
+    let encryptor = FileEncryptor::new(password)?;
+    
+    for entry in fs::read_dir(dir_path)? {
+        let entry = entry?;
+        let path = entry.path();
+        
+        if path.is_file() {
+            let input_path = path.to_str().unwrap();
+            let output_path = format!("{}.enc", input_path);
+            
+            encryptor.encrypt_file(input_path, &output_path)?;
+            println!("Encrypted: {}", input_path);
+        }
+    }
+    
+    Ok(())
+}
