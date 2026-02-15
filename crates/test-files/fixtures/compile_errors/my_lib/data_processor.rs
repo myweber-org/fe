@@ -243,4 +243,176 @@ pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
         .into_iter()
         .filter(|r| r.category == category)
         .collect()
+}use std::collections::HashMap;
+
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidationRule {
+    pub field_name: String,
+    pub min_value: f64,
+    pub max_value: f64,
+    pub required: bool,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
+            validation_rules: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn process_data(&mut self, dataset: &[HashMap<String, f64>]) -> Result<Vec<HashMap<String, f64>>, String> {
+        let mut processed = Vec::new();
+
+        for (index, record) in dataset.iter().enumerate() {
+            match self.validate_record(record) {
+                Ok(validated) => {
+                    let transformed = self.transform_record(&validated);
+                    self.cache_record(index, &transformed);
+                    processed.push(transformed);
+                }
+                Err(e) => return Err(format!("Validation failed at record {}: {}", index, e)),
+            }
+        }
+
+        Ok(processed)
+    }
+
+    fn validate_record(&self, record: &HashMap<String, f64>) -> Result<HashMap<String, f64>, String> {
+        let mut validated = HashMap::new();
+
+        for rule in &self.validation_rules {
+            match record.get(&rule.field_name) {
+                Some(&value) => {
+                    if value < rule.min_value || value > rule.max_value {
+                        return Err(format!("Field '{}' value {} out of range [{}, {}]", 
+                            rule.field_name, value, rule.min_value, rule.max_value));
+                    }
+                    validated.insert(rule.field_name.clone(), value);
+                }
+                None => {
+                    if rule.required {
+                        return Err(format!("Required field '{}' missing", rule.field_name));
+                    }
+                }
+            }
+        }
+
+        Ok(validated)
+    }
+
+    fn transform_record(&self, record: &HashMap<String, f64>) -> HashMap<String, f64> {
+        let mut transformed = record.clone();
+        
+        for (key, value) in transformed.iter_mut() {
+            if key.starts_with("normalized_") {
+                *value = (*value * 100.0).round() / 100.0;
+            }
+        }
+
+        transformed
+    }
+
+    fn cache_record(&mut self, index: usize, record: &HashMap<String, f64>) {
+        let key = format!("record_{}", index);
+        let values: Vec<f64> = record.values().cloned().collect();
+        self.cache.insert(key, values);
+    }
+
+    pub fn get_cached_data(&self, index: usize) -> Option<&Vec<f64>> {
+        let key = format!("record_{}", index);
+        self.cache.get(&key)
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn calculate_statistics(&self) -> HashMap<String, f64> {
+        let mut stats = HashMap::new();
+        
+        for values in self.cache.values() {
+            if !values.is_empty() {
+                let sum: f64 = values.iter().sum();
+                let avg = sum / values.len() as f64;
+                let max = values.iter().fold(f64::MIN, |a, &b| a.max(b));
+                let min = values.iter().fold(f64::MAX, |a, &b| a.min(b));
+                
+                stats.insert("total_records".to_string(), self.cache.len() as f64);
+                stats.insert("average_value".to_string(), avg);
+                stats.insert("max_value".to_string(), max);
+                stats.insert("min_value".to_string(), min);
+            }
+        }
+
+        stats
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        
+        processor.add_validation_rule(ValidationRule {
+            field_name: "temperature".to_string(),
+            min_value: -50.0,
+            max_value: 100.0,
+            required: true,
+        });
+
+        processor.add_validation_rule(ValidationRule {
+            field_name: "humidity".to_string(),
+            min_value: 0.0,
+            max_value: 100.0,
+            required: false,
+        });
+
+        let test_data = vec![
+            [("temperature".to_string(), 25.5), ("humidity".to_string(), 60.0)]
+                .iter().cloned().collect(),
+            [("temperature".to_string(), 30.0), ("humidity".to_string(), 75.5)]
+                .iter().cloned().collect(),
+        ];
+
+        let result = processor.process_data(&test_data);
+        assert!(result.is_ok());
+        
+        let processed = result.unwrap();
+        assert_eq!(processed.len(), 2);
+        
+        let stats = processor.calculate_statistics();
+        assert!(stats.contains_key("total_records"));
+    }
+
+    #[test]
+    fn test_validation_failure() {
+        let mut processor = DataProcessor::new();
+        
+        processor.add_validation_rule(ValidationRule {
+            field_name: "pressure".to_string(),
+            min_value: 900.0,
+            max_value: 1100.0,
+            required: true,
+        });
+
+        let invalid_data = vec![
+            [("pressure".to_string(), 850.0)].iter().cloned().collect(),
+        ];
+
+        let result = processor.process_data(&invalid_data);
+        assert!(result.is_err());
+    }
 }
