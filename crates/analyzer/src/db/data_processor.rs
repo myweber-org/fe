@@ -266,3 +266,162 @@ mod tests {
         assert_eq!(max, Some(15.3));
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    id: u32,
+    name: String,
+    value: f64,
+    tags: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidId,
+    EmptyName,
+    NegativeValue,
+    DuplicateTag,
+    ValidationFailed(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidId => write!(f, "ID must be greater than zero"),
+            ProcessingError::EmptyName => write!(f, "Name cannot be empty"),
+            ProcessingError::NegativeValue => write!(f, "Value cannot be negative"),
+            ProcessingError::DuplicateTag => write!(f, "Duplicate tags are not allowed"),
+            ProcessingError::ValidationFailed(msg) => write!(f, "Validation failed: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64, tags: Vec<String>) -> Result<Self, ProcessingError> {
+        let record = DataRecord { id, name, value, tags };
+        record.validate()?;
+        Ok(record)
+    }
+
+    fn validate(&self) -> Result<(), ProcessingError> {
+        if self.id == 0 {
+            return Err(ProcessingError::InvalidId);
+        }
+        
+        if self.name.trim().is_empty() {
+            return Err(ProcessingError::EmptyName);
+        }
+        
+        if self.value < 0.0 {
+            return Err(ProcessingError::NegativeValue);
+        }
+        
+        let mut seen_tags = HashMap::new();
+        for tag in &self.tags {
+            if seen_tags.contains_key(tag) {
+                return Err(ProcessingError::DuplicateTag);
+            }
+            seen_tags.insert(tag.clone(), true);
+        }
+        
+        Ok(())
+    }
+
+    pub fn transform(&mut self, multiplier: f64) -> Result<(), ProcessingError> {
+        if multiplier <= 0.0 {
+            return Err(ProcessingError::ValidationFailed(
+                "Multiplier must be positive".to_string()
+            ));
+        }
+        
+        self.value *= multiplier;
+        self.tags.push(format!("transformed_x{}", multiplier));
+        Ok(())
+    }
+
+    pub fn calculate_score(&self) -> f64 {
+        let base_score = self.value * (self.id as f64);
+        let tag_bonus = self.tags.len() as f64 * 0.5;
+        base_score + tag_bonus
+    }
+
+    pub fn get_summary(&self) -> String {
+        format!(
+            "Record {}: {} (value: {:.2}, tags: {}, score: {:.2})",
+            self.id,
+            self.name,
+            self.value,
+            self.tags.len(),
+            self.calculate_score()
+        )
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord], multiplier: f64) -> Vec<Result<String, ProcessingError>> {
+    records
+        .iter_mut()
+        .map(|record| {
+            record.transform(multiplier)?;
+            Ok(record.get_summary())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(
+            1,
+            "Test Record".to_string(),
+            100.0,
+            vec!["tag1".to_string(), "tag2".to_string()]
+        );
+        assert!(record.is_ok());
+    }
+
+    #[test]
+    fn test_invalid_id() {
+        let record = DataRecord::new(
+            0,
+            "Test".to_string(),
+            50.0,
+            vec![]
+        );
+        assert!(matches!(record, Err(ProcessingError::InvalidId)));
+    }
+
+    #[test]
+    fn test_transform_positive() {
+        let mut record = DataRecord::new(
+            2,
+            "Transform Test".to_string(),
+            10.0,
+            vec!["test".to_string()]
+        ).unwrap();
+        
+        assert!(record.transform(2.5).is_ok());
+        assert_eq!(record.value, 25.0);
+        assert!(record.tags.contains(&"transformed_x2.5".to_string()));
+    }
+
+    #[test]
+    fn test_calculate_score() {
+        let record = DataRecord::new(
+            3,
+            "Score Test".to_string(),
+            20.0,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        ).unwrap();
+        
+        let expected_score = (20.0 * 3.0) + (3.0 * 0.5);
+        assert_eq!(record.calculate_score(), expected_score);
+    }
+}
