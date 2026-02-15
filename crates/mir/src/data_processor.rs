@@ -1,83 +1,93 @@
-
-use csv::Reader;
-use serde::Deserialize;
 use std::error::Error;
 use std::fs::File;
-
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
-}
+use std::io::{BufRead, BufReader};
+use std::collections::HashMap;
 
 pub struct DataProcessor {
-    records: Vec<Record>,
+    data: Vec<f64>,
+    frequency_map: HashMap<String, u32>,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
         DataProcessor {
-            records: Vec::new(),
+            data: Vec::new(),
+            frequency_map: HashMap::new(),
         }
     }
 
     pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
         let file = File::open(file_path)?;
-        let mut rdr = Reader::from_reader(file);
-
-        for result in rdr.deserialize() {
-            let record: Record = result?;
-            self.records.push(record);
+        let reader = BufReader::new(file);
+        
+        for line in reader.lines().skip(1) {
+            let line = line?;
+            let parts: Vec<&str> = line.split(',').collect();
+            
+            if parts.len() >= 2 {
+                if let Ok(value) = parts[1].parse::<f64>() {
+                    self.data.push(value);
+                }
+                
+                let category = parts[0].to_string();
+                *self.frequency_map.entry(category).or_insert(0) += 1;
+            }
         }
-
+        
         Ok(())
     }
 
-    pub fn filter_by_category(&self, category: &str) -> Vec<&Record> {
-        self.records
-            .iter()
-            .filter(|record| record.category == category)
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.data.is_empty() {
+            return None;
+        }
+        
+        let sum: f64 = self.data.iter().sum();
+        Some(sum / self.data.len() as f64)
+    }
+
+    pub fn calculate_standard_deviation(&self) -> Option<f64> {
+        if self.data.len() < 2 {
+            return None;
+        }
+        
+        let mean = self.calculate_mean()?;
+        let variance: f64 = self.data.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / (self.data.len() - 1) as f64;
+        
+        Some(variance.sqrt())
+    }
+
+    pub fn get_frequency_distribution(&self) -> &HashMap<String, u32> {
+        &self.frequency_map
+    }
+
+    pub fn filter_by_threshold(&self, threshold: f64) -> Vec<f64> {
+        self.data.iter()
+            .filter(|&&x| x > threshold)
+            .cloned()
             .collect()
     }
 
-    pub fn calculate_average(&self) -> f64 {
-        if self.records.is_empty() {
-            return 0.0;
-        }
-
-        let sum: f64 = self.records.iter().map(|record| record.value).sum();
-        sum / self.records.len() as f64
-    }
-
-    pub fn find_max_value(&self) -> Option<&Record> {
-        self.records.iter().max_by(|a, b| {
-            a.value
-                .partial_cmp(&b.value)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-    }
-
-    pub fn get_statistics(&self) -> (usize, f64, f64, f64) {
-        let count = self.records.len();
-        let avg = self.calculate_average();
-
-        let min = self
-            .records
-            .iter()
-            .map(|r| r.value)
-            .min_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap_or(0.0);
-
-        let max = self
-            .records
-            .iter()
-            .map(|r| r.value)
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap_or(0.0);
-
-        (count, avg, min, max)
+    pub fn summary_statistics(&self) -> String {
+        let mean_str = match self.calculate_mean() {
+            Some(m) => format!("{:.2}", m),
+            None => "N/A".to_string(),
+        };
+        
+        let std_str = match self.calculate_standard_deviation() {
+            Some(s) => format!("{:.2}", s),
+            None => "N/A".to_string(),
+        };
+        
+        format!(
+            "Data points: {}, Mean: {}, Std Dev: {}, Unique categories: {}",
+            self.data.len(),
+            mean_str,
+            std_str,
+            self.frequency_map.len()
+        )
     }
 }
 
@@ -87,46 +97,24 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    fn create_test_csv() -> NamedTempFile {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(
-            file,
-            "id,name,value,category\n1,ItemA,10.5,Alpha\n2,ItemB,15.3,Beta\n3,ItemC,8.7,Alpha"
-        )
-        .unwrap();
-        file
-    }
-
     #[test]
-    fn test_load_and_filter() {
-        let test_file = create_test_csv();
+    fn test_data_processing() {
         let mut processor = DataProcessor::new();
-
-        processor
-            .load_from_csv(test_file.path().to_str().unwrap())
-            .unwrap();
-
-        let alpha_records = processor.filter_by_category("Alpha");
-        assert_eq!(alpha_records.len(), 2);
-
-        let beta_records = processor.filter_by_category("Beta");
-        assert_eq!(beta_records.len(), 1);
-    }
-
-    #[test]
-    fn test_calculations() {
-        let test_file = create_test_csv();
-        let mut processor = DataProcessor::new();
-
-        processor
-            .load_from_csv(test_file.path().to_str().unwrap())
-            .unwrap();
-
-        let avg = processor.calculate_average();
-        assert!((avg - 11.5).abs() < 0.01);
-
-        let max_record = processor.find_max_value().unwrap();
-        assert_eq!(max_record.name, "ItemB");
-        assert!((max_record.value - 15.3).abs() < 0.01);
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "category,value").unwrap();
+        writeln!(temp_file, "A,10.5").unwrap();
+        writeln!(temp_file, "B,20.3").unwrap();
+        writeln!(temp_file, "A,15.7").unwrap();
+        writeln!(temp_file, "C,8.9").unwrap();
+        
+        processor.load_from_csv(temp_file.path().to_str().unwrap()).unwrap();
+        
+        assert_eq!(processor.data.len(), 4);
+        assert_eq!(processor.calculate_mean().unwrap(), 13.85);
+        assert_eq!(processor.get_frequency_distribution().get("A"), Some(&2));
+        
+        let filtered = processor.filter_by_threshold(12.0);
+        assert_eq!(filtered.len(), 2);
     }
 }
