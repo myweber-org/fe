@@ -230,4 +230,89 @@ mod tests {
         assert!((variance - 66.666).abs() < 0.001);
         assert!((std_dev - 8.1649).abs() < 0.001);
     }
+}use csv::{ReaderBuilder, StringRecord};
+use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+#[derive(Debug, Deserialize)]
+struct Transaction {
+    id: u32,
+    amount: f64,
+    currency: String,
+    timestamp: String,
+}
+
+fn validate_transaction(tx: &Transaction) -> Result<(), String> {
+    if tx.amount <= 0.0 {
+        return Err(format!("Invalid amount {} for transaction {}", tx.amount, tx.id));
+    }
+    if !["USD", "EUR", "GBP"].contains(&tx.currency.as_str()) {
+        return Err(format!("Unsupported currency {} for transaction {}", tx.currency, tx.id));
+    }
+    Ok(())
+}
+
+pub fn process_transactions(file_path: &str) -> Result<Vec<Transaction>, Box<dyn Error>> {
+    let path = Path::new(file_path);
+    let file = File::open(path)?;
+    let mut rdr = ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(file);
+
+    let mut valid_transactions = Vec::new();
+    let mut errors = Vec::new();
+
+    for result in rdr.deserialize() {
+        match result {
+            Ok(tx) => {
+                if let Err(e) = validate_transaction(&tx) {
+                    errors.push(e);
+                } else {
+                    valid_transactions.push(tx);
+                }
+            }
+            Err(e) => errors.push(format!("Parse error: {}", e)),
+        }
+    }
+
+    if !errors.is_empty() {
+        eprintln!("Encountered {} validation errors:", errors.len());
+        for err in &errors {
+            eprintln!("  {}", err);
+        }
+    }
+
+    println!("Successfully processed {} transactions", valid_transactions.len());
+    Ok(valid_transactions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_valid_transactions() {
+        let csv_data = "id,amount,currency,timestamp\n1,100.50,USD,2023-01-01\n2,200.75,EUR,2023-01-02";
+        let mut tmp_file = NamedTempFile::new().unwrap();
+        write!(tmp_file, "{}", csv_data).unwrap();
+        
+        let result = process_transactions(tmp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_invalid_currency() {
+        let csv_data = "id,amount,currency,timestamp\n1,50.0,JPY,2023-01-01";
+        let mut tmp_file = NamedTempFile::new().unwrap();
+        write!(tmp_file, "{}", csv_data).unwrap();
+        
+        let result = process_transactions(tmp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 0);
+    }
 }
