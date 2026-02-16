@@ -188,4 +188,109 @@ mod tests {
         assert_eq!(config.get("SECRET"), Some(&"super_secret_value".to_string()));
         assert_eq!(config.get("NORMAL"), Some(&"plain_value".to_string()));
     }
+}use std::collections::HashMap;
+use std::fs;
+
+#[derive(Debug)]
+pub struct Config {
+    sections: HashMap<String, HashMap<String, String>>,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        Config {
+            sections: HashMap::new(),
+        }
+    }
+
+    pub fn load_from_file(path: &str) -> Result<Self, String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+        Self::parse(&content)
+    }
+
+    pub fn parse(content: &str) -> Result<Self, String> {
+        let mut config = Config::new();
+        let mut current_section = String::from("default");
+        config.sections.insert(current_section.clone(), HashMap::new());
+
+        for (line_num, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                let section_name = trimmed[1..trimmed.len() - 1].trim().to_string();
+                if section_name.is_empty() {
+                    return Err(format!("Invalid section name at line {}", line_num + 1));
+                }
+                current_section = section_name;
+                config.sections.entry(current_section.clone()).or_insert_with(HashMap::new);
+            } else {
+                let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
+                if parts.len() != 2 {
+                    return Err(format!("Invalid key-value pair at line {}", line_num + 1));
+                }
+                let key = parts[0].trim().to_string();
+                let value = parts[1].trim().to_string();
+                config.sections
+                    .get_mut(&current_section)
+                    .ok_or_else(|| format!("Section not found: {}", current_section))?
+                    .insert(key, value);
+            }
+        }
+
+        Ok(config)
+    }
+
+    pub fn get(&self, section: &str, key: &str) -> Option<&String> {
+        self.sections.get(section)?.get(key)
+    }
+
+    pub fn sections(&self) -> Vec<&String> {
+        self.sections.keys().collect()
+    }
+
+    pub fn keys_in_section(&self, section: &str) -> Option<Vec<&String>> {
+        let section_map = self.sections.get(section)?;
+        Some(section_map.keys().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_parsing() {
+        let content = r#"
+# Sample config
+server_host = 127.0.0.1
+server_port = 8080
+
+[database]
+host = localhost
+port = 5432
+"#;
+        let config = Config::parse(content).unwrap();
+        assert_eq!(config.get("default", "server_host"), Some(&"127.0.0.1".to_string()));
+        assert_eq!(config.get("default", "server_port"), Some(&"8080".to_string()));
+        assert_eq!(config.get("database", "host"), Some(&"localhost".to_string()));
+        assert_eq!(config.get("database", "port"), Some(&"5432".to_string()));
+    }
+
+    #[test]
+    fn test_empty_section() {
+        let content = "[section]\nkey=value";
+        let config = Config::parse(content).unwrap();
+        assert_eq!(config.get("section", "key"), Some(&"value".to_string()));
+    }
+
+    #[test]
+    fn test_invalid_format() {
+        let content = "key_without_value";
+        let result = Config::parse(content);
+        assert!(result.is_err());
+    }
 }
