@@ -662,3 +662,143 @@ mod tests {
         assert!(!record3.is_valid());
     }
 }
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug)]
+pub struct ValidationError {
+    details: String,
+}
+
+impl ValidationError {
+    fn new(msg: &str) -> ValidationError {
+        ValidationError {
+            details: msg.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.details)
+    }
+}
+
+impl Error for ValidationError {
+    fn description(&self) -> &str {
+        &self.details
+    }
+}
+
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub timestamp: i64,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, timestamp: i64) -> Result<DataRecord, ValidationError> {
+        if id == 0 {
+            return Err(ValidationError::new("ID cannot be zero"));
+        }
+        if value < 0.0 || value > 1000.0 {
+            return Err(ValidationError::new("Value must be between 0 and 1000"));
+        }
+        if timestamp < 0 {
+            return Err(ValidationError::new("Timestamp cannot be negative"));
+        }
+
+        Ok(DataRecord {
+            id,
+            value,
+            timestamp,
+        })
+    }
+
+    pub fn normalize(&self) -> f64 {
+        self.value / 1000.0
+    }
+
+    pub fn is_anomaly(&self, threshold: f64) -> bool {
+        self.normalize() > threshold
+    }
+}
+
+pub fn process_records(records: &[DataRecord]) -> (Vec<f64>, Vec<u32>) {
+    let normalized_values: Vec<f64> = records.iter().map(|r| r.normalize()).collect();
+    let anomaly_ids: Vec<u32> = records
+        .iter()
+        .filter(|r| r.is_anomaly(0.8))
+        .map(|r| r.id)
+        .collect();
+
+    (normalized_values, anomaly_ids)
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
+    if records.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let count = records.len() as f64;
+    let mean = sum / count;
+
+    let variance: f64 = records
+        .iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>()
+        / count;
+
+    let std_dev = variance.sqrt();
+
+    (mean, variance, std_dev)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(1, 500.0, 1625097600).unwrap();
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 500.0);
+        assert_eq!(record.timestamp, 1625097600);
+    }
+
+    #[test]
+    fn test_invalid_id() {
+        let result = DataRecord::new(0, 500.0, 1625097600);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_normalize() {
+        let record = DataRecord::new(1, 500.0, 1625097600).unwrap();
+        assert_eq!(record.normalize(), 0.5);
+    }
+
+    #[test]
+    fn test_anomaly_detection() {
+        let record = DataRecord::new(1, 850.0, 1625097600).unwrap();
+        assert!(record.is_anomaly(0.8));
+        
+        let normal_record = DataRecord::new(2, 750.0, 1625097600).unwrap();
+        assert!(!normal_record.is_anomaly(0.8));
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let records = vec![
+            DataRecord::new(1, 100.0, 1625097600).unwrap(),
+            DataRecord::new(2, 200.0, 1625097600).unwrap(),
+            DataRecord::new(3, 300.0, 1625097600).unwrap(),
+        ];
+
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        assert_eq!(mean, 200.0);
+        assert_eq!(variance, 6666.666666666667);
+        assert_eq!(std_dev, 81.64965809277261);
+    }
+}
