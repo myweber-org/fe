@@ -190,4 +190,94 @@ pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
     records.into_iter()
         .filter(|r| r.category == category)
         .collect()
+}use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+}
+
+pub fn load_csv_data(file_path: &str) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let path = Path::new(file_path);
+    let file = File::open(path)?;
+    let mut rdr = csv::Reader::from_reader(file);
+    
+    let mut records = Vec::new();
+    
+    for result in rdr.deserialize() {
+        let record: DataRecord = result?;
+        validate_record(&record)?;
+        records.push(record);
+    }
+    
+    Ok(records)
+}
+
+fn validate_record(record: &DataRecord) -> Result<(), Box<dyn Error>> {
+    if record.id == 0 {
+        return Err("Invalid record ID".into());
+    }
+    
+    if record.value.is_nan() || record.value.is_infinite() {
+        return Err("Invalid numeric value".into());
+    }
+    
+    if record.category.trim().is_empty() {
+        return Err("Category cannot be empty".into());
+    }
+    
+    Ok(())
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
+    if records.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+    
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let count = records.len() as f64;
+    let mean = sum / count;
+    
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (mean, variance, std_dev)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+    
+    #[test]
+    fn test_valid_data_processing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,value,category").unwrap();
+        writeln!(temp_file, "1,42.5,TypeA").unwrap();
+        writeln!(temp_file, "2,38.2,TypeB").unwrap();
+        
+        let records = load_csv_data(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+        
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        assert!((mean - 40.35).abs() < 0.01);
+        assert!((variance - 4.6225).abs() < 0.01);
+    }
+    
+    #[test]
+    fn test_invalid_id_validation() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,value,category").unwrap();
+        writeln!(temp_file, "0,15.3,TypeC").unwrap();
+        
+        let result = load_csv_data(temp_file.path().to_str().unwrap());
+        assert!(result.is_err());
+    }
 }
