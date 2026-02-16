@@ -1,53 +1,69 @@
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-const BUFFER_SIZE: usize = 8192;
-
-pub struct XorCipher {
-    key: Vec<u8>,
-    key_position: usize,
+pub struct FileEncryptor {
+    cipher: Aes256Gcm,
 }
 
-impl XorCipher {
-    pub fn new(key: &str) -> Self {
-        XorCipher {
-            key: key.as_bytes().to_vec(),
-            key_position: 0,
-        }
+impl FileEncryptor {
+    pub fn new() -> Self {
+        let key = Key::<Aes256Gcm>::generate(&mut OsRng);
+        let cipher = Aes256Gcm::new(&key);
+        FileEncryptor { cipher }
     }
 
-    pub fn encrypt(&mut self, data: &mut [u8]) {
-        for byte in data.iter_mut() {
-            *byte ^= self.key[self.key_position];
-            self.key_position = (self.key_position + 1) % self.key.len();
-        }
+    pub fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> io::Result<()> {
+        let mut file = fs::File::open(input_path)?;
+        let mut plaintext = Vec::new();
+        file.read_to_end(&mut plaintext)?;
+
+        let nonce = Nonce::generate(&mut OsRng);
+        let ciphertext = self
+            .cipher
+            .encrypt(&nonce, plaintext.as_ref())
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        let mut output_file = fs::File::create(output_path)?;
+        output_file.write_all(&nonce)?;
+        output_file.write_all(&ciphertext)?;
+
+        Ok(())
     }
 
-    pub fn reset(&mut self) {
-        self.key_position = 0;
+    pub fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> io::Result<()> {
+        let mut file = fs::File::open(input_path)?;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)?;
+
+        if data.len() < 12 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "File too short to contain nonce",
+            ));
+        }
+
+        let (nonce_bytes, ciphertext) = data.split_at(12);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        let plaintext = self
+            .cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        let mut output_file = fs::File::create(output_path)?;
+        output_file.write_all(&plaintext)?;
+
+        Ok(())
     }
 }
 
-pub fn process_file(input_path: &Path, output_path: &Path, key: &str) -> io::Result<()> {
-    let mut cipher = XorCipher::new(key);
-    let mut input_file = fs::File::open(input_path)?;
-    let mut output_file = fs::File::create(output_path)?;
-
-    let mut buffer = [0u8; BUFFER_SIZE];
-
-    loop {
-        let bytes_read = input_file.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-
-        let data_slice = &mut buffer[..bytes_read];
-        cipher.encrypt(data_slice);
-        output_file.write_all(data_slice)?;
-    }
-
-    Ok(())
+pub fn generate_key() -> Vec<u8> {
+    let key = Key::<Aes256Gcm>::generate(&mut OsRng);
+    key.as_slice().to_vec()
 }
 
 #[cfg(test)]
@@ -56,37 +72,24 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_xor_cipher_symmetry() {
-        let original_data = b"Hello, World!";
-        let mut data = original_data.to_vec();
-        let key = "secret_key";
+    fn test_encryption_decryption() {
+        let encryptor = FileEncryptor::new();
+        let test_data = b"Test encryption data for AES-256-GCM";
 
-        let mut cipher = XorCipher::new(key);
-        cipher.encrypt(&mut data);
-        
-        cipher.reset();
-        cipher.encrypt(&mut data);
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
 
-        assert_eq!(data, original_data);
-    }
+        fs::write(input_file.path(), test_data).unwrap();
 
-    #[test]
-    fn test_file_encryption() -> io::Result<()> {
-        let test_content = b"Test file content for encryption";
-        let key = "test_key_123";
+        encryptor
+            .encrypt_file(input_file.path(), encrypted_file.path())
+            .unwrap();
+        encryptor
+            .decrypt_file(encrypted_file.path(), decrypted_file.path())
+            .unwrap();
 
-        let input_file = NamedTempFile::new()?;
-        let output_file = NamedTempFile::new()?;
-
-        fs::write(input_file.path(), test_content)?;
-
-        process_file(input_file.path(), output_file.path(), key)?;
-
-        let mut cipher = XorCipher::new(key);
-        let mut encrypted_content = fs::read(output_file.path())?;
-        cipher.encrypt(&mut encrypted_content);
-
-        assert_eq!(encrypted_content, test_content);
-        Ok(())
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(test_data.to_vec(), decrypted_data);
     }
 }
