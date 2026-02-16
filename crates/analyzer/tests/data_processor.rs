@@ -477,3 +477,89 @@ mod tests {
         Ok(())
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
+        }
+    }
+
+    pub fn process_numeric_data(&mut self, key: &str, data: &[f64]) -> Result<Vec<f64>, String> {
+        if data.is_empty() {
+            return Err("Empty data provided".to_string());
+        }
+
+        if let Some(cached) = self.cache.get(key) {
+            return Ok(cached.clone());
+        }
+
+        let processed = data
+            .iter()
+            .map(|&x| {
+                if x.is_nan() || x.is_infinite() {
+                    0.0
+                } else {
+                    x.abs().sqrt()
+                }
+            })
+            .collect();
+
+        self.cache.insert(key.to_string(), processed.clone());
+        Ok(processed)
+    }
+
+    pub fn calculate_statistics(&self, data: &[f64]) -> (f64, f64, f64) {
+        let count = data.len() as f64;
+        if count == 0.0 {
+            return (0.0, 0.0, 0.0);
+        }
+
+        let sum: f64 = data.iter().sum();
+        let mean = sum / count;
+
+        let variance: f64 = data.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / count;
+        let std_dev = variance.sqrt();
+
+        (mean, variance, std_dev)
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_process_numeric_data() {
+        let mut processor = DataProcessor::new();
+        let data = vec![4.0, 9.0, 16.0];
+        let result = processor.process_numeric_data("test", &data).unwrap();
+        assert_eq!(result, vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_empty_data() {
+        let mut processor = DataProcessor::new();
+        let result = processor.process_numeric_data("empty", &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_statistics() {
+        let processor = DataProcessor::new();
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let (mean, variance, std_dev) = processor.calculate_statistics(&data);
+        assert_eq!(mean, 3.0);
+        assert_eq!(variance, 2.0);
+        assert_eq!(std_dev, 2.0_f64.sqrt());
+    }
+}
