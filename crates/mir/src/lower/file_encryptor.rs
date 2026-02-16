@@ -1,64 +1,92 @@
+
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use pbkdf2::{pbkdf2_hmac, Params};
+use sha2::Sha256;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::path::Path;
 
-pub fn xor_cipher(data: &mut [u8], key: &[u8]) {
-    for (i, byte) in data.iter_mut().enumerate() {
-        *byte ^= key[i % key.len()];
-    }
+const SALT_LENGTH: usize = 16;
+const NONCE_LENGTH: usize = 12;
+const PBKDF2_ITERATIONS: u32 = 100_000;
+
+pub struct FileEncryptor {
+    cipher: Aes256Gcm,
 }
 
-pub fn process_file(input_path: &Path, output_path: &Path, key: &[u8]) -> io::Result<()> {
-    let mut file = fs::File::open(input_path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    
-    xor_cipher(&mut buffer, key);
-    
-    let mut output_file = fs::File::create(output_path)?;
-    output_file.write_all(&buffer)?;
-    
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_xor_cipher_symmetry() {
-        let key = b"secret";
-        let original = b"Hello, World!";
-        let mut data = original.to_vec();
+impl FileEncryptor {
+    pub fn new(password: &[u8], salt: &[u8; SALT_LENGTH]) -> Result<Self, String> {
+        let mut key = [0u8; 32];
+        let params = Params {
+            rounds: PBKDF2_ITERATIONS,
+            output_length: key.len(),
+        };
         
-        xor_cipher(&mut data, key);
-        assert_ne!(data.as_slice(), original);
+        pbkdf2_hmac::<Sha256>(password, salt, params.rounds, &mut key)
+            .map_err(|e| format!("Key derivation failed: {}", e))?;
         
-        xor_cipher(&mut data, key);
-        assert_eq!(data.as_slice(), original);
+        let cipher_key = Key::<Aes256Gcm>::from_slice(&key);
+        let cipher = Aes256Gcm::new(cipher_key);
+        
+        Ok(FileEncryptor { cipher })
     }
-
-    #[test]
-    fn test_file_encryption() -> io::Result<()> {
-        let key = b"test_key";
-        let content = b"Sample file content for encryption test";
+    
+    pub fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), String> {
+        let mut file_data = Vec::new();
+        fs::File::open(input_path)
+            .map_err(|e| format!("Failed to open input file: {}", e))?
+            .read_to_end(&mut file_data)
+            .map_err(|e| format!("Failed to read file: {}", e))?;
         
-        let mut input_file = NamedTempFile::new()?;
-        input_file.write_all(content)?;
+        let mut nonce_bytes = [0u8; NONCE_LENGTH];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
         
-        let output_file = NamedTempFile::new()?;
+        let ciphertext = self.cipher
+            .encrypt(nonce, file_data.as_ref())
+            .map_err(|e| format!("Encryption failed: {}", e))?;
         
-        process_file(input_file.path(), output_file.path(), key)?;
+        let mut output = fs::File::create(output_path)
+            .map_err(|e| format!("Failed to create output file: {}", e))?;
         
-        let mut encrypted = Vec::new();
-        fs::File::open(output_file.path())?.read_to_end(&mut encrypted)?;
-        assert_ne!(encrypted.as_slice(), content);
-        
-        xor_cipher(&mut encrypted, key);
-        assert_eq!(encrypted.as_slice(), content);
+        output.write_all(&nonce_bytes)
+            .map_err(|e| format!("Failed to write nonce: {}", e))?;
+        output.write_all(&ciphertext)
+            .map_err(|e| format!("Failed to write ciphertext: {}", e))?;
         
         Ok(())
     }
+    
+    pub fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), String> {
+        let mut encrypted_data = Vec::new();
+        fs::File::open(input_path)
+            .map_err(|e| format!("Failed to open encrypted file: {}", e))?
+            .read_to_end(&mut encrypted_data)
+            .map_err(|e| format!("Failed to read encrypted data: {}", e))?;
+        
+        if encrypted_data.len() < NONCE_LENGTH {
+            return Err("Invalid encrypted file format".to_string());
+        }
+        
+        let (nonce_bytes, ciphertext) = encrypted_data.split_at(NONCE_LENGTH);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        
+        let plaintext = self.cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| format!("Decryption failed: {}", e))?;
+        
+        fs::write(output_path, plaintext)
+            .map_err(|e| format!("Failed to write decrypted file: {}", e))?;
+        
+        Ok(())
+    }
+}
+
+pub fn generate_salt() -> [u8; SALT_LENGTH] {
+    let mut salt = [0u8; SALT_LENGTH];
+    OsRng.fill_bytes(&mut salt);
+    salt
 }
