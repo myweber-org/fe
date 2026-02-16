@@ -211,3 +211,69 @@ mod tests {
         assert_eq!(ids, vec![1, 2, 3]);
     }
 }
+use serde_json::{Map, Value};
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, Write};
+use std::path::Path;
+
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], output_path: P) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
+    let mut key_counter: HashMap<String, usize> = HashMap::new();
+
+    for path in paths {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let json_data: Value = serde_json::from_reader(reader)?;
+
+        if let Value::Object(obj) = json_data {
+            for (key, value) in obj {
+                let mut final_key = key.clone();
+                while merged_map.contains_key(&final_key) {
+                    let count = key_counter.entry(key.clone()).or_insert(1);
+                    *count += 1;
+                    final_key = format!("{}_{}", key, count);
+                }
+                merged_map.insert(final_key, value);
+            }
+        } else {
+            return Err("Each JSON file must contain a JSON object".into());
+        }
+    }
+
+    let merged_value = Value::Object(merged_map);
+    let mut output_file = File::create(output_path)?;
+    write!(output_file, "{}", serde_json::to_string_pretty(&merged_value)?)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_json_files() {
+        let json1 = r#"{"name": "Alice", "age": 30}"#;
+        let json2 = r#"{"city": "Berlin", "name": "Bob"}"#;
+
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
+        let output_file = NamedTempFile::new().unwrap();
+
+        write!(file1, "{}", json1).unwrap();
+        write!(file2, "{}", json2).unwrap();
+
+        let paths = [file1.path(), file2.path()];
+        merge_json_files(&paths, output_file.path()).unwrap();
+
+        let output_content = std::fs::read_to_string(output_file.path()).unwrap();
+        let parsed: Value = serde_json::from_str(&output_content).unwrap();
+
+        assert!(parsed.get("name").is_some());
+        assert!(parsed.get("name_2").is_some());
+        assert!(parsed.get("age").is_some());
+        assert!(parsed.get("city").is_some());
+    }
+}
