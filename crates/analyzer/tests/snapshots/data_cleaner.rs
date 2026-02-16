@@ -98,3 +98,79 @@ pub fn initialize_logging() {
     env_logger::init();
     info!("Logging initialized");
 }
+use std::collections::HashSet;
+
+pub struct DataCleaner {
+    pub entries: Vec<String>,
+}
+
+impl DataCleaner {
+    pub fn new(entries: Vec<String>) -> Self {
+        DataCleaner { entries }
+    }
+
+    pub fn remove_duplicates(&mut self) {
+        let mut seen = HashSet::new();
+        self.entries.retain(|entry| seen.insert(entry.clone()));
+    }
+
+    pub fn normalize_case(&mut self) {
+        for entry in &mut self.entries {
+            *entry = entry.to_lowercase();
+        }
+    }
+
+    pub fn trim_whitespace(&mut self) {
+        for entry in &mut self.entries {
+            *entry = entry.trim().to_string();
+        }
+    }
+
+    pub fn clean(&mut self) {
+        self.trim_whitespace();
+        self.normalize_case();
+        self.remove_duplicates();
+    }
+
+    pub fn get_results(&self) -> &Vec<String> {
+        &self.entries
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cleaner_removes_duplicates() {
+        let mut cleaner = DataCleaner::new(vec![
+            "apple".to_string(),
+            "APPLE".to_string(),
+            "banana".to_string(),
+            "apple".to_string(),
+        ]);
+        
+        cleaner.clean();
+        let results = cleaner.get_results();
+        
+        assert_eq!(results.len(), 2);
+        assert!(results.contains(&"apple".to_string()));
+        assert!(results.contains(&"banana".to_string()));
+    }
+
+    #[test]
+    fn test_cleaner_normalizes_and_trims() {
+        let mut cleaner = DataCleaner::new(vec![
+            "  Apple  ".to_string(),
+            "BANANA".to_string(),
+            "  Cherry  ".to_string(),
+        ]);
+        
+        cleaner.clean();
+        let results = cleaner.get_results();
+        
+        assert_eq!(results[0], "apple");
+        assert_eq!(results[1], "banana");
+        assert_eq!(results[2], "cherry");
+    }
+}
