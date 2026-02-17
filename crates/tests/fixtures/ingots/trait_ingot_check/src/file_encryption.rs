@@ -136,3 +136,59 @@ mod tests {
         assert!(result.is_err());
     }
 }
+use std::fs;
+use std::io::{self, Read, Write};
+
+const DEFAULT_KEY: u8 = 0x55;
+
+fn xor_cipher(data: &mut [u8], key: u8) {
+    for byte in data.iter_mut() {
+        *byte ^= key;
+    }
+}
+
+fn encrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
+    let encryption_key = key.unwrap_or(DEFAULT_KEY);
+    
+    let mut file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    
+    xor_cipher(&mut buffer, encryption_key);
+    
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&buffer)?;
+    
+    Ok(())
+}
+
+fn decrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
+    encrypt_file(input_path, output_path, key)
+}
+
+fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    
+    if args.len() < 4 {
+        eprintln!("Usage: {} <encrypt|decrypt> <input_file> <output_file> [key]", args[0]);
+        std::process::exit(1);
+    }
+    
+    let operation = &args[1];
+    let input_file = &args[2];
+    let output_file = &args[3];
+    let key = if args.len() > 4 {
+        Some(args[4].parse::<u8>().unwrap_or(DEFAULT_KEY))
+    } else {
+        None
+    };
+    
+    match operation.as_str() {
+        "encrypt" => encrypt_file(input_file, output_file, key),
+        "decrypt" => decrypt_file(input_file, output_file, key),
+        _ => {
+            eprintln!("Invalid operation. Use 'encrypt' or 'decrypt'");
+            std::process::exit(1);
+        }
+    }
+}
