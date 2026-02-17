@@ -1,129 +1,76 @@
-use std::collections::HashMap;
-use std::net::Ipv4Addr;
+use pnet::datalink::{self, Channel::Ethernet};
+use pnet::packet::ethernet::{EthernetPacket, EtherTypes};
+use pnet::packet::ipv4::Ipv4Packet;
+use pnet::packet::tcp::TcpPacket;
+use pnet::packet::Packet;
+use std::env;
 
-#[derive(Debug, Clone)]
-pub struct NetworkPacket {
-    source_ip: Ipv4Addr,
-    destination_ip: Ipv4Addr,
-    protocol: u8,
-    payload: Vec<u8>,
-    timestamp: u64,
-}
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let interface_name = env::args().nth(1).unwrap_or_else(|| "eth0".to_string());
+    
+    let interfaces = datalink::interfaces();
+    let interface = interfaces
+        .into_iter()
+        .find(|iface| iface.name == interface_name)
+        .expect("Interface not found");
 
-#[derive(Debug)]
-pub struct PacketAnalyzer {
-    packet_count: u64,
-    protocol_distribution: HashMap<u8, u64>,
-    ip_traffic: HashMap<Ipv4Addr, u64>,
-}
+    let (_, mut rx) = match datalink::channel(&interface, Default::default()) {
+        Ok(Ethernet(tx, rx)) => (tx, rx),
+        Ok(_) => panic!("Unsupported channel type"),
+        Err(e) => panic!("Failed to create datalink channel: {}", e),
+    };
 
-impl PacketAnalyzer {
-    pub fn new() -> Self {
-        PacketAnalyzer {
-            packet_count: 0,
-            protocol_distribution: HashMap::new(),
-            ip_traffic: HashMap::new(),
+    println!("Starting packet capture on interface: {}", interface_name);
+    let mut packet_count = 0;
+
+    loop {
+        match rx.next() {
+            Ok(packet) => {
+                packet_count += 1;
+                let ethernet = EthernetPacket::new(packet).unwrap();
+                
+                match ethernet.get_ethertype() {
+                    EtherTypes::Ipv4 => {
+                        if let Some(ipv4) = Ipv4Packet::new(ethernet.payload()) {
+                            println!(
+                                "Packet #{}: {} -> {} | Protocol: {}",
+                                packet_count,
+                                ipv4.get_source(),
+                                ipv4.get_destination(),
+                                ipv4.get_next_level_protocol()
+                            );
+                            
+                            if ipv4.get_next_level_protocol() == pnet::packet::ip::IpNextHeaderProtocols::Tcp {
+                                if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
+                                    println!(
+                                        "  TCP: {} -> {} | Flags: {:?}",
+                                        tcp.get_source(),
+                                        tcp.get_destination(),
+                                        tcp.get_flags()
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    EtherTypes::Arp => {
+                        println!("Packet #{}: ARP packet detected", packet_count);
+                    }
+                    _ => {
+                        println!("Packet #{}: Other Ethernet type", packet_count);
+                    }
+                }
+                
+                if packet_count >= 100 {
+                    println!("Captured 100 packets. Stopping.");
+                    break;
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to receive packet: {}", e);
+                break;
+            }
         }
     }
 
-    pub fn process_packet(&mut self, packet: &NetworkPacket) {
-        self.packet_count += 1;
-
-        *self.protocol_distribution
-            .entry(packet.protocol)
-            .or_insert(0) += 1;
-
-        *self.ip_traffic
-            .entry(packet.source_ip)
-            .or_insert(0) += 1;
-        *self.ip_traffic
-            .entry(packet.destination_ip)
-            .or_insert(0) += 1;
-    }
-
-    pub fn get_statistics(&self) -> AnalyzerStats {
-        let top_source = self.find_top_ip();
-        let most_common_protocol = self.find_most_common_protocol();
-
-        AnalyzerStats {
-            total_packets: self.packet_count,
-            unique_ips: self.ip_traffic.len(),
-            top_source_ip: top_source,
-            most_common_protocol,
-        }
-    }
-
-    fn find_top_ip(&self) -> Option<(Ipv4Addr, u64)> {
-        self.ip_traffic
-            .iter()
-            .max_by_key(|(_, &count)| count)
-            .map(|(&ip, &count)| (ip, count))
-    }
-
-    fn find_most_common_protocol(&self) -> Option<(u8, u64)> {
-        self.protocol_distribution
-            .iter()
-            .max_by_key(|(_, &count)| count)
-            .map(|(&protocol, &count)| (protocol, count))
-    }
-}
-
-#[derive(Debug)]
-pub struct AnalyzerStats {
-    pub total_packets: u64,
-    pub unique_ips: usize,
-    pub top_source_ip: Option<(Ipv4Addr, u64)>,
-    pub most_common_protocol: Option<(u8, u64)>,
-}
-
-impl NetworkPacket {
-    pub fn new(
-        source_ip: Ipv4Addr,
-        destination_ip: Ipv4Addr,
-        protocol: u8,
-        payload: Vec<u8>,
-        timestamp: u64,
-    ) -> Self {
-        NetworkPacket {
-            source_ip,
-            destination_ip,
-            protocol,
-            payload,
-            timestamp,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_packet_analyzer() {
-        let mut analyzer = PacketAnalyzer::new();
-
-        let packet1 = NetworkPacket::new(
-            Ipv4Addr::new(192, 168, 1, 1),
-            Ipv4Addr::new(192, 168, 1, 2),
-            6,
-            vec![1, 2, 3, 4],
-            1234567890,
-        );
-
-        let packet2 = NetworkPacket::new(
-            Ipv4Addr::new(192, 168, 1, 1),
-            Ipv4Addr::new(192, 168, 1, 3),
-            17,
-            vec![5, 6, 7, 8],
-            1234567891,
-        );
-
-        analyzer.process_packet(&packet1);
-        analyzer.process_packet(&packet2);
-
-        let stats = analyzer.get_statistics();
-        assert_eq!(stats.total_packets, 2);
-        assert_eq!(stats.unique_ips, 3);
-        assert_eq!(stats.top_source_ip.unwrap().0, Ipv4Addr::new(192, 168, 1, 1));
-    }
+    Ok(())
 }
