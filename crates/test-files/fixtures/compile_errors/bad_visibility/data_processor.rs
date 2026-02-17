@@ -184,3 +184,127 @@ mod tests {
         assert_eq!(groups.get("TypeB").unwrap().len(), 1);
     }
 }
+use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+impl Record {
+    pub fn new(id: u32, name: String, value: f64, active: bool) -> Self {
+        Self {
+            id,
+            name,
+            value,
+            active,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        !self.name.is_empty() && self.value >= 0.0
+    }
+
+    pub fn process(&mut self) {
+        if self.active {
+            self.value *= 1.1;
+        }
+    }
+}
+
+pub struct DataProcessor;
+
+impl DataProcessor {
+    pub fn load_from_csv<P: AsRef<Path>>(path: P) -> Result<Vec<Record>, Box<dyn Error>> {
+        let mut reader = Reader::from_path(path)?;
+        let mut records = Vec::new();
+
+        for result in reader.deserialize() {
+            let record: Record = result?;
+            records.push(record);
+        }
+
+        Ok(records)
+    }
+
+    pub fn save_to_csv<P: AsRef<Path>>(records: &[Record], path: P) -> Result<(), Box<dyn Error>> {
+        let mut writer = Writer::from_path(path)?;
+
+        for record in records {
+            writer.serialize(record)?;
+        }
+
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub fn filter_valid(records: Vec<Record>) -> Vec<Record> {
+        records.into_iter().filter(|r| r.is_valid()).collect()
+    }
+
+    pub fn process_all(records: &mut [Record]) {
+        for record in records.iter_mut() {
+            record.process();
+        }
+    }
+
+    pub fn calculate_total(records: &[Record]) -> f64 {
+        records.iter().map(|r| r.value).sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = Record::new(1, "test".to_string(), 10.0, true);
+        assert!(valid_record.is_valid());
+
+        let invalid_record = Record::new(2, "".to_string(), -5.0, false);
+        assert!(!invalid_record.is_valid());
+    }
+
+    #[test]
+    fn test_csv_operations() -> Result<(), Box<dyn Error>> {
+        let records = vec![
+            Record::new(1, "alpha".to_string(), 100.0, true),
+            Record::new(2, "beta".to_string(), 200.0, false),
+        ];
+
+        let temp_file = NamedTempFile::new()?;
+        let path = temp_file.path();
+
+        DataProcessor::save_to_csv(&records, path)?;
+        let loaded = DataProcessor::load_from_csv(path)?;
+
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].name, "alpha");
+        assert_eq!(loaded[1].value, 200.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_data_processing() {
+        let mut records = vec![
+            Record::new(1, "item1".to_string(), 50.0, true),
+            Record::new(2, "item2".to_string(), 30.0, false),
+        ];
+
+        DataProcessor::process_all(&mut records);
+        assert_eq!(records[0].value, 55.0);
+        assert_eq!(records[1].value, 30.0);
+
+        let total = DataProcessor::calculate_total(&records);
+        assert_eq!(total, 85.0);
+    }
+}
