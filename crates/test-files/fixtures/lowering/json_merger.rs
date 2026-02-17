@@ -71,4 +71,33 @@ mod tests {
         let id_value = result.get("id").unwrap().as_i64().unwrap();
         assert_eq!(id_value, 2);
     }
+}use serde_json::{Value, from_reader, to_writer_pretty};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufReader};
+use std::path::Path;
+
+pub fn merge_json_files<P: AsRef<Path>>(input_paths: &[P], output_path: P) -> io::Result<()> {
+    let mut merged_array = Vec::new();
+
+    for path in input_paths {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let value: Value = from_reader(reader)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        if let Value::Array(arr) = value {
+            merged_array.extend(arr);
+        } else {
+            merged_array.push(value);
+        }
+    }
+
+    let output_file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(output_path)?;
+
+    to_writer_pretty(output_file, &Value::Array(merged_array))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
