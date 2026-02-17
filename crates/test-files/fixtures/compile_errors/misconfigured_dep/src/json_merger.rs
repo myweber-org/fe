@@ -179,4 +179,148 @@ mod tests {
         let expected: Value = serde_json::from_str(r#"{"key1": "value1", "key2": "value2"}"#).unwrap();
         assert_eq!(result, expected);
     }
+}use serde_json::{Map, Value};
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            continue;
+        }
+
+        let content = fs::read_to_string(path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(obj) = json_value {
+            for (key, value) in obj {
+                merged_map.insert(key, value);
+            }
+        }
+    }
+
+    Ok(Value::Object(merged_map))
+}
+
+pub fn merge_with_strategy(
+    file_paths: &[&str],
+    strategy: MergeStrategy,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    match strategy {
+        MergeStrategy::Overwrite => merge_json_files(file_paths),
+        MergeStrategy::CombineArrays => merge_with_array_combination(file_paths),
+    }
+}
+
+fn merge_with_array_combination(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut combined_map: HashMap<String, Vec<Value>> = HashMap::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            continue;
+        }
+
+        let content = fs::read_to_string(path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(obj) = json_value {
+            for (key, value) in obj {
+                combined_map
+                    .entry(key)
+                    .or_insert_with(Vec::new)
+                    .push(value);
+            }
+        }
+    }
+
+    let mut result_map = Map::new();
+    for (key, values) in combined_map {
+        if values.len() == 1 {
+            result_map.insert(key, values[0].clone());
+        } else {
+            let combined_array: Vec<Value> = values
+                .into_iter()
+                .flat_map(|v| {
+                    if let Value::Array(arr) = v {
+                        arr
+                    } else {
+                        vec![v]
+                    }
+                })
+                .collect();
+            result_map.insert(key, Value::Array(combined_array));
+        }
+    }
+
+    Ok(Value::Object(result_map))
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MergeStrategy {
+    Overwrite,
+    CombineArrays,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_json_files() {
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
+
+        let json1 = json!({"name": "Alice", "age": 30});
+        let json2 = json!({"city": "Berlin", "age": 31});
+
+        write!(file1, "{}", json1).unwrap();
+        write!(file2, "{}", json2).unwrap();
+
+        let paths = [
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ];
+        let result = merge_json_files(&paths).unwrap();
+
+        assert_eq!(result["name"], "Alice");
+        assert_eq!(result["city"], "Berlin");
+        assert_eq!(result["age"], 31);
+    }
+
+    #[test]
+    fn test_merge_with_array_strategy() {
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
+
+        let json1 = json!({"tags": ["rust", "json"], "id": 1});
+        let json2 = json!({"tags": ["merge"], "active": true});
+
+        write!(file1, "{}", json1).unwrap();
+        write!(file2, "{}", json2).unwrap();
+
+        let paths = [
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ];
+        let result = merge_with_strategy(&paths, MergeStrategy::CombineArrays).unwrap();
+
+        if let Value::Array(tags) = &result["tags"] {
+            assert_eq!(tags.len(), 3);
+            assert!(tags.contains(&Value::String("rust".to_string())));
+            assert!(tags.contains(&Value::String("json".to_string())));
+            assert!(tags.contains(&Value::String("merge".to_string())));
+        } else {
+            panic!("Expected array for 'tags' key");
+        }
+        assert_eq!(result["id"], 1);
+        assert_eq!(result["active"], true);
+    }
 }
