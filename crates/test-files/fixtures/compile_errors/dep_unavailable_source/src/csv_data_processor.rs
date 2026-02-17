@@ -260,4 +260,150 @@ mod tests {
         let max_record = processor.find_max_value().unwrap();
         assert_eq!(max_record.id, 2);
     }
+}use std::collections::HashMap;
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+#[derive(Debug, Clone)]
+pub struct Record {
+    pub id: u32,
+    pub category: String,
+    pub value: f64,
+    pub active: bool,
+}
+
+pub struct DataProcessor {
+    records: Vec<Record>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        
+        for (index, line) in reader.lines().enumerate() {
+            if index == 0 {
+                continue;
+            }
+            
+            let line = line?;
+            let parts: Vec<&str> = line.split(',').collect();
+            
+            if parts.len() >= 4 {
+                let id = parts[0].parse::<u32>()?;
+                let category = parts[1].to_string();
+                let value = parts[2].parse::<f64>()?;
+                let active = parts[3].parse::<bool>().unwrap_or(false);
+                
+                self.records.push(Record {
+                    id,
+                    category,
+                    value,
+                    active,
+                });
+            }
+        }
+        
+        Ok(())
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|record| record.category == category)
+            .collect()
+    }
+
+    pub fn filter_active(&self) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|record| record.active)
+            .collect()
+    }
+
+    pub fn aggregate_by_category(&self) -> HashMap<String, f64> {
+        let mut aggregates = HashMap::new();
+        
+        for record in &self.records {
+            let entry = aggregates.entry(record.category.clone()).or_insert(0.0);
+            *entry += record.value;
+        }
+        
+        aggregates
+    }
+
+    pub fn calculate_average(&self) -> f64 {
+        if self.records.is_empty() {
+            return 0.0;
+        }
+        
+        let total: f64 = self.records.iter().map(|r| r.value).sum();
+        total / self.records.len() as f64
+    }
+
+    pub fn find_max_value(&self) -> Option<&Record> {
+        self.records.iter().max_by(|a, b| {
+            a.value.partial_cmp(&b.value).unwrap()
+        })
+    }
+
+    pub fn get_statistics(&self) -> (f64, f64, f64) {
+        let values: Vec<f64> = self.records.iter().map(|r| r.value).collect();
+        
+        if values.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+        
+        let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let avg = self.calculate_average();
+        
+        (min, max, avg)
+    }
+
+    pub fn count_records(&self) -> usize {
+        self.records.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,category,value,active").unwrap();
+        writeln!(temp_file, "1,electronics,250.5,true").unwrap();
+        writeln!(temp_file, "2,clothing,89.99,true").unwrap();
+        writeln!(temp_file, "3,electronics,150.0,false").unwrap();
+        
+        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+        assert_eq!(processor.count_records(), 3);
+        
+        let electronics = processor.filter_by_category("electronics");
+        assert_eq!(electronics.len(), 2);
+        
+        let active = processor.filter_active();
+        assert_eq!(active.len(), 2);
+        
+        let aggregates = processor.aggregate_by_category();
+        assert_eq!(aggregates.get("electronics"), Some(&400.5));
+        
+        let (min, max, avg) = processor.get_statistics();
+        assert!((min - 89.99).abs() < 0.001);
+        assert!((max - 250.5).abs() < 0.001);
+    }
 }
