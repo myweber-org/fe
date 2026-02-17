@@ -3,101 +3,114 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-pub struct CsvProcessor {
-    delimiter: char,
-    has_headers: bool,
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub category: String,
 }
 
-impl CsvProcessor {
-    pub fn new(delimiter: char, has_headers: bool) -> Self {
-        CsvProcessor {
-            delimiter,
-            has_headers,
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64, category: String) -> Result<Self, String> {
+        if name.is_empty() {
+            return Err("Name cannot be empty".to_string());
         }
+        if value < 0.0 {
+            return Err("Value must be non-negative".to_string());
+        }
+        if category.is_empty() {
+            return Err("Category cannot be empty".to_string());
+        }
+
+        Ok(Self {
+            id,
+            name,
+            value,
+            category,
+        })
     }
 
-    pub fn read_and_validate(&self, file_path: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
-        let mut records = Vec::new();
-        let mut line_number = 0;
-
-        for line in reader.lines() {
-            line_number += 1;
-            let line_content = line?;
-            
-            if line_content.trim().is_empty() {
-                continue;
-            }
-
-            let fields: Vec<String> = line_content
-                .split(self.delimiter)
-                .map(|s| s.trim().to_string())
-                .collect();
-
-            if fields.is_empty() {
-                return Err(format!("Empty record at line {}", line_number).into());
-            }
-
-            records.push(fields);
-        }
-
-        if records.is_empty() {
-            return Err("File contains no valid data".into());
-        }
-
-        Ok(records)
+    pub fn transform_value(&mut self, multiplier: f64) {
+        self.value *= multiplier;
     }
+}
 
-    pub fn transform_numeric_fields(&self, data: &[Vec<String>]) -> Vec<Vec<String>> {
-        let mut transformed = Vec::with_capacity(data.len());
+pub fn load_csv_data(file_path: &str) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    let mut line_number = 0;
+
+    for line in reader.lines() {
+        line_number += 1;
+        let line = line?;
         
-        for record in data {
-            let transformed_record: Vec<String> = record
-                .iter()
-                .map(|field| {
-                    if let Ok(num) = field.parse::<f64>() {
-                        format!("{:.2}", num * 1.1)
-                    } else {
-                        field.to_uppercase()
-                    }
-                })
-                .collect();
-            transformed.push(transformed_record);
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
         }
+
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 4 {
+            return Err(format!("Invalid CSV format at line {}", line_number).into());
+        }
+
+        let id = parts[0].parse::<u32>()
+            .map_err(|_| format!("Invalid ID at line {}", line_number))?;
         
-        transformed
+        let name = parts[1].trim().to_string();
+        
+        let value = parts[2].parse::<f64>()
+            .map_err(|_| format!("Invalid value at line {}", line_number))?;
+        
+        let category = parts[3].trim().to_string();
+
+        match DataRecord::new(id, name, value, category) {
+            Ok(record) => records.push(record),
+            Err(e) => return Err(format!("Validation error at line {}: {}", line_number, e).into()),
+        }
     }
 
-    pub fn filter_by_column_value(
-        &self,
-        data: &[Vec<String>],
-        column_index: usize,
-        filter_value: &str,
-    ) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-        if data.is_empty() {
-            return Ok(Vec::new());
-        }
+    Ok(records)
+}
 
-        let max_column = data.iter().map(|r| r.len()).max().unwrap_or(0);
-        if column_index >= max_column {
-            return Err(format!("Column index {} out of bounds", column_index).into());
-        }
-
-        let filtered: Vec<Vec<String>> = data
-            .iter()
-            .filter(|record| {
-                if let Some(value) = record.get(column_index) {
-                    value == filter_value
-                } else {
-                    false
-                }
-            })
-            .cloned()
-            .collect();
-
-        Ok(filtered)
+pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
+    if records.is_empty() {
+        return (0.0, 0.0, 0.0);
     }
+
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let count = records.len() as f64;
+    let mean = sum / count;
+
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+
+    (mean, variance, std_dev)
+}
+
+pub fn filter_by_category(records: Vec<DataRecord>, category: &str) -> Vec<DataRecord> {
+    records.into_iter()
+        .filter(|r| r.category == category)
+        .collect()
+}
+
+pub fn process_data_pipeline(file_path: &str, target_category: &str, multiplier: f64) 
+    -> Result<(Vec<DataRecord>, (f64, f64, f64)), Box<dyn Error>> 
+{
+    let mut records = load_csv_data(file_path)?;
+    
+    for record in records.iter_mut() {
+        record.transform_value(multiplier);
+    }
+
+    let filtered_records = filter_by_category(records, target_category);
+    let stats = calculate_statistics(&filtered_records);
+
+    Ok((filtered_records, stats))
 }
 
 #[cfg(test)]
@@ -107,23 +120,44 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_csv_processing() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,city").unwrap();
-        writeln!(temp_file, "Alice,25,London").unwrap();
-        writeln!(temp_file, "Bob,30,Paris").unwrap();
-        writeln!(temp_file, "Charlie,35,London").unwrap();
+    fn test_data_record_validation() {
+        let valid_record = DataRecord::new(1, "Test".to_string(), 10.5, "A".to_string());
+        assert!(valid_record.is_ok());
 
-        let processor = CsvProcessor::new(',', true);
-        let data = processor.read_and_validate(temp_file.path().to_str().unwrap()).unwrap();
-        
-        assert_eq!(data.len(), 3);
-        assert_eq!(data[0][0], "Alice");
-        
-        let transformed = processor.transform_numeric_fields(&data);
-        assert_eq!(transformed[0][1], "27.50");
-        
-        let filtered = processor.filter_by_column_value(&data, 2, "London").unwrap();
+        let invalid_name = DataRecord::new(2, "".to_string(), 5.0, "B".to_string());
+        assert!(invalid_name.is_err());
+
+        let invalid_value = DataRecord::new(3, "Test".to_string(), -1.0, "C".to_string());
+        assert!(invalid_value.is_err());
+    }
+
+    #[test]
+    fn test_calculate_statistics() {
+        let records = vec![
+            DataRecord::new(1, "A".to_string(), 10.0, "X".to_string()).unwrap(),
+            DataRecord::new(2, "B".to_string(), 20.0, "X".to_string()).unwrap(),
+            DataRecord::new(3, "C".to_string(), 30.0, "X".to_string()).unwrap(),
+        ];
+
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        assert_eq!(mean, 20.0);
+        assert_eq!(variance, 66.66666666666667);
+        assert_eq!(std_dev, 8.16496580927726);
+    }
+
+    #[test]
+    fn test_csv_processing() -> Result<(), Box<dyn Error>> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "1,Item1,10.5,CategoryA")?;
+        writeln!(temp_file, "2,Item2,15.0,CategoryB")?;
+        writeln!(temp_file, "3,Item3,20.0,CategoryA")?;
+
+        let records = load_csv_data(temp_file.path().to_str().unwrap())?;
+        assert_eq!(records.len(), 3);
+
+        let filtered = filter_by_category(records, "CategoryA");
         assert_eq!(filtered.len(), 2);
+
+        Ok(())
     }
 }
