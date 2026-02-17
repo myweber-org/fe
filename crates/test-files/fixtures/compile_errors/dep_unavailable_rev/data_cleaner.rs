@@ -102,4 +102,54 @@ mod tests {
         let result = clean_and_normalize(input, &stopwords);
         assert_eq!(result, "hello world this is test");
     }
+}use std::collections::HashSet;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::Path;
+
+pub fn remove_duplicates(input_path: &str, output_path: &str) -> io::Result<()> {
+    let path = Path::new(input_path);
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+
+    let mut unique_lines = HashSet::new();
+    let mut output_lines = Vec::new();
+
+    for line_result in reader.lines() {
+        let line = line_result?;
+        if unique_lines.insert(line.clone()) {
+            output_lines.push(line);
+        }
+    }
+
+    let mut output_file = File::create(output_path)?;
+    for line in output_lines {
+        writeln!(output_file, "{}", line)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_remove_duplicates() {
+        let input = "test_input.txt";
+        let output = "test_output.txt";
+
+        let test_data = "apple\nbanana\napple\ncherry\nbanana\ndate\n";
+        fs::write(input, test_data).unwrap();
+
+        remove_duplicates(input, output).unwrap();
+
+        let result = fs::read_to_string(output).unwrap();
+        let expected = "apple\nbanana\ncherry\ndate\n";
+        assert_eq!(result, expected);
+
+        fs::remove_file(input).unwrap();
+        fs::remove_file(output).unwrap();
+    }
 }
