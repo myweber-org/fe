@@ -604,3 +604,137 @@ mod tests {
         assert!((std_dev - 2.0).abs() < 0.001);
     }
 }
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub timestamp: i64,
+}
+
+#[derive(Debug)]
+pub enum DataError {
+    InvalidValue,
+    InvalidTimestamp,
+    MissingField,
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            DataError::InvalidValue => write!(f, "Invalid data value"),
+            DataError::InvalidTimestamp => write!(f, "Invalid timestamp"),
+            DataError::MissingField => write!(f, "Missing required field"),
+        }
+    }
+}
+
+impl Error for DataError {}
+
+pub struct DataProcessor {
+    threshold: f64,
+}
+
+impl DataProcessor {
+    pub fn new(threshold: f64) -> Self {
+        DataProcessor { threshold }
+    }
+
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), DataError> {
+        if record.value.is_nan() || record.value.is_infinite() {
+            return Err(DataError::InvalidValue);
+        }
+
+        if record.timestamp < 0 {
+            return Err(DataError::InvalidTimestamp);
+        }
+
+        if record.id == 0 {
+            return Err(DataError::MissingField);
+        }
+
+        Ok(())
+    }
+
+    pub fn process_record(&self, record: DataRecord) -> Result<DataRecord, DataError> {
+        self.validate_record(&record)?;
+
+        let processed_value = if record.value > self.threshold {
+            record.value * 0.9
+        } else {
+            record.value * 1.1
+        };
+
+        Ok(DataRecord {
+            id: record.id,
+            value: processed_value,
+            timestamp: record.timestamp,
+        })
+    }
+
+    pub fn batch_process(
+        &self,
+        records: Vec<DataRecord>,
+    ) -> (Vec<DataRecord>, Vec<DataError>) {
+        let mut processed = Vec::new();
+        let mut errors = Vec::new();
+
+        for record in records {
+            match self.process_record(record) {
+                Ok(processed_record) => processed.push(processed_record),
+                Err(e) => errors.push(e),
+            }
+        }
+
+        (processed, errors)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validation_success() {
+        let processor = DataProcessor::new(100.0);
+        let record = DataRecord {
+            id: 1,
+            value: 50.0,
+            timestamp: 1625097600,
+        };
+
+        assert!(processor.validate_record(&record).is_ok());
+    }
+
+    #[test]
+    fn test_validation_invalid_value() {
+        let processor = DataProcessor::new(100.0);
+        let record = DataRecord {
+            id: 1,
+            value: f64::NAN,
+            timestamp: 1625097600,
+        };
+
+        assert!(matches!(
+            processor.validate_record(&record),
+            Err(DataError::InvalidValue)
+        ));
+    }
+
+    #[test]
+    fn test_process_record() {
+        let processor = DataProcessor::new(100.0);
+        let record = DataRecord {
+            id: 1,
+            value: 120.0,
+            timestamp: 1625097600,
+        };
+
+        let result = processor.process_record(record);
+        assert!(result.is_ok());
+        let processed = result.unwrap();
+        assert_eq!(processed.value, 108.0);
+    }
+}
