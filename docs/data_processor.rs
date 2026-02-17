@@ -763,3 +763,174 @@ mod tests {
         assert_eq!(groups.get("TypeB").unwrap().len(), 1);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, PartialEq)]
+pub struct DataRecord {
+    id: u32,
+    value: f64,
+    category: String,
+    valid: bool,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: &str) -> Self {
+        let valid = value >= 0.0 && !category.is_empty();
+        DataRecord {
+            id,
+            value,
+            category: category.to_string(),
+            valid,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.valid
+    }
+
+    pub fn process(&mut self) {
+        if self.value < 100.0 {
+            self.value *= 1.1;
+        }
+    }
+}
+
+pub fn load_csv_data<P: AsRef<Path>>(path: P) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+
+    for (line_num, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 3 {
+            continue;
+        }
+
+        let id = match parts[0].parse::<u32>() {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+
+        let value = match parts[1].parse::<f64>() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        let category = parts[2].trim();
+        records.push(DataRecord::new(id, value, category));
+    }
+
+    Ok(records)
+}
+
+pub fn filter_valid_records(records: &[DataRecord]) -> Vec<&DataRecord> {
+    records.iter().filter(|r| r.is_valid()).collect()
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> (f64, f64, f64) {
+    if records.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let count = records.len() as f64;
+    let mean = sum / count;
+
+    let variance: f64 = records
+        .iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>()
+        / count;
+
+    let std_dev = variance.sqrt();
+
+    (mean, variance, std_dev)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_record_creation() {
+        let record = DataRecord::new(1, 42.5, "test");
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 42.5);
+        assert_eq!(record.category, "test");
+        assert!(record.is_valid());
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        let record = DataRecord::new(2, -5.0, "invalid");
+        assert!(!record.is_valid());
+    }
+
+    #[test]
+    fn test_process_record() {
+        let mut record = DataRecord::new(3, 50.0, "process");
+        record.process();
+        assert_eq!(record.value, 55.0);
+    }
+
+    #[test]
+    fn test_load_csv_data() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1,100.5,category_a").unwrap();
+        writeln!(temp_file, "2,75.3,category_b").unwrap();
+        writeln!(temp_file, "# This is a comment").unwrap();
+        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file, "3,invalid,category_c").unwrap();
+
+        let records = load_csv_data(temp_file.path()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].id, 1);
+        assert_eq!(records[1].category, "category_b");
+    }
+
+    #[test]
+    fn test_filter_valid_records() {
+        let records = vec![
+            DataRecord::new(1, 10.0, "valid"),
+            DataRecord::new(2, -5.0, "invalid"),
+            DataRecord::new(3, 20.0, ""),
+        ];
+
+        let valid_records = filter_valid_records(&records);
+        assert_eq!(valid_records.len(), 1);
+        assert_eq!(valid_records[0].id, 1);
+    }
+
+    #[test]
+    fn test_calculate_statistics() {
+        let records = vec![
+            DataRecord::new(1, 10.0, "a"),
+            DataRecord::new(2, 20.0, "b"),
+            DataRecord::new(3, 30.0, "c"),
+        ];
+
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        assert_eq!(mean, 20.0);
+        assert_eq!(variance, 66.66666666666667);
+        assert_eq!(std_dev, 8.16496580927726);
+    }
+
+    #[test]
+    fn test_empty_statistics() {
+        let records: Vec<DataRecord> = vec![];
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        assert_eq!(mean, 0.0);
+        assert_eq!(variance, 0.0);
+        assert_eq!(std_dev, 0.0);
+    }
+}
