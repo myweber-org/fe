@@ -332,4 +332,68 @@ mod tests {
         assert_eq!(stats.get("median").unwrap(), &3.0);
         assert_eq!(stats.get("count").unwrap(), &5.0);
     }
+}use csv::{ReaderBuilder, WriterBuilder};
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
+
+pub fn clean_csv_data(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let reader = BufReader::new(input_file);
+    let mut csv_reader = ReaderBuilder::new()
+        .trim(csv::Trim::All)
+        .from_reader(reader);
+
+    let output_file = File::create(output_path)?;
+    let writer = BufWriter::new(output_file);
+    let mut csv_writer = WriterBuilder::new().from_writer(writer);
+
+    let headers = csv_reader.headers()?.clone();
+    csv_writer.write_record(&headers)?;
+
+    for result in csv_reader.records() {
+        let record = result?;
+        let cleaned_record: Vec<String> = record
+            .iter()
+            .map(|field| {
+                field
+                    .trim()
+                    .to_lowercase()
+                    .replace('\n', " ")
+                    .replace('\r', " ")
+                    .replace('\t', " ")
+            })
+            .collect();
+        csv_writer.write_record(&cleaned_record)?;
+    }
+
+    csv_writer.flush()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_clean_csv_data() {
+        let mut input_file = NamedTempFile::new().unwrap();
+        writeln!(input_file, "Name,Age,City\n").unwrap();
+        writeln!(input_file, "  John Doe  ,25,New York\n").unwrap();
+        writeln!(input_file, "Jane,30,\"Los\nAngeles\"").unwrap();
+
+        let output_file = NamedTempFile::new().unwrap();
+
+        clean_csv_data(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap(),
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(output_file.path()).unwrap();
+        assert!(content.contains("john doe,25,new york"));
+        assert!(content.contains("jane,30,los angeles"));
+    }
 }
