@@ -606,3 +606,268 @@ mod tests {
         assert!(processor.add_record(invalid_record).is_err());
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub category: String,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidData(String),
+    TransformationFailed(String),
+    ValidationError(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
+            ProcessingError::TransformationFailed(msg) => write!(f, "Transformation failed: {}", msg),
+            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+    category_stats: HashMap<String, CategoryStats>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CategoryStats {
+    pub count: usize,
+    pub total_value: f64,
+    pub average_value: f64,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+            category_stats: HashMap::new(),
+        }
+    }
+
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), ProcessingError> {
+        self.validate_record(&record)?;
+        self.records.push(record.clone());
+        self.update_category_stats(&record);
+        Ok(())
+    }
+
+    pub fn process_records(&mut self) -> Result<Vec<TransformedRecord>, ProcessingError> {
+        let mut transformed = Vec::new();
+        
+        for record in &self.records {
+            let transformed_record = self.transform_record(record)?;
+            transformed.push(transformed_record);
+        }
+        
+        Ok(transformed)
+    }
+
+    pub fn get_category_stats(&self, category: &str) -> Option<&CategoryStats> {
+        self.category_stats.get(category)
+    }
+
+    pub fn calculate_overall_stats(&self) -> OverallStats {
+        let total_records = self.records.len();
+        let total_value: f64 = self.records.iter().map(|r| r.value).sum();
+        let average_value = if total_records > 0 {
+            total_value / total_records as f64
+        } else {
+            0.0
+        };
+
+        OverallStats {
+            total_records,
+            total_value,
+            average_value,
+            unique_categories: self.category_stats.len(),
+        }
+    }
+
+    fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.name.trim().is_empty() {
+            return Err(ProcessingError::ValidationError(
+                "Record name cannot be empty".to_string(),
+            ));
+        }
+
+        if record.value < 0.0 {
+            return Err(ProcessingError::ValidationError(
+                "Record value cannot be negative".to_string(),
+            ));
+        }
+
+        if record.category.trim().is_empty() {
+            return Err(ProcessingError::ValidationError(
+                "Record category cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn transform_record(&self, record: &DataRecord) -> Result<TransformedRecord, ProcessingError> {
+        let normalized_name = record.name.to_uppercase();
+        let adjusted_value = if record.value > 1000.0 {
+            record.value * 0.9
+        } else {
+            record.value
+        };
+
+        let score = self.calculate_record_score(record);
+
+        Ok(TransformedRecord {
+            original_id: record.id,
+            normalized_name,
+            adjusted_value,
+            original_category: record.category.clone(),
+            score,
+            processed: true,
+        })
+    }
+
+    fn calculate_record_score(&self, record: &DataRecord) -> f64 {
+        let name_score = (record.name.len() as f64) * 0.1;
+        let value_score = record.value * 0.01;
+        name_score + value_score
+    }
+
+    fn update_category_stats(&mut self, record: &DataRecord) {
+        let stats = self.category_stats
+            .entry(record.category.clone())
+            .or_insert(CategoryStats {
+                count: 0,
+                total_value: 0.0,
+                average_value: 0.0,
+            });
+
+        stats.count += 1;
+        stats.total_value += record.value;
+        stats.average_value = stats.total_value / stats.count as f64;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TransformedRecord {
+    pub original_id: u32,
+    pub normalized_name: String,
+    pub adjusted_value: f64,
+    pub original_category: String,
+    pub score: f64,
+    pub processed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct OverallStats {
+    pub total_records: usize,
+    pub total_value: f64,
+    pub average_value: f64,
+    pub unique_categories: usize,
+}
+
+impl Default for DataProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_valid_record() {
+        let mut processor = DataProcessor::new();
+        let record = DataRecord {
+            id: 1,
+            name: "Test Record".to_string(),
+            value: 100.0,
+            category: "Test".to_string(),
+        };
+
+        assert!(processor.add_record(record).is_ok());
+        assert_eq!(processor.records.len(), 1);
+    }
+
+    #[test]
+    fn test_add_invalid_record() {
+        let mut processor = DataProcessor::new();
+        let record = DataRecord {
+            id: 1,
+            name: "".to_string(),
+            value: 100.0,
+            category: "Test".to_string(),
+        };
+
+        assert!(processor.add_record(record).is_err());
+    }
+
+    #[test]
+    fn test_process_records() {
+        let mut processor = DataProcessor::new();
+        
+        let record1 = DataRecord {
+            id: 1,
+            name: "Record One".to_string(),
+            value: 500.0,
+            category: "CategoryA".to_string(),
+        };
+
+        let record2 = DataRecord {
+            id: 2,
+            name: "Record Two".to_string(),
+            value: 1500.0,
+            category: "CategoryB".to_string(),
+        };
+
+        processor.add_record(record1).unwrap();
+        processor.add_record(record2).unwrap();
+
+        let transformed = processor.process_records().unwrap();
+        assert_eq!(transformed.len(), 2);
+        
+        let high_value_record = transformed.iter()
+            .find(|r| r.original_id == 2)
+            .unwrap();
+        assert!(high_value_record.adjusted_value < 1500.0);
+    }
+
+    #[test]
+    fn test_category_stats() {
+        let mut processor = DataProcessor::new();
+        
+        let record1 = DataRecord {
+            id: 1,
+            name: "Test1".to_string(),
+            value: 100.0,
+            category: "CategoryA".to_string(),
+        };
+
+        let record2 = DataRecord {
+            id: 2,
+            name: "Test2".to_string(),
+            value: 200.0,
+            category: "CategoryA".to_string(),
+        };
+
+        processor.add_record(record1).unwrap();
+        processor.add_record(record2).unwrap();
+
+        let stats = processor.get_category_stats("CategoryA").unwrap();
+        assert_eq!(stats.count, 2);
+        assert_eq!(stats.total_value, 300.0);
+        assert_eq!(stats.average_value, 150.0);
+    }
+}
