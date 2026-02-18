@@ -156,4 +156,68 @@ mod tests {
         assert_eq!(variance, 66.66666666666667);
         assert_eq!(std_dev, 8.16496580927726);
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub struct CsvProcessor {
+    file_path: String,
+    delimiter: char,
+}
+
+impl CsvProcessor {
+    pub fn new(file_path: &str, delimiter: char) -> Self {
+        CsvProcessor {
+            file_path: file_path.to_string(),
+            delimiter,
+        }
+    }
+
+    pub fn filter_by_column(&self, column_index: usize, filter_value: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(&self.file_path)?;
+        let reader = BufReader::new(file);
+        let mut filtered_rows = Vec::new();
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            let parts: Vec<String> = line.split(self.delimiter).map(|s| s.to_string()).collect();
+
+            if line_num == 0 {
+                filtered_rows.push(parts.clone());
+                continue;
+            }
+
+            if let Some(cell) = parts.get(column_index) {
+                if cell == filter_value {
+                    filtered_rows.push(parts);
+                }
+            } else {
+                return Err(format!("Column index {} out of bounds on line {}", column_index, line_num + 1).into());
+            }
+        }
+
+        Ok(filtered_rows)
+    }
+
+    pub fn count_rows(&self) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(&self.file_path)?;
+        let reader = BufReader::new(file);
+        let count = reader.lines().count();
+        Ok(count)
+    }
+}
+
+pub fn process_csv_data() -> Result<(), Box<dyn Error>> {
+    let processor = CsvProcessor::new("data.csv", ',');
+    
+    println!("Total rows in file: {}", processor.count_rows()?);
+    
+    let filtered = processor.filter_by_column(2, "active")?;
+    println!("Found {} active records", filtered.len() - 1);
+    
+    for row in filtered.iter().take(3) {
+        println!("{:?}", row);
+    }
+    
+    Ok(())
 }
