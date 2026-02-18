@@ -143,4 +143,81 @@ mod tests {
         assert!(mean.abs() < 1e-10);
         assert!((variance - 1.0).abs() < 1e-10);
     }
+}use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize)]
+struct Record {
+    id: u32,
+    value: f64,
+    category: String,
+}
+
+pub struct DataProcessor {
+    records: Vec<Record>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor { records: Vec::new() }
+    }
+
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let mut rdr = Reader::from_reader(file);
+
+        for result in rdr.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
+        }
+
+        Ok(())
+    }
+
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|r| r.category == category)
+            .collect()
+    }
+
+    pub fn get_summary(&self) -> DataSummary {
+        let count = self.records.len();
+        let mean = self.calculate_mean().unwrap_or(0.0);
+        let categories: Vec<String> = self.records
+            .iter()
+            .map(|r| r.category.clone())
+            .collect();
+
+        DataSummary {
+            record_count: count,
+            average_value: mean,
+            unique_categories: categories,
+        }
+    }
+}
+
+pub struct DataSummary {
+    pub record_count: usize,
+    pub average_value: f64,
+    pub unique_categories: Vec<String>,
+}
+
+impl DataSummary {
+    pub fn display(&self) {
+        println!("Total records: {}", self.record_count);
+        println!("Average value: {:.2}", self.average_value);
+        println!("Unique categories: {}", self.unique_categories.len());
+    }
 }
