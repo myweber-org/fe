@@ -933,4 +933,81 @@ mod tests {
         assert_eq!(variance, 0.0);
         assert_eq!(std_dev, 0.0);
     }
+}use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+use std::path::Path;
+
+#[derive(Debug, Deserialize)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
+}
+
+pub fn process_csv_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
+    let path = Path::new(file_path);
+    if !path.exists() {
+        return Err("File does not exist".into());
+    }
+
+    let mut reader = Reader::from_path(path)?;
+    let mut records = Vec::new();
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        if record.value < 0.0 {
+            return Err(format!("Invalid value in record ID {}", record.id).into());
+        }
+        records.push(record);
+    }
+
+    if records.is_empty() {
+        return Err("No valid records found".into());
+    }
+
+    Ok(records)
+}
+
+pub fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
+    let count = records.len() as f64;
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let mean = sum / count;
+    
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (sum, mean, std_dev)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+
+    #[test]
+    fn test_valid_csv_processing() {
+        let csv_data = "id,name,value,category\n1,Test1,10.5,A\n2,Test2,20.3,B\n";
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "{}", csv_data).unwrap();
+        
+        let result = process_csv_file(temp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_invalid_negative_value() {
+        let csv_data = "id,name,value,category\n1,Test1,-5.0,A\n";
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "{}", csv_data).unwrap();
+        
+        let result = process_csv_file(temp_file.path().to_str().unwrap());
+        assert!(result.is_err());
+    }
 }
