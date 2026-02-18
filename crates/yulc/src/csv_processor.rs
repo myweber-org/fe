@@ -272,3 +272,174 @@ mod tests {
         assert!(result.is_err());
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
+
+pub struct CsvProcessor {
+    delimiter: char,
+    has_headers: bool,
+}
+
+impl CsvProcessor {
+    pub fn new(delimiter: char, has_headers: bool) -> Self {
+        CsvProcessor {
+            delimiter,
+            has_headers,
+        }
+    }
+
+    pub fn filter_rows<P: AsRef<Path>>(
+        &self,
+        input_path: P,
+        output_path: P,
+        predicate: impl Fn(&[String]) -> bool,
+    ) -> Result<usize, Box<dyn Error>> {
+        let input_file = File::open(input_path)?;
+        let reader = BufReader::new(input_file);
+        let mut output_file = File::create(output_path)?;
+        let mut lines = reader.lines();
+        let mut processed_count = 0;
+
+        if self.has_headers {
+            if let Some(header) = lines.next() {
+                writeln!(output_file, "{}", header?)?;
+            }
+        }
+
+        for line in lines {
+            let line = line?;
+            let fields: Vec<String> = line
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if predicate(&fields) {
+                writeln!(output_file, "{}", line)?;
+                processed_count += 1;
+            }
+        }
+
+        Ok(processed_count)
+    }
+
+    pub fn transform_column<P: AsRef<Path>>(
+        &self,
+        input_path: P,
+        output_path: P,
+        column_index: usize,
+        transformer: impl Fn(&str) -> String,
+    ) -> Result<(), Box<dyn Error>> {
+        let input_file = File::open(input_path)?;
+        let reader = BufReader::new(input_file);
+        let mut output_file = File::create(output_path)?;
+        let mut lines = reader.lines();
+
+        if self.has_headers {
+            if let Some(header) = lines.next() {
+                writeln!(output_file, "{}", header?)?;
+            }
+        }
+
+        for line in lines {
+            let line = line?;
+            let mut fields: Vec<String> = line
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if column_index < fields.len() {
+                fields[column_index] = transformer(&fields[column_index]);
+            }
+
+            let transformed_line = fields.join(&self.delimiter.to_string());
+            writeln!(output_file, "{}", transformed_line)?;
+        }
+
+        Ok(())
+    }
+}
+
+pub fn validate_csv_format(content: &str, delimiter: char) -> bool {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return false;
+    }
+
+    let expected_fields = lines[0].split(delimiter).count();
+    lines.iter().all(|line| line.split(delimiter).count() == expected_fields)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_filter_rows() {
+        let input_content = "name,age,city\nAlice,30,London\nBob,25,Paris\nCharlie,35,Tokyo";
+        let mut input_file = NamedTempFile::new().unwrap();
+        write!(input_file, "{}", input_content).unwrap();
+
+        let output_file = NamedTempFile::new().unwrap();
+        let processor = CsvProcessor::new(',', true);
+
+        let result = processor.filter_rows(
+            input_file.path(),
+            output_file.path(),
+            |fields| fields[1].parse::<i32>().unwrap_or(0) >= 30,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 2);
+
+        let mut output_content = String::new();
+        File::open(output_file.path())
+            .unwrap()
+            .read_to_string(&mut output_content)
+            .unwrap();
+
+        assert!(output_content.contains("Alice,30,London"));
+        assert!(output_content.contains("Charlie,35,Tokyo"));
+        assert!(!output_content.contains("Bob,25,Paris"));
+    }
+
+    #[test]
+    fn test_transform_column() {
+        let input_content = "product,price\nApple,1.50\nBanana,0.75";
+        let mut input_file = NamedTempFile::new().unwrap();
+        write!(input_file, "{}", input_content).unwrap();
+
+        let output_file = NamedTempFile::new().unwrap();
+        let processor = CsvProcessor::new(',', true);
+
+        let result = processor.transform_column(
+            input_file.path(),
+            output_file.path(),
+            1,
+            |price| format!("${}", price),
+        );
+
+        assert!(result.is_ok());
+
+        let mut output_content = String::new();
+        File::open(output_file.path())
+            .unwrap()
+            .read_to_string(&mut output_content)
+            .unwrap();
+
+        assert!(output_content.contains("$1.50"));
+        assert!(output_content.contains("$0.75"));
+    }
+
+    #[test]
+    fn test_validate_csv_format() {
+        let valid_csv = "a,b,c\n1,2,3\nx,y,z";
+        assert!(validate_csv_format(valid_csv, ','));
+
+        let invalid_csv = "a,b,c\n1,2\nx,y,z";
+        assert!(!validate_csv_format(invalid_csv, ','));
+    }
+}
