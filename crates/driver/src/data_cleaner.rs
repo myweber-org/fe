@@ -1,43 +1,58 @@
+
 use std::collections::HashSet;
 
 pub struct DataCleaner {
-    dedupe_set: HashSet<String>,
+    pub remove_duplicates: bool,
+    pub normalize_case: bool,
 }
 
 impl DataCleaner {
-    pub fn new() -> Self {
+    pub fn new(remove_duplicates: bool, normalize_case: bool) -> Self {
         DataCleaner {
-            dedupe_set: HashSet::new(),
+            remove_duplicates,
+            normalize_case,
         }
     }
 
-    pub fn normalize_string(&self, input: &str) -> String {
-        input.trim().to_lowercase()
-    }
+    pub fn clean(&self, data: Vec<String>) -> Vec<String> {
+        let mut processed_data = data;
 
-    pub fn deduplicate(&mut self, item: &str) -> bool {
-        let normalized = self.normalize_string(item);
-        if self.dedupe_set.contains(&normalized) {
-            false
-        } else {
-            self.dedupe_set.insert(normalized);
-            true
+        if self.normalize_case {
+            processed_data = processed_data
+                .into_iter()
+                .map(|s| s.to_lowercase())
+                .collect();
         }
+
+        if self.remove_duplicates {
+            let unique_set: HashSet<String> = processed_data.into_iter().collect();
+            processed_data = unique_set.into_iter().collect();
+        }
+
+        processed_data.sort();
+        processed_data
     }
 
-    pub fn clean_data(&mut self, data: Vec<&str>) -> Vec<String> {
-        let mut cleaned = Vec::new();
-        for item in data {
-            if self.deduplicate(item) {
-                cleaned.push(self.normalize_string(item));
-            }
+    pub fn clean_with_callback<F>(&self, data: Vec<String>, mut callback: F) -> Vec<String>
+    where
+        F: FnMut(&str),
+    {
+        let cleaned = self.clean(data);
+        for item in &cleaned {
+            callback(item);
         }
         cleaned
     }
+}
 
-    pub fn get_unique_count(&self) -> usize {
-        self.dedupe_set.len()
+pub fn validate_email(email: &str) -> bool {
+    let parts: Vec<&str> = email.split('@').collect();
+    if parts.len() != 2 {
+        return false;
     }
+    
+    let domain_parts: Vec<&str> = parts[1].split('.').collect();
+    domain_parts.len() >= 2 && !email.contains(' ')
 }
 
 #[cfg(test)]
@@ -45,25 +60,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_normalization() {
-        let cleaner = DataCleaner::new();
-        assert_eq!(cleaner.normalize_string("  HELLO World  "), "hello world");
+    fn test_data_cleaner() {
+        let cleaner = DataCleaner::new(true, true);
+        let data = vec![
+            "Apple".to_string(),
+            "banana".to_string(),
+            "Apple".to_string(),
+            "Cherry".to_string(),
+        ];
+        
+        let result = cleaner.clean(data);
+        assert_eq!(result, vec!["apple", "banana", "cherry"]);
     }
 
     #[test]
-    fn test_deduplication() {
-        let mut cleaner = DataCleaner::new();
-        assert!(cleaner.deduplicate("test"));
-        assert!(!cleaner.deduplicate("TEST"));
-        assert!(cleaner.deduplicate("another"));
-    }
-
-    #[test]
-    fn test_clean_data() {
-        let mut cleaner = DataCleaner::new();
-        let data = vec!["Apple", "  apple ", "BANANA", "banana", "Cherry"];
-        let cleaned = cleaner.clean_data(data);
-        assert_eq!(cleaned.len(), 3);
-        assert_eq!(cleaner.get_unique_count(), 3);
+    fn test_email_validation() {
+        assert!(validate_email("test@example.com"));
+        assert!(!validate_email("invalid-email"));
+        assert!(!validate_email("test@com"));
     }
 }
