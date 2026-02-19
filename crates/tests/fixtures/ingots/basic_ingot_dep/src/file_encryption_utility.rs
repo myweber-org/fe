@@ -83,4 +83,88 @@ mod tests {
         let decrypted_data = fs::read(decrypted_file.path()).unwrap();
         assert_eq!(test_data.to_vec(), decrypted_data);
     }
+}use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use argon2::{
+    password_hash::{rand_core::OsRng as ArgonRng, PasswordHasher, SaltString},
+    Argon2,
+};
+use std::fs;
+use std::io::{self, Read, Write};
+
+const NONCE_SIZE: usize = 12;
+const SALT_SIZE: usize = 16;
+
+pub fn encrypt_file(input_path: &str, output_path: &str, password: &str) -> io::Result<()> {
+    let mut file_data = Vec::new();
+    fs::File::open(input_path)?.read_to_end(&mut file_data)?;
+
+    let salt = SaltString::generate(&mut ArgonRng);
+    let argon2 = Argon2::default();
+    let password_hash = argon2
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    let key_bytes = password_hash.hash.unwrap().as_bytes();
+    let key = Key::<Aes256Gcm>::from_slice(&key_bytes[..32]);
+    let cipher = Aes256Gcm::new(key);
+
+    let mut nonce_bytes = [0u8; NONCE_SIZE];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, file_data.as_ref())
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    let mut output_data = Vec::new();
+    output_data.extend_from_slice(salt.as_bytes());
+    output_data.extend_from_slice(&nonce_bytes);
+    output_data.extend_from_slice(&ciphertext);
+
+    fs::File::create(output_path)?.write_all(&output_data)?;
+    Ok(())
+}
+
+pub fn decrypt_file(input_path: &str, output_path: &str, password: &str) -> io::Result<()> {
+    let mut encrypted_data = Vec::new();
+    fs::File::open(input_path)?.read_to_end(&mut encrypted_data)?;
+
+    if encrypted_data.len() < SALT_SIZE + NONCE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "File too short to contain salt and nonce",
+        ));
+    }
+
+    let salt = SaltString::from_b64(
+        std::str::from_utf8(&encrypted_data[..SALT_SIZE])
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+    )
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    let argon2 = Argon2::default();
+    let password_hash = argon2
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    let key_bytes = password_hash.hash.unwrap().as_bytes();
+    let key = Key::<Aes256Gcm>::from_slice(&key_bytes[..32]);
+    let cipher = Aes256Gcm::new(key);
+
+    let nonce_start = SALT_SIZE;
+    let nonce_end = nonce_start + NONCE_SIZE;
+    let ciphertext_start = nonce_end;
+
+    let nonce = Nonce::from_slice(&encrypted_data[nonce_start..nonce_end]);
+    let ciphertext = &encrypted_data[ciphertext_start..];
+
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Decryption failed"))?;
+
+    fs::File::create(output_path)?.write_all(&plaintext)?;
+    Ok(())
 }
