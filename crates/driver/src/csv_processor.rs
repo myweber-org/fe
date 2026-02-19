@@ -102,4 +102,149 @@ mod tests {
         
         assert_eq!(count, 2);
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug)]
+pub struct CsvRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+}
+
+#[derive(Debug)]
+pub enum CsvError {
+    IoError(String),
+    ParseError(String),
+    ValidationError(String),
+}
+
+impl std::fmt::Display for CsvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CsvError::IoError(msg) => write!(f, "IO Error: {}", msg),
+            CsvError::ParseError(msg) => write!(f, "Parse Error: {}", msg),
+            CsvError::ValidationError(msg) => write!(f, "Validation Error: {}", msg),
+        }
+    }
+}
+
+impl Error for CsvError {}
+
+pub fn process_csv_file<P: AsRef<Path>>(file_path: P) -> Result<Vec<CsvRecord>, CsvError> {
+    let file = File::open(&file_path).map_err(|e| {
+        CsvError::IoError(format!("Failed to open file {}: {}", file_path.as_ref().display(), e))
+    })?;
+
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    let mut line_number = 0;
+
+    for line in reader.lines() {
+        line_number += 1;
+        let line_content = line.map_err(|e| {
+            CsvError::IoError(format!("Failed to read line {}: {}", line_number, e))
+        })?;
+
+        if line_content.trim().is_empty() || line_content.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = line_content.split(',').collect();
+        if parts.len() != 3 {
+            return Err(CsvError::ParseError(format!(
+                "Line {}: Expected 3 columns, found {}",
+                line_number,
+                parts.len()
+            )));
+        }
+
+        let id = parts[0].parse::<u32>().map_err(|_| {
+            CsvError::ParseError(format!("Line {}: Invalid ID format '{}'", line_number, parts[0]))
+        })?;
+
+        let name = parts[1].trim().to_string();
+        if name.is_empty() {
+            return Err(CsvError::ValidationError(format!(
+                "Line {}: Name cannot be empty",
+                line_number
+            )));
+        }
+
+        let value = parts[2].parse::<f64>().map_err(|_| {
+            CsvError::ParseError(format!(
+                "Line {}: Invalid value format '{}'",
+                line_number, parts[2]
+            ))
+        })?;
+
+        if value < 0.0 {
+            return Err(CsvError::ValidationError(format!(
+                "Line {}: Value cannot be negative: {}",
+                line_number, value
+            )));
+        }
+
+        records.push(CsvRecord { id, name, value });
+    }
+
+    if records.is_empty() {
+        return Err(CsvError::ValidationError(
+            "CSV file contains no valid records".to_string(),
+        ));
+    }
+
+    Ok(records)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_valid_csv() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1,Alice,42.5").unwrap();
+        writeln!(temp_file, "2,Bob,17.8").unwrap();
+        writeln!(temp_file, "# This is a comment").unwrap();
+        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file, "3,Charlie,99.9").unwrap();
+
+        let result = process_csv_file(temp_file.path());
+        assert!(result.is_ok());
+        let records = result.unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].name, "Alice");
+        assert_eq!(records[1].value, 17.8);
+        assert_eq!(records[2].id, 3);
+    }
+
+    #[test]
+    fn test_invalid_column_count() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1,Alice").unwrap();
+
+        let result = process_csv_file(temp_file.path());
+        assert!(matches!(result, Err(CsvError::ParseError(_))));
+    }
+
+    #[test]
+    fn test_negative_value() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1,Alice,-5.0").unwrap();
+
+        let result = process_csv_file(temp_file.path());
+        assert!(matches!(result, Err(CsvError::ValidationError(_))));
+    }
+
+    #[test]
+    fn test_empty_file() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let result = process_csv_file(temp_file.path());
+        assert!(matches!(result, Err(CsvError::ValidationError(_))));
+    }
 }
