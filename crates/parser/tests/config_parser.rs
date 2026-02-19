@@ -218,3 +218,91 @@ mod tests {
         assert_eq!(config.get_or_default("MISSING", "default"), "default");
     }
 }
+use std::collections::HashMap;
+use std::env;
+use regex::Regex;
+
+pub struct Config {
+    pub settings: HashMap<String, String>,
+}
+
+impl Config {
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = std::fs::read_to_string(path)?;
+        Self::from_str(&content)
+    }
+
+    pub fn from_str(content: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut settings = HashMap::new();
+        let var_pattern = Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")?;
+
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            if let Some((key, mut value)) = line.split_once('=') {
+                let key = key.trim().to_string();
+                value = value.trim();
+
+                let mut processed_value = value.to_string();
+                for cap in var_pattern.captures_iter(value) {
+                    if let Some(var_name) = cap.get(1) {
+                        if let Ok(env_value) = env::var(var_name.as_str()) {
+                            processed_value = processed_value.replace(&cap[0], &env_value);
+                        }
+                    }
+                }
+
+                settings.insert(key, processed_value);
+            }
+        }
+
+        Ok(Config { settings })
+    }
+
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.settings.get(key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_basic_parsing() {
+        let content = "host=localhost\nport=8080\ndebug=true";
+        let config = Config::from_str(content).unwrap();
+        
+        assert_eq!(config.get("host"), Some(&"localhost".to_string()));
+        assert_eq!(config.get("port"), Some(&"8080".to_string()));
+        assert_eq!(config.get("debug"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn test_env_substitution() {
+        env::set_var("DB_HOST", "postgres-server");
+        let content = "database_host=${DB_HOST}\napi_key=secret123";
+        let config = Config::from_str(content).unwrap();
+        
+        assert_eq!(config.get("database_host"), Some(&"postgres-server".to_string()));
+        assert_eq!(config.get("api_key"), Some(&"secret123".to_string()));
+    }
+
+    #[test]
+    fn test_file_parsing() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "server=127.0.0.1\n").unwrap();
+        writeln!(file, "# This is a comment\n").unwrap();
+        writeln!(file, "timeout=30").unwrap();
+        
+        let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.get("server"), Some(&"127.0.0.1".to_string()));
+        assert_eq!(config.get("timeout"), Some(&"30".to_string()));
+        assert_eq!(config.get("# This is a comment"), None);
+    }
+}
