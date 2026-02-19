@@ -1,152 +1,161 @@
 
-use std::collections::HashMap;
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub timestamp: String,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64, timestamp: String) -> Self {
+        Self {
+            id,
+            name,
+            value,
+            timestamp,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        !self.name.is_empty() && self.value >= 0.0 && !self.timestamp.is_empty()
+    }
+}
 
 pub struct DataProcessor {
-    cache: HashMap<String, Vec<f64>>,
+    records: Vec<DataRecord>,
 }
 
 impl DataProcessor {
     pub fn new() -> Self {
-        DataProcessor {
-            cache: HashMap::new(),
+        Self {
+            records: Vec::new(),
         }
     }
 
-    pub fn process_dataset(&mut self, key: &str, data: &[f64]) -> Result<Vec<f64>, String> {
-        if data.is_empty() {
-            return Err("Empty dataset provided".to_string());
-        }
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
 
-        if let Some(cached) = self.cache.get(key) {
-            return Ok(cached.clone());
-        }
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if line_num == 0 {
+                continue;
+            }
 
-        let validated = self.validate_data(data)?;
-        let normalized = self.normalize_data(&validated);
-        let transformed = self.apply_transformations(&normalized);
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 4 {
+                continue;
+            }
 
-        self.cache.insert(key.to_string(), transformed.clone());
-        Ok(transformed)
-    }
+            let id = match parts[0].parse::<u32>() {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
 
-    fn validate_data(&self, data: &[f64]) -> Result<Vec<f64>, String> {
-        for &value in data {
-            if !value.is_finite() {
-                return Err("Invalid numeric value detected".to_string());
+            let name = parts[1].to_string();
+            
+            let value = match parts[2].parse::<f64>() {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+
+            let timestamp = parts[3].to_string();
+
+            let record = DataRecord::new(id, name, value, timestamp);
+            if record.is_valid() {
+                self.records.push(record);
+                count += 1;
             }
         }
-        Ok(data.to_vec())
+
+        Ok(count)
     }
 
-    fn normalize_data(&self, data: &[f64]) -> Vec<f64> {
-        let mean = data.iter().sum::<f64>() / data.len() as f64;
-        let variance = data.iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / data.len() as f64;
-        let std_dev = variance.sqrt();
+    pub fn filter_by_value(&self, min_value: f64, max_value: f64) -> Vec<DataRecord> {
+        self.records
+            .iter()
+            .filter(|r| r.value >= min_value && r.value <= max_value)
+            .cloned()
+            .collect()
+    }
 
-        if std_dev.abs() < 1e-10 {
-            return vec![0.0; data.len()];
+    pub fn calculate_statistics(&self) -> (f64, f64, f64) {
+        if self.records.is_empty() {
+            return (0.0, 0.0, 0.0);
         }
 
-        data.iter()
-            .map(|&x| (x - mean) / std_dev)
-            .collect()
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        let count = self.records.len() as f64;
+        let mean = sum / count;
+
+        let variance: f64 = self.records
+            .iter()
+            .map(|r| (r.value - mean).powi(2))
+            .sum::<f64>() / count;
+
+        let std_dev = variance.sqrt();
+
+        (mean, variance, std_dev)
     }
 
-    fn apply_transformations(&self, data: &[f64]) -> Vec<f64> {
-        data.iter()
-            .map(|&x| x.powi(2).ln_1p())
-            .collect()
+    pub fn get_records(&self) -> &Vec<DataRecord> {
+        &self.records
     }
 
-    pub fn clear_cache(&mut self) {
-        self.cache.clear();
-    }
-
-    pub fn cache_stats(&self) -> (usize, usize) {
-        let total_items: usize = self.cache.values().map(|v| v.len()).sum();
-        (self.cache.len(), total_items)
+    pub fn clear(&mut self) {
+        self.records.clear();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_validation_rejects_invalid_data() {
-        let processor = DataProcessor::new();
-        let data = vec![1.0, f64::NAN, 3.0];
-        assert!(processor.validate_data(&data).is_err());
+    fn test_data_record_validation() {
+        let valid_record = DataRecord::new(1, "test".to_string(), 10.5, "2024-01-01".to_string());
+        assert!(valid_record.is_valid());
+
+        let invalid_record = DataRecord::new(2, "".to_string(), -5.0, "".to_string());
+        assert!(!invalid_record.is_valid());
     }
 
     #[test]
-    fn test_normalization_produces_zero_mean() {
-        let processor = DataProcessor::new();
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let normalized = processor.normalize_data(&data);
-        let mean = normalized.iter().sum::<f64>() / normalized.len() as f64;
-        assert!(mean.abs() < 1e-10);
-    }
+    fn test_csv_loading() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,name,value,timestamp").unwrap();
+        writeln!(temp_file, "1,item1,10.5,2024-01-01").unwrap();
+        writeln!(temp_file, "2,item2,20.0,2024-01-02").unwrap();
 
-    #[test]
-    fn test_cache_functionality() {
         let mut processor = DataProcessor::new();
-        let data = vec![1.5, 2.5, 3.5];
+        let result = processor.load_from_csv(temp_file.path());
         
-        let result1 = processor.process_dataset("test", &data).unwrap();
-        let result2 = processor.process_dataset("test", &data).unwrap();
-        
-        assert_eq!(result1, result2);
-        assert_eq!(processor.cache_stats(), (1, 3));
-    }
-}
-use csv::Reader;
-use serde::Deserialize;
-use std::error::Error;
-
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
-}
-
-pub fn process_csv_data(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
-    let mut reader = Reader::from_path(file_path)?;
-    let mut records = Vec::new();
-
-    for result in reader.deserialize() {
-        let record: Record = result?;
-        
-        if record.value < 0.0 {
-            return Err(format!("Invalid value {} for record {}", record.value, record.id).into());
-        }
-        
-        records.push(record);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 2);
+        assert_eq!(processor.get_records().len(), 2);
     }
 
-    Ok(records)
-}
+    #[test]
+    fn test_statistics_calculation() {
+        let mut processor = DataProcessor::new();
+        processor.records.push(DataRecord::new(1, "a".to_string(), 10.0, "t1".to_string()));
+        processor.records.push(DataRecord::new(2, "b".to_string(), 20.0, "t2".to_string()));
+        processor.records.push(DataRecord::new(3, "c".to_string(), 30.0, "t3".to_string()));
 
-pub fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let count = records.len() as f64;
-    let mean = if count > 0.0 { sum / count } else { 0.0 };
-    
-    let variance: f64 = records.iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>() / count;
-    
-    let std_dev = variance.sqrt();
-    
-    (mean, variance, std_dev)
-}
-
-pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
-    records.into_iter()
-        .filter(|r| r.category == category)
-        .collect()
+        let (mean, variance, std_dev) = processor.calculate_statistics();
+        
+        assert_eq!(mean, 20.0);
+        assert_eq!(variance, 66.66666666666667);
+        assert_eq!(std_dev, 8.16496580927726);
+    }
 }
