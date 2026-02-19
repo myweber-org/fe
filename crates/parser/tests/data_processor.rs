@@ -1348,4 +1348,79 @@ mod tests {
         assert_eq!(new_processor.get_records().len(), 1);
         assert_eq!(new_processor.get_records()[0].name, "CSV Test");
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub struct DataProcessor {
+    pub valid_records: Vec<Vec<String>>,
+    pub invalid_records: Vec<Vec<String>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            valid_records: Vec::new(),
+            invalid_records: Vec::new(),
+        }
+    }
+
+    pub fn process_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+
+        for (line_number, line) in reader.lines().enumerate() {
+            let line = line?;
+            let record: Vec<String> = line.split(',').map(|s| s.trim().to_string()).collect();
+
+            if self.validate_record(&record) {
+                self.valid_records.push(record);
+            } else {
+                self.invalid_records.push(record);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_record(&self, record: &[String]) -> bool {
+        if record.len() != 3 {
+            return false;
+        }
+
+        if record[0].is_empty() || record[1].is_empty() {
+            return false;
+        }
+
+        record[2].parse::<f64>().is_ok()
+    }
+
+    pub fn get_statistics(&self) -> (usize, usize) {
+        (self.valid_records.len(), self.invalid_records.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "John,Doe,25.5").unwrap();
+        writeln!(temp_file, "Jane,Smith,30.0").unwrap();
+        writeln!(temp_file, "Invalid,Data,abc").unwrap();
+        writeln!(temp_file, "Missing,Age,").unwrap();
+
+        let result = processor.process_csv(temp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+
+        let (valid, invalid) = processor.get_statistics();
+        assert_eq!(valid, 2);
+        assert_eq!(invalid, 2);
+    }
 }
