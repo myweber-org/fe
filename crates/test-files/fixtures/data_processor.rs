@@ -550,3 +550,125 @@ mod tests {
         assert_eq!(active_count, 2);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+pub struct DataSet {
+    values: Vec<f64>,
+}
+
+impl DataSet {
+    pub fn new() -> Self {
+        DataSet { values: Vec::new() }
+    }
+
+    pub fn from_csv<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let mut rdr = csv::Reader::from_reader(file);
+        let mut values = Vec::new();
+
+        for result in rdr.records() {
+            let record = result?;
+            for field in record.iter() {
+                if let Ok(num) = field.parse::<f64>() {
+                    values.push(num);
+                }
+            }
+        }
+
+        Ok(DataSet { values })
+    }
+
+    pub fn add_value(&mut self, value: f64) {
+        self.values.push(value);
+    }
+
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.values.is_empty() {
+            return None;
+        }
+        let sum: f64 = self.values.iter().sum();
+        Some(sum / self.values.len() as f64)
+    }
+
+    pub fn calculate_variance(&self) -> Option<f64> {
+        if self.values.len() < 2 {
+            return None;
+        }
+        let mean = self.calculate_mean()?;
+        let sum_sq_diff: f64 = self.values
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum();
+        Some(sum_sq_diff / (self.values.len() - 1) as f64)
+    }
+
+    pub fn get_min(&self) -> Option<f64> {
+        self.values.iter().copied().reduce(f64::min)
+    }
+
+    pub fn get_max(&self) -> Option<f64> {
+        self.values.iter().copied().reduce(f64::max)
+    }
+
+    pub fn count(&self) -> usize {
+        self.values.len()
+    }
+}
+
+pub fn process_numeric_data(data: &[f64]) -> (f64, f64, f64, f64) {
+    let count = data.len() as f64;
+    let sum: f64 = data.iter().sum();
+    let mean = sum / count;
+    
+    let variance: f64 = data.iter()
+        .map(|&x| (x - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let min = data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let max = data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    
+    (mean, variance, min, max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_dataset_operations() {
+        let mut dataset = DataSet::new();
+        dataset.add_value(10.5);
+        dataset.add_value(20.3);
+        dataset.add_value(15.7);
+
+        assert_eq!(dataset.count(), 3);
+        assert_eq!(dataset.calculate_mean(), Some(15.5));
+        assert_eq!(dataset.get_min(), Some(10.5));
+        assert_eq!(dataset.get_max(), Some(20.3));
+    }
+
+    #[test]
+    fn test_csv_parsing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "value\n10.5\n20.3\n15.7").unwrap();
+        
+        let dataset = DataSet::from_csv(temp_file.path()).unwrap();
+        assert_eq!(dataset.count(), 3);
+        assert_eq!(dataset.calculate_mean(), Some(15.5));
+    }
+
+    #[test]
+    fn test_process_numeric_data() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let (mean, variance, min, max) = process_numeric_data(&data);
+        
+        assert_eq!(mean, 3.0);
+        assert_eq!(variance, 2.0);
+        assert_eq!(min, 1.0);
+        assert_eq!(max, 5.0);
+    }
+}
