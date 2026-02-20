@@ -145,3 +145,127 @@ mod tests {
         assert_eq!(result, expected);
     }
 }
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufReader, Read, Write};
+use std::path::Path;
+
+use serde_json::{Value, json};
+
+pub fn merge_json_files(input_paths: &[&str], output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged_array = Vec::new();
+
+    for input_path in input_paths {
+        let path = Path::new(input_path);
+        if !path.exists() {
+            eprintln!("Warning: File {} does not exist, skipping.", input_path);
+            continue;
+        }
+
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents)?;
+
+        let json_value: Value = serde_json::from_str(&contents)?;
+
+        match json_value {
+            Value::Array(arr) => {
+                merged_array.extend(arr);
+            }
+            Value::Object(_) => {
+                merged_array.push(json_value);
+            }
+            _ => {
+                eprintln!("Warning: File {} does not contain a JSON object or array, skipping.", input_path);
+            }
+        }
+    }
+
+    let output_file = File::create(output_path)?;
+    serde_json::to_writer_pretty(output_file, &json!(merged_array))?;
+
+    Ok(())
+}
+
+pub fn deduplicate_json_array_by_key(input_path: &str, output_path: &str, key: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let file = File::open(input_path)?;
+    let reader = BufReader::new(file);
+    let json_value: Value = serde_json::from_reader(reader)?;
+
+    let array = json_value.as_array().ok_or("Input JSON is not an array")?;
+
+    let mut seen = HashMap::new();
+    let mut deduplicated = Vec::new();
+
+    for item in array {
+        if let Some(obj) = item.as_object() {
+            if let Some(key_value) = obj.get(key) {
+                if !seen.contains_key(key_value) {
+                    seen.insert(key_value.clone(), true);
+                    deduplicated.push(item.clone());
+                }
+            }
+        }
+    }
+
+    let output_file = File::create(output_path)?;
+    serde_json::to_writer_pretty(output_file, &json!(deduplicated))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_json_files() {
+        let file1_content = r#"[{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]"#;
+        let file2_content = r#"{"id": 3, "name": "Charlie"}"#;
+
+        let file1 = NamedTempFile::new().unwrap();
+        let file2 = NamedTempFile::new().unwrap();
+        let output_file = NamedTempFile::new().unwrap();
+
+        fs::write(file1.path(), file1_content).unwrap();
+        fs::write(file2.path(), file2_content).unwrap();
+
+        let input_paths = vec![
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ];
+
+        merge_json_files(&input_paths, output_file.path().to_str().unwrap()).unwrap();
+
+        let output_content = fs::read_to_string(output_file.path()).unwrap();
+        let parsed: Value = serde_json::from_str(&output_content).unwrap();
+
+        assert!(parsed.is_array());
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+    }
+
+    #[test]
+    fn test_deduplicate_json_array_by_key() {
+        let input_content = r#"[
+            {"id": 1, "name": "Alice"},
+            {"id": 2, "name": "Bob"},
+            {"id": 1, "name": "Alice Duplicate"}
+        ]"#;
+
+        let input_file = NamedTempFile::new().unwrap();
+        let output_file = NamedTempFile::new().unwrap();
+
+        fs::write(input_file.path(), input_content).unwrap();
+
+        deduplicate_json_array_by_key(input_file.path().to_str().unwrap(), output_file.path().to_str().unwrap(), "id").unwrap();
+
+        let output_content = fs::read_to_string(output_file.path()).unwrap();
+        let parsed: Value = serde_json::from_str(&output_content).unwrap();
+
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+    }
+}
