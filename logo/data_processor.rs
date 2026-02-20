@@ -925,3 +925,113 @@ mod tests {
         assert_eq!(stats.get("count"), Some(&5.0));
     }
 }
+use std::collections::HashMap;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+impl DataRecord {
+    pub fn new(id: u64, values: Vec<f64>) -> Self {
+        Self {
+            id,
+            values,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        !self.values.is_empty() && self.id > 0
+    }
+
+    pub fn calculate_statistics(&self) -> Option<DataStatistics> {
+        if self.values.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.values.iter().sum();
+        let count = self.values.len() as f64;
+        let mean = sum / count;
+
+        let variance: f64 = self.values
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / count;
+
+        DataStatistics::new(mean, variance.sqrt(), count as usize).into()
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+}
+
+#[derive(Debug)]
+pub struct DataStatistics {
+    pub mean: f64,
+    pub std_dev: f64,
+    pub sample_count: usize,
+}
+
+impl DataStatistics {
+    pub fn new(mean: f64, std_dev: f64, sample_count: usize) -> Self {
+        Self {
+            mean,
+            std_dev,
+            sample_count,
+        }
+    }
+
+    pub fn is_normal_distribution(&self) -> bool {
+        self.std_dev > 0.0 && self.sample_count >= 30
+    }
+}
+
+pub fn process_records(records: Vec<DataRecord>) -> Vec<DataRecord> {
+    records
+        .into_iter()
+        .filter(|record| record.is_valid())
+        .map(|mut record| {
+            if let Some(stats) = record.calculate_statistics() {
+                record.add_metadata(
+                    "processed".to_string(),
+                    format!("mean={:.2}, std={:.2}", stats.mean, stats.std_dev)
+                );
+            }
+            record
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record() {
+        let record = DataRecord::new(1, vec![1.0, 2.0, 3.0]);
+        assert!(record.is_valid());
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        let empty_record = DataRecord::new(1, vec![]);
+        assert!(!empty_record.is_valid());
+
+        let zero_id_record = DataRecord::new(0, vec![1.0]);
+        assert!(!zero_id_record.is_valid());
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let record = DataRecord::new(1, vec![1.0, 2.0, 3.0]);
+        let stats = record.calculate_statistics().unwrap();
+        
+        assert!((stats.mean - 2.0).abs() < 0.001);
+        assert!((stats.std_dev - 0.816).abs() < 0.001);
+        assert_eq!(stats.sample_count, 3);
+    }
+}
