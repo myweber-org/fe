@@ -149,4 +149,68 @@ mod tests {
 
         env::remove_var("CONFIG_PATH");
     }
+}use serde::Deserialize;
+use std::env;
+use std::fs;
+
+#[derive(Debug, Deserialize)]
+pub struct AppConfig {
+    pub server_port: u16,
+    pub database_url: String,
+    pub log_level: String,
+    pub cache_ttl: u64,
+}
+
+impl AppConfig {
+    pub fn from_file(file_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let config_str = fs::read_to_string(file_path)?;
+        let config: AppConfig = toml::from_str(&config_str)?;
+        Ok(config)
+    }
+
+    pub fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(AppConfig {
+            server_port: env::var("SERVER_PORT")?.parse()?,
+            database_url: env::var("DATABASE_URL")?,
+            log_level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+            cache_ttl: env::var("CACHE_TTL")?.parse()?,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if self.server_port == 0 {
+            errors.push("Server port cannot be zero".to_string());
+        }
+
+        if self.database_url.is_empty() {
+            errors.push("Database URL cannot be empty".to_string());
+        }
+
+        let valid_log_levels = ["error", "warn", "info", "debug", "trace"];
+        if !valid_log_levels.contains(&self.log_level.as_str()) {
+            errors.push(format!(
+                "Invalid log level: {}. Must be one of: {:?}",
+                self.log_level, valid_log_levels
+            ));
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+pub fn load_config() -> Result<AppConfig, Box<dyn std::error::Error>> {
+    let config = if let Ok(file_path) = env::var("CONFIG_FILE") {
+        AppConfig::from_file(&file_path)?
+    } else {
+        AppConfig::from_env()?
+    };
+
+    config.validate()?;
+    Ok(config)
 }
