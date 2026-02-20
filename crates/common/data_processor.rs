@@ -1,4 +1,3 @@
-
 use csv::Reader;
 use serde::Deserialize;
 use std::error::Error;
@@ -7,7 +6,6 @@ use std::fs::File;
 #[derive(Debug, Deserialize)]
 struct Record {
     id: u32,
-    name: String,
     value: f64,
     category: String,
 }
@@ -33,41 +31,22 @@ impl DataProcessor {
         Ok(())
     }
 
-    pub fn validate_data(&self) -> Vec<String> {
-        let mut errors = Vec::new();
-
-        for (index, record) in self.records.iter().enumerate() {
-            if record.name.is_empty() {
-                errors.push(format!("Record {}: Name is empty", index));
-            }
-
-            if record.value < 0.0 {
-                errors.push(format!("Record {}: Value is negative", index));
-            }
-
-            if !["A", "B", "C"].contains(&record.category.as_str()) {
-                errors.push(format!("Record {}: Invalid category", index));
-            }
+    pub fn calculate_statistics(&self) -> (f64, f64, f64) {
+        if self.records.is_empty() {
+            return (0.0, 0.0, 0.0);
         }
 
-        errors
-    }
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        let count = self.records.len() as f64;
+        let mean = sum / count;
 
-    pub fn calculate_statistics(&self) -> (f64, f64, f64) {
-        let values: Vec<f64> = self.records.iter().map(|r| r.value).collect();
-        
-        let sum: f64 = values.iter().sum();
-        let count = values.len() as f64;
-        let mean = if count > 0.0 { sum / count } else { 0.0 };
-        
-        let variance: f64 = if count > 0.0 {
-            values.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / count
-        } else {
-            0.0
-        };
-        
+        let variance: f64 = self.records
+            .iter()
+            .map(|r| (r.value - mean).powi(2))
+            .sum::<f64>() / count;
+
         let std_dev = variance.sqrt();
-        
+
         (mean, variance, std_dev)
     }
 
@@ -86,29 +65,29 @@ impl DataProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_data_processing() {
-        let csv_data = "id,name,value,category\n1,Test1,10.5,A\n2,Test2,20.0,B\n";
+        let mut processor = DataProcessor::new();
         
         let mut temp_file = NamedTempFile::new().unwrap();
-        write!(temp_file, "{}", csv_data).unwrap();
-        
-        let mut processor = DataProcessor::new();
+        writeln!(temp_file, "id,value,category").unwrap();
+        writeln!(temp_file, "1,10.5,alpha").unwrap();
+        writeln!(temp_file, "2,20.3,beta").unwrap();
+        writeln!(temp_file, "3,15.7,alpha").unwrap();
+
         let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
-        
         assert!(result.is_ok());
-        assert_eq!(processor.get_record_count(), 2);
-        
-        let errors = processor.validate_data();
-        assert!(errors.is_empty());
-        
-        let stats = processor.calculate_statistics();
-        assert!((stats.0 - 15.25).abs() < 0.001);
-        
-        let category_a = processor.filter_by_category("A");
-        assert_eq!(category_a.len(), 1);
+        assert_eq!(processor.get_record_count(), 3);
+
+        let (mean, variance, std_dev) = processor.calculate_statistics();
+        assert!((mean - 15.5).abs() < 0.01);
+        assert!((variance - 16.09).abs() < 0.01);
+        assert!((std_dev - 4.01).abs() < 0.01);
+
+        let alpha_records = processor.filter_by_category("alpha");
+        assert_eq!(alpha_records.len(), 2);
     }
 }
