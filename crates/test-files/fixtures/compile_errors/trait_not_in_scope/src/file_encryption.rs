@@ -1,64 +1,59 @@
-use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
-use hex;
-use rand::Rng;
+
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
+use std::path::Path;
 
-type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
-type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
-
-pub fn encrypt_file(input_path: &str, output_path: &str, key: &[u8; 32]) -> Result<(), String> {
-    let mut file = fs::File::open(input_path).map_err(|e| e.to_string())?;
-    let mut plaintext = Vec::new();
-    file.read_to_end(&mut plaintext).map_err(|e| e.to_string())?;
-
-    let iv: [u8; 16] = rand::thread_rng().gen();
-    let ciphertext = Aes256CbcEnc::new(key.into(), &iv.into())
-        .encrypt_padded_vec_mut::<Pkcs7>(&plaintext);
-
-    let mut output = fs::File::create(output_path).map_err(|e| e.to_string())?;
-    output.write_all(&iv).map_err(|e| e.to_string())?;
-    output.write_all(&ciphertext).map_err(|e| e.to_string())?;
-
+pub fn xor_encrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> io::Result<()> {
+    let input_data = fs::read(input_path)?;
+    let encrypted_data: Vec<u8> = input_data
+        .iter()
+        .enumerate()
+        .map(|(i, &byte)| byte ^ key[i % key.len()])
+        .collect();
+    
+    fs::write(output_path, encrypted_data)?;
     Ok(())
 }
 
-pub fn decrypt_file(input_path: &str, output_path: &str, key: &[u8; 32]) -> Result<(), String> {
-    let mut file = fs::File::open(input_path).map_err(|e| e.to_string())?;
-    let mut ciphertext = Vec::new();
-    file.read_to_end(&mut ciphertext).map_err(|e| e.to_string())?;
+pub fn xor_decrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> io::Result<()> {
+    xor_encrypt_file(input_path, output_path, key)
+}
 
-    if ciphertext.len() < 16 {
-        return Err("File too short to contain IV".to_string());
+pub fn generate_random_key(length: usize) -> Vec<u8> {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    (0..length).map(|_| rng.gen()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_xor_encryption_cycle() {
+        let original_text = b"Hello, World! This is a test message.";
+        let key = b"secret_key";
+        
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+        
+        fs::write(input_file.path(), original_text).unwrap();
+        
+        xor_encrypt_file(
+            input_file.path().to_str().unwrap(),
+            encrypted_file.path().to_str().unwrap(),
+            key,
+        ).unwrap();
+        
+        xor_decrypt_file(
+            encrypted_file.path().to_str().unwrap(),
+            decrypted_file.path().to_str().unwrap(),
+            key,
+        ).unwrap();
+        
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(original_text.to_vec(), decrypted_data);
     }
-
-    let iv = &ciphertext[..16];
-    let data = &ciphertext[16..];
-
-    let plaintext = Aes256CbcDec::new(key.into(), iv.into())
-        .decrypt_padded_vec_mut::<Pkcs7>(data)
-        .map_err(|e| e.to_string())?;
-
-    let mut output = fs::File::create(output_path).map_err(|e| e.to_string())?;
-    output.write_all(&plaintext).map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-pub fn generate_key() -> [u8; 32] {
-    rand::thread_rng().gen()
-}
-
-pub fn key_to_hex(key: &[u8; 32]) -> String {
-    hex::encode(key)
-}
-
-pub fn hex_to_key(hex_str: &str) -> Result<[u8; 32], String> {
-    let bytes = hex::decode(hex_str).map_err(|e| e.to_string())?;
-    if bytes.len() != 32 {
-        return Err("Key must be 32 bytes".to_string());
-    }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&bytes);
-    Ok(key)
 }
