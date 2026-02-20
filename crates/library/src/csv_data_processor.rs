@@ -150,4 +150,125 @@ mod tests {
         let filtered = processor.filter_by_category("CategoryA");
         assert_eq!(filtered.len(), 1);
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+#[derive(Debug)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
+}
+
+pub fn read_csv_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+
+    for (index, line) in reader.lines().enumerate() {
+        if index == 0 {
+            continue;
+        }
+
+        let line = line?;
+        let fields: Vec<&str> = line.split(',').collect();
+        
+        if fields.len() >= 4 {
+            let id = fields[0].parse::<u32>()?;
+            let name = fields[1].to_string();
+            let value = fields[2].parse::<f64>()?;
+            let category = fields[3].to_string();
+            
+            records.push(Record { id, name, value, category });
+        }
+    }
+
+    Ok(records)
+}
+
+pub fn filter_by_category(records: &[Record], category: &str) -> Vec<&Record> {
+    records.iter()
+        .filter(|record| record.category == category)
+        .collect()
+}
+
+pub fn calculate_average(records: &[Record]) -> f64 {
+    if records.is_empty() {
+        return 0.0;
+    }
+    
+    let total: f64 = records.iter().map(|r| r.value).sum();
+    total / records.len() as f64
+}
+
+pub fn find_max_value(records: &[Record]) -> Option<&Record> {
+    records.iter().max_by(|a, b| a.value.partial_cmp(&b.value).unwrap())
+}
+
+pub fn process_data(file_path: &str, target_category: &str) -> Result<(), Box<dyn Error>> {
+    let records = read_csv_file(file_path)?;
+    
+    println!("Total records loaded: {}", records.len());
+    
+    let filtered = filter_by_category(&records, target_category);
+    println!("Records in category '{}': {}", target_category, filtered.len());
+    
+    if !filtered.is_empty() {
+        let avg = calculate_average(&filtered);
+        println!("Average value for category '{}': {:.2}", target_category, avg);
+        
+        if let Some(max_record) = find_max_value(&filtered) {
+            println!("Maximum value record: ID={}, Name={}, Value={}", 
+                     max_record.id, max_record.name, max_record.value);
+        }
+    }
+    
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_read_csv_file() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,name,value,category").unwrap();
+        writeln!(temp_file, "1,ItemA,10.5,Category1").unwrap();
+        writeln!(temp_file, "2,ItemB,20.3,Category2").unwrap();
+        
+        let records = read_csv_file(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].name, "ItemA");
+        assert_eq!(records[1].value, 20.3);
+    }
+
+    #[test]
+    fn test_filter_by_category() {
+        let records = vec![
+            Record { id: 1, name: "Test1".to_string(), value: 10.0, category: "A".to_string() },
+            Record { id: 2, name: "Test2".to_string(), value: 20.0, category: "B".to_string() },
+            Record { id: 3, name: "Test3".to_string(), value: 30.0, category: "A".to_string() },
+        ];
+        
+        let filtered = filter_by_category(&records, "A");
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|r| r.category == "A"));
+    }
+
+    #[test]
+    fn test_calculate_average() {
+        let records = vec![
+            Record { id: 1, name: "Test1".to_string(), value: 10.0, category: "A".to_string() },
+            Record { id: 2, name: "Test2".to_string(), value: 20.0, category: "A".to_string() },
+            Record { id: 3, name: "Test3".to_string(), value: 30.0, category: "A".to_string() },
+        ];
+        
+        let avg = calculate_average(&records);
+        assert_eq!(avg, 20.0);
+    }
 }
