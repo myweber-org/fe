@@ -98,4 +98,87 @@ mod tests {
         fs::remove_file(input_path).unwrap();
         fs::remove_file(output_path).unwrap();
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+pub struct CsvProcessor {
+    delimiter: char,
+    has_headers: bool,
+}
+
+impl CsvProcessor {
+    pub fn new(delimiter: char, has_headers: bool) -> Self {
+        CsvProcessor {
+            delimiter,
+            has_headers,
+        }
+    }
+
+    pub fn filter_rows<P, F>(
+        &self,
+        file_path: P,
+        predicate: F,
+    ) -> Result<Vec<Vec<String>>, Box<dyn Error>>
+    where
+        P: AsRef<Path>,
+        F: Fn(&[String]) -> bool,
+    {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
+
+        if self.has_headers {
+            lines.next();
+        }
+
+        let mut filtered_rows = Vec::new();
+
+        for line_result in lines {
+            let line = line_result?;
+            let fields: Vec<String> = line
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if predicate(&fields) {
+                filtered_rows.push(fields);
+            }
+        }
+
+        Ok(filtered_rows)
+    }
+
+    pub fn extract_column(&self, rows: &[Vec<String>], column_index: usize) -> Vec<String> {
+        rows.iter()
+            .filter_map(|row| row.get(column_index).cloned())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_filter_and_extract() {
+        let csv_data = "name,age,city\nAlice,30,London\nBob,25,Paris\nCharlie,35,London";
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "{}", csv_data).unwrap();
+
+        let processor = CsvProcessor::new(',', true);
+        let filtered = processor
+            .filter_rows(temp_file.path(), |row| row[2] == "London")
+            .unwrap();
+
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0][0], "Alice");
+        assert_eq!(filtered[1][0], "Charlie");
+
+        let names = processor.extract_column(&filtered, 0);
+        assert_eq!(names, vec!["Alice", "Charlie"]);
+    }
 }
