@@ -138,4 +138,74 @@ mod tests {
         assert_eq!(variance, 2.0);
         assert_eq!(std_dev, 2.0_f64.sqrt());
     }
+}use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
+}
+
+pub fn process_data_file(path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
+    let file = File::open(path)?;
+    let mut rdr = Reader::from_reader(file);
+    let mut records = Vec::new();
+
+    for result in rdr.deserialize() {
+        let record: Record = result?;
+        if record.value >= 0.0 && record.category.len() <= 20 {
+            records.push(record);
+        }
+    }
+
+    Ok(records)
+}
+
+pub fn calculate_statistics(records: &[Record]) -> (f64, f64, usize) {
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let count = records.len();
+    let avg = if count > 0 { sum / count as f64 } else { 0.0 };
+    
+    let max_value = records.iter()
+        .map(|r| r.value)
+        .fold(f64::NEG_INFINITY, |a, b| a.max(b));
+    
+    (avg, max_value, count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::io::Write;
+
+    #[test]
+    fn test_process_valid_data() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,name,value,category").unwrap();
+        writeln!(temp_file, "1,Test1,10.5,CategoryA").unwrap();
+        writeln!(temp_file, "2,Test2,20.3,CategoryB").unwrap();
+        
+        let records = process_data_file(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].name, "Test1");
+    }
+
+    #[test]
+    fn test_calculate_stats() {
+        let records = vec![
+            Record { id: 1, name: "A".to_string(), value: 10.0, category: "X".to_string() },
+            Record { id: 2, name: "B".to_string(), value: 20.0, category: "Y".to_string() },
+        ];
+        
+        let (avg, max, count) = calculate_statistics(&records);
+        assert_eq!(avg, 15.0);
+        assert_eq!(max, 20.0);
+        assert_eq!(count, 2);
+    }
 }
