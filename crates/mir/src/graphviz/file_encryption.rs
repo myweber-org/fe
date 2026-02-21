@@ -283,3 +283,88 @@ mod tests {
         assert_eq!(original_data.to_vec(), decrypted_data);
     }
 }
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+const DEFAULT_KEY: u8 = 0xAA;
+
+pub fn xor_encrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
+    let encryption_key = key.unwrap_or(DEFAULT_KEY);
+    let input_data = fs::read(input_path)?;
+
+    let encrypted_data: Vec<u8> = input_data
+        .into_iter()
+        .map(|byte| byte ^ encryption_key)
+        .collect();
+
+    fs::write(output_path, encrypted_data)?;
+    Ok(())
+}
+
+pub fn xor_decrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
+    xor_encrypt_file(input_path, output_path, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_encryption_decryption_cycle() {
+        let original_content = b"Hello, this is a secret message!";
+        let temp_input = NamedTempFile::new().unwrap();
+        let temp_encrypted = NamedTempFile::new().unwrap();
+        let temp_decrypted = NamedTempFile::new().unwrap();
+
+        fs::write(temp_input.path(), original_content).unwrap();
+
+        xor_encrypt_file(
+            temp_input.path().to_str().unwrap(),
+            temp_encrypted.path().to_str().unwrap(),
+            Some(0xCC),
+        )
+        .unwrap();
+
+        xor_decrypt_file(
+            temp_encrypted.path().to_str().unwrap(),
+            temp_decrypted.path().to_str().unwrap(),
+            Some(0xCC),
+        )
+        .unwrap();
+
+        let decrypted_content = fs::read(temp_decrypted.path()).unwrap();
+        assert_eq!(original_content.to_vec(), decrypted_content);
+    }
+
+    #[test]
+    fn test_default_key() {
+        let original_content = b"Test with default key";
+        let temp_input = NamedTempFile::new().unwrap();
+        let temp_output = NamedTempFile::new().unwrap();
+
+        fs::write(temp_input.path(), original_content).unwrap();
+
+        xor_encrypt_file(
+            temp_input.path().to_str().unwrap(),
+            temp_output.path().to_str().unwrap(),
+            None,
+        )
+        .unwrap();
+
+        let encrypted_content = fs::read(temp_output.path()).unwrap();
+        assert_ne!(original_content.to_vec(), encrypted_content);
+
+        let mut temp_final = NamedTempFile::new().unwrap();
+        xor_decrypt_file(
+            temp_output.path().to_str().unwrap(),
+            temp_final.path().to_str().unwrap(),
+            None,
+        )
+        .unwrap();
+
+        let final_content = fs::read(temp_final.path()).unwrap();
+        assert_eq!(original_content.to_vec(), final_content);
+    }
+}
