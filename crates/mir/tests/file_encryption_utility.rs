@@ -141,4 +141,83 @@ mod tests {
         
         assert!(result.is_err());
     }
+}use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use argon2::{
+    password_hash::{
+        rand_core::OsRng,
+        PasswordHasher, SaltString
+    },
+    Argon2
+};
+use std::fs;
+use std::io::{self, Write};
+
+const NONCE_SIZE: usize = 12;
+
+pub struct FileEncryptor {
+    cipher: Aes256Gcm,
+}
+
+impl FileEncryptor {
+    pub fn from_password(password: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        let password_hash = argon2.hash_password(password.as_bytes(), &salt)?;
+        
+        let key_bytes = password_hash.hash.unwrap().as_bytes();
+        let key = Key::<Aes256Gcm>::from_slice(&key_bytes[..32]);
+        let cipher = Aes256Gcm::new(key);
+        
+        Ok(Self { cipher })
+    }
+    
+    pub fn encrypt_file(&self, input_path: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let plaintext = fs::read(input_path)?;
+        let nonce = Nonce::from_slice(&generate_nonce());
+        
+        let ciphertext = self.cipher.encrypt(nonce, plaintext.as_ref())
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        
+        let mut output = Vec::new();
+        output.extend_from_slice(nonce);
+        output.extend_from_slice(&ciphertext);
+        
+        fs::write(output_path, output)?;
+        Ok(())
+    }
+    
+    pub fn decrypt_file(&self, input_path: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let data = fs::read(input_path)?;
+        if data.len() < NONCE_SIZE {
+            return Err("File too short".into());
+        }
+        
+        let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        
+        let plaintext = self.cipher.decrypt(nonce, ciphertext)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        
+        fs::write(output_path, plaintext)?;
+        Ok(())
+    }
+}
+
+fn generate_nonce() -> [u8; NONCE_SIZE] {
+    let mut nonce = [0u8; NONCE_SIZE];
+    OsRng.fill_bytes(&mut nonce);
+    nonce
+}
+
+pub fn encrypt_with_password(password: &str, input_file: &str, output_file: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let encryptor = FileEncryptor::from_password(password)?;
+    encryptor.encrypt_file(input_file, output_file)
+}
+
+pub fn decrypt_with_password(password: &str, input_file: &str, output_file: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let encryptor = FileEncryptor::from_password(password)?;
+    encryptor.decrypt_file(input_file, output_file)
 }
