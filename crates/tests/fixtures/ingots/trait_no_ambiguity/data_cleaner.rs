@@ -1,61 +1,60 @@
-use csv::{Reader, Writer};
-use std::error::Error;
-use std::io;
-
-pub fn filter_numeric_column(input_path: &str, output_path: &str, column_index: usize) -> Result<(), Box<dyn Error>> {
-    let mut rdr = Reader::from_path(input_path)?;
-    let mut wtr = Writer::from_path(output_path)?;
-
-    let headers = rdr.headers()?.clone();
-    wtr.write_record(&headers)?;
-
-    for result in rdr.records() {
-        let record = result?;
-        if let Some(field) = record.get(column_index) {
-            if field.parse::<f64>().is_ok() {
-                wtr.write_record(&record)?;
-            }
-        }
-    }
-
-    wtr.flush()?;
-    Ok(())
-}use std::collections::HashSet;
+use std::collections::HashSet;
 
 pub struct DataCleaner {
-    records: Vec<String>,
-    seen: HashSet<String>,
+    deduplication_enabled: bool,
+    normalization_enabled: bool,
 }
 
 impl DataCleaner {
-    pub fn new() -> Self {
+    pub fn new(deduplication: bool, normalization: bool) -> Self {
         DataCleaner {
-            records: Vec::new(),
-            seen: HashSet::new(),
+            deduplication_enabled: deduplication,
+            normalization_enabled: normalization,
         }
     }
 
-    pub fn add_record(&mut self, record: String) -> bool {
-        if self.is_valid(&record) && !self.seen.contains(&record) {
-            self.seen.insert(record.clone());
-            self.records.push(record);
-            true
+    pub fn clean_dataset(&self, data: Vec<String>) -> Vec<String> {
+        let mut processed_data = data;
+
+        if self.deduplication_enabled {
+            processed_data = Self::remove_duplicates(processed_data);
+        }
+
+        if self.normalization_enabled {
+            processed_data = Self::normalize_entries(processed_data);
+        }
+
+        processed_data
+    }
+
+    fn remove_duplicates(data: Vec<String>) -> Vec<String> {
+        let mut seen = HashSet::new();
+        data.into_iter()
+            .filter(|item| seen.insert(item.clone()))
+            .collect()
+    }
+
+    fn normalize_entries(data: Vec<String>) -> Vec<String> {
+        data.into_iter()
+            .map(|entry| {
+                entry.trim()
+                    .to_lowercase()
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+                    .collect()
+            })
+            .collect()
+    }
+
+    pub fn statistics(&self, original: &[String], cleaned: &[String]) -> (usize, usize, f64) {
+        let original_len = original.len();
+        let cleaned_len = cleaned.len();
+        let reduction = if original_len > 0 {
+            (original_len - cleaned_len) as f64 / original_len as f64 * 100.0
         } else {
-            false
-        }
-    }
-
-    pub fn get_unique_records(&self) -> &Vec<String> {
-        &self.records
-    }
-
-    pub fn clear(&mut self) {
-        self.records.clear();
-        self.seen.clear();
-    }
-
-    fn is_valid(&self, record: &str) -> bool {
-        !record.trim().is_empty() && record.len() <= 1000
+            0.0
+        };
+        (original_len, cleaned_len, reduction)
     }
 }
 
@@ -65,17 +64,39 @@ mod tests {
 
     #[test]
     fn test_deduplication() {
-        let mut cleaner = DataCleaner::new();
-        assert!(cleaner.add_record("test1".to_string()));
-        assert!(!cleaner.add_record("test1".to_string()));
-        assert_eq!(cleaner.get_unique_records().len(), 1);
+        let cleaner = DataCleaner::new(true, false);
+        let data = vec![
+            "apple".to_string(),
+            "banana".to_string(),
+            "apple".to_string(),
+            "cherry".to_string(),
+        ];
+        let cleaned = cleaner.clean_dataset(data);
+        assert_eq!(cleaned.len(), 3);
+        assert!(cleaned.contains(&"apple".to_string()));
     }
 
     #[test]
-    fn test_validation() {
-        let mut cleaner = DataCleaner::new();
-        assert!(!cleaner.add_record("".to_string()));
-        assert!(!cleaner.add_record("   ".to_string()));
-        assert!(cleaner.add_record("valid".to_string()));
+    fn test_normalization() {
+        let cleaner = DataCleaner::new(false, true);
+        let data = vec!["  APPLE  ".to_string(), "Banana!".to_string()];
+        let cleaned = cleaner.clean_dataset(data);
+        assert_eq!(cleaned[0], "apple");
+        assert_eq!(cleaned[1], "banana");
+    }
+
+    #[test]
+    fn test_statistics() {
+        let cleaner = DataCleaner::new(true, false);
+        let original = vec![
+            "apple".to_string(),
+            "apple".to_string(),
+            "banana".to_string(),
+        ];
+        let cleaned = cleaner.clean_dataset(original.clone());
+        let stats = cleaner.statistics(&original, &cleaned);
+        assert_eq!(stats.0, 3);
+        assert_eq!(stats.1, 2);
+        assert!((stats.2 - 33.33).abs() < 0.1);
     }
 }
