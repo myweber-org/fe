@@ -310,3 +310,186 @@ mod tests {
         assert_eq!(filtered, vec![25.0, 35.0, 45.0]);
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    data: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+pub struct ValidationRule {
+    field_name: String,
+    min_value: f64,
+    max_value: f64,
+    required: bool,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            data: HashMap::new(),
+            validation_rules: Vec::new(),
+        }
+    }
+
+    pub fn add_dataset(&mut self, name: &str, values: Vec<f64>) -> Result<(), String> {
+        if name.is_empty() {
+            return Err("Dataset name cannot be empty".to_string());
+        }
+
+        if self.data.contains_key(name) {
+            return Err(format!("Dataset '{}' already exists", name));
+        }
+
+        self.data.insert(name.to_string(), values);
+        Ok(())
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn validate_all(&self) -> Vec<ValidationResult> {
+        let mut results = Vec::new();
+
+        for rule in &self.validation_rules {
+            if let Some(data) = self.data.get(&rule.field_name) {
+                let result = self.validate_dataset(rule, data);
+                results.push(result);
+            } else if rule.required {
+                results.push(ValidationResult {
+                    field_name: rule.field_name.clone(),
+                    passed: false,
+                    message: Some("Required field not found".to_string()),
+                });
+            }
+        }
+
+        results
+    }
+
+    fn validate_dataset(&self, rule: &ValidationRule, data: &[f64]) -> ValidationResult {
+        let mut passed = true;
+        let mut message = None;
+
+        for (index, &value) in data.iter().enumerate() {
+            if value < rule.min_value || value > rule.max_value {
+                passed = false;
+                message = Some(format!(
+                    "Value {} at index {} is outside allowed range [{}, {}]",
+                    value, index, rule.min_value, rule.max_value
+                ));
+                break;
+            }
+        }
+
+        ValidationResult {
+            field_name: rule.field_name.clone(),
+            passed,
+            message,
+        }
+    }
+
+    pub fn transform_data<F>(&self, dataset_name: &str, transform_fn: F) -> Option<Vec<f64>>
+    where
+        F: Fn(f64) -> f64,
+    {
+        self.data.get(dataset_name).map(|values| {
+            values.iter().map(|&v| transform_fn(v)).collect()
+        })
+    }
+
+    pub fn calculate_statistics(&self, dataset_name: &str) -> Option<DatasetStatistics> {
+        self.data.get(dataset_name).map(|values| {
+            let count = values.len();
+            let sum: f64 = values.iter().sum();
+            let mean = if count > 0 { sum / count as f64 } else { 0.0 };
+            
+            let variance: f64 = if count > 1 {
+                values.iter()
+                    .map(|&v| (v - mean).powi(2))
+                    .sum::<f64>() / (count - 1) as f64
+            } else {
+                0.0
+            };
+
+            DatasetStatistics {
+                count,
+                sum,
+                mean,
+                variance,
+                std_dev: variance.sqrt(),
+            }
+        })
+    }
+}
+
+pub struct ValidationResult {
+    pub field_name: String,
+    pub passed: bool,
+    pub message: Option<String>,
+}
+
+pub struct DatasetStatistics {
+    pub count: usize,
+    pub sum: f64,
+    pub mean: f64,
+    pub variance: f64,
+    pub std_dev: f64,
+}
+
+impl ValidationRule {
+    pub fn new(field_name: &str, min_value: f64, max_value: f64, required: bool) -> Self {
+        ValidationRule {
+            field_name: field_name.to_string(),
+            min_value,
+            max_value,
+            required,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_dataset() {
+        let mut processor = DataProcessor::new();
+        let result = processor.add_dataset("temperatures", vec![20.5, 22.1, 19.8, 23.4]);
+        assert!(result.is_ok());
+        assert!(processor.data.contains_key("temperatures"));
+    }
+
+    #[test]
+    fn test_duplicate_dataset() {
+        let mut processor = DataProcessor::new();
+        processor.add_dataset("test", vec![1.0, 2.0]).unwrap();
+        let result = processor.add_dataset("test", vec![3.0, 4.0]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validation() {
+        let mut processor = DataProcessor::new();
+        processor.add_dataset("scores", vec![85.0, 92.0, 78.0, 95.0]).unwrap();
+        
+        let rule = ValidationRule::new("scores", 0.0, 100.0, true);
+        processor.add_validation_rule(rule);
+        
+        let results = processor.validate_all();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed);
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let mut processor = DataProcessor::new();
+        processor.add_dataset("values", vec![1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+        
+        let stats = processor.calculate_statistics("values").unwrap();
+        assert_eq!(stats.count, 5);
+        assert_eq!(stats.sum, 15.0);
+        assert_eq!(stats.mean, 3.0);
+    }
+}
