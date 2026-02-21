@@ -337,4 +337,98 @@ fn merge_value(map: &mut Map<String, Value>, key: String, new_value: Value) {
             map.insert(key, new_value);
         }
     }
+}use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufReader, Write};
+use std::path::Path;
+
+type JsonValue = serde_json::Value;
+
+pub fn merge_json_files(input_paths: &[&str], output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged_array = Vec::new();
+    let mut seen_keys = HashMap::new();
+
+    for path_str in input_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            eprintln!("Warning: File {} not found, skipping.", path_str);
+            continue;
+        }
+
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let json_data: JsonValue = serde_json::from_reader(reader)?;
+
+        match json_data {
+            JsonValue::Array(arr) => {
+                for item in arr {
+                    if let Some(key) = extract_unique_key(&item) {
+                        if !seen_keys.contains_key(&key) {
+                            seen_keys.insert(key.clone(), true);
+                            merged_array.push(item);
+                        }
+                    } else {
+                        merged_array.push(item);
+                    }
+                }
+            }
+            JsonValue::Object(_) => {
+                if let Some(key) = extract_unique_key(&json_data) {
+                    if !seen_keys.contains_key(&key) {
+                        seen_keys.insert(key.clone(), true);
+                        merged_array.push(json_data);
+                    }
+                } else {
+                    merged_array.push(json_data);
+                }
+            }
+            _ => eprintln!("Warning: JSON root is not an array or object in {}", path_str),
+        }
+    }
+
+    let output_file = File::create(output_path)?;
+    serde_json::to_writer_pretty(output_file, &merged_array)?;
+
+    println!("Successfully merged {} items into {}", merged_array.len(), output_path);
+    Ok(())
+}
+
+fn extract_unique_key(value: &JsonValue) -> Option<String> {
+    if let JsonValue::Object(map) = value {
+        if let Some(id) = map.get("id").and_then(|v| v.as_str()) {
+            return Some(id.to_string());
+        }
+        if let Some(uuid) = map.get("uuid").and_then(|v| v.as_str()) {
+            return Some(uuid.to_string());
+        }
+        if let Some(name) = map.get("name").and_then(|v| v.as_str()) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_basic() {
+        let file1 = NamedTempFile::new().unwrap();
+        let file2 = NamedTempFile::new().unwrap();
+        let output_file = NamedTempFile::new().unwrap();
+
+        fs::write(file1.path(), r#"[{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]"#).unwrap();
+        fs::write(file2.path(), r#"[{"id": 2, "name": "Bob"}, {"id": 3, "name": "Charlie"}]"#).unwrap();
+
+        let inputs = &[file1.path().to_str().unwrap(), file2.path().to_str().unwrap()];
+        let result = merge_json_files(inputs, output_file.path().to_str().unwrap());
+
+        assert!(result.is_ok());
+
+        let content = fs::read_to_string(output_file.path()).unwrap();
+        let parsed: JsonValue = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed.as_array().unwrap().len(), 3);
+    }
 }
