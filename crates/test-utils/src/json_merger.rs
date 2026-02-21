@@ -69,4 +69,127 @@ mod tests {
         assert_eq!(result["value"], "first");
         assert_eq!(result["extra"], "data");
     }
+}use std::collections::HashMap;
+use serde_json::{Value, Map};
+
+pub fn merge_json(base: &mut Value, update: &Value) {
+    match (base, update) {
+        (Value::Object(base_map), Value::Object(update_map)) => {
+            for (key, update_value) in update_map {
+                if let Some(base_value) = base_map.get_mut(key) {
+                    merge_json(base_value, update_value);
+                } else {
+                    base_map.insert(key.clone(), update_value.clone());
+                }
+            }
+        }
+        (base, update) => {
+            *base = update.clone();
+        }
+    }
+}
+
+pub fn merge_json_with_strategy(
+    base: &mut Value,
+    update: &Value,
+    array_merge_strategy: ArrayMergeStrategy,
+) {
+    match (base, update) {
+        (Value::Object(base_map), Value::Object(update_map)) => {
+            for (key, update_value) in update_map {
+                if let Some(base_value) = base_map.get_mut(key) {
+                    merge_json_with_strategy(base_value, update_value, array_merge_strategy.clone());
+                } else {
+                    base_map.insert(key.clone(), update_value.clone());
+                }
+            }
+        }
+        (Value::Array(base_arr), Value::Array(update_arr)) => {
+            match array_merge_strategy {
+                ArrayMergeStrategy::Replace => {
+                    *base_arr = update_arr.clone();
+                }
+                ArrayMergeStrategy::Append => {
+                    base_arr.extend(update_arr.clone());
+                }
+                ArrayMergeStrategy::MergeUnique => {
+                    let mut seen = HashMap::new();
+                    let mut merged = Vec::new();
+                    
+                    for item in base_arr.iter().chain(update_arr.iter()) {
+                        let key = format!("{:?}", item);
+                        if !seen.contains_key(&key) {
+                            seen.insert(key, true);
+                            merged.push(item.clone());
+                        }
+                    }
+                    
+                    *base_arr = merged;
+                }
+            }
+        }
+        (base, update) => {
+            *base = update.clone();
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum ArrayMergeStrategy {
+    Replace,
+    Append,
+    MergeUnique,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_basic_merge() {
+        let mut base = json!({
+            "name": "Alice",
+            "age": 30,
+            "address": {
+                "city": "New York",
+                "zip": "10001"
+            }
+        });
+
+        let update = json!({
+            "age": 31,
+            "address": {
+                "zip": "10002",
+                "country": "USA"
+            },
+            "hobbies": ["reading", "coding"]
+        });
+
+        merge_json(&mut base, &update);
+
+        assert_eq!(base["age"], 31);
+        assert_eq!(base["address"]["zip"], "10002");
+        assert_eq!(base["address"]["country"], "USA");
+        assert_eq!(base["hobbies"][0], "reading");
+    }
+
+    #[test]
+    fn test_array_merge_strategies() {
+        let mut base = json!({
+            "tags": ["rust", "json"]
+        });
+
+        let update = json!({
+            "tags": ["merge", "utility"]
+        });
+
+        merge_json_with_strategy(
+            &mut base,
+            &update,
+            ArrayMergeStrategy::Append,
+        );
+
+        assert_eq!(base["tags"].as_array().unwrap().len(), 4);
+    }
 }
