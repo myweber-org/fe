@@ -208,3 +208,73 @@ mod tests {
         assert!(result.is_err());
     }
 }
+use serde_json::{Value, Map};
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut result = Map::new();
+
+    for path in paths {
+        let content = fs::read_to_string(path)?;
+        let json: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(obj) = json {
+            merge_objects(&mut result, obj);
+        } else {
+            return Err("Top-level JSON must be an object".into());
+        }
+    }
+
+    Ok(Value::Object(result))
+}
+
+fn merge_objects(target: &mut Map<String, Value>, source: Map<String, Value>) {
+    for (key, source_value) in source {
+        match target.get_mut(&key) {
+            Some(target_value) => {
+                if let (Value::Object(mut target_obj), Value::Object(source_obj)) = (target_value.clone(), source_value) {
+                    merge_objects(&mut target_obj, source_obj);
+                    target.insert(key, Value::Object(target_obj));
+                } else if target_value != &source_value {
+                    let merged_array = match (target_value, &source_value) {
+                        (Value::Array(arr), Value::Array(src_arr)) => {
+                            let mut combined = arr.clone();
+                            combined.extend(src_arr.clone());
+                            Value::Array(combined)
+                        }
+                        _ => Value::Array(vec![target_value.clone(), source_value]),
+                    };
+                    target.insert(key, merged_array);
+                }
+            }
+            None => {
+                target.insert(key, source_value);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_json_files() -> Result<(), Box<dyn std::error::Error>> {
+        let file1 = NamedTempFile::new()?;
+        let file2 = NamedTempFile::new()?;
+
+        fs::write(&file1, r#"{"common": "value1", "unique1": true}"#)?;
+        fs::write(&file2, r#"{"common": "value2", "unique2": 42}"#)?;
+
+        let merged = merge_json_files(&[file1.path(), file2.path()])?;
+        
+        assert_eq!(merged["common"], json!(["value1", "value2"]));
+        assert_eq!(merged["unique1"], json!(true));
+        assert_eq!(merged["unique2"], json!(42));
+
+        Ok(())
+    }
+}
