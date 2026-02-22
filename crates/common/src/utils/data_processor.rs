@@ -291,4 +291,92 @@ mod tests {
         assert_eq!(avg, Some(20.0));
         assert_eq!(max, Some(30.0));
     }
+}use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize)]
+struct Record {
+    id: u32,
+    value: f64,
+    category: String,
+}
+
+struct DataProcessor {
+    records: Vec<Record>,
+}
+
+impl DataProcessor {
+    fn new() -> Self {
+        DataProcessor { records: Vec::new() }
+    }
+
+    fn load_from_csv(&mut self, path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(path)?;
+        let mut rdr = Reader::from_reader(file);
+        
+        for result in rdr.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
+        }
+        
+        println!("Loaded {} records from {}", self.records.len(), path);
+        Ok(())
+    }
+
+    fn calculate_statistics(&self) -> (f64, f64, f64) {
+        if self.records.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        let count = self.records.len() as f64;
+        let mean = sum / count;
+
+        let variance: f64 = self.records
+            .iter()
+            .map(|r| (r.value - mean).powi(2))
+            .sum::<f64>() / count;
+
+        let std_dev = variance.sqrt();
+
+        (mean, variance, std_dev)
+    }
+
+    fn filter_by_category(&self, category: &str) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|r| r.category == category)
+            .collect()
+    }
+
+    fn find_max_value(&self) -> Option<&Record> {
+        self.records.iter().max_by(|a, b| {
+            a.value.partial_cmp(&b.value).unwrap()
+        })
+    }
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut processor = DataProcessor::new();
+    
+    match processor.load_from_csv("data.csv") {
+        Ok(_) => {
+            let stats = processor.calculate_statistics();
+            println!("Statistics: Mean={:.2}, Variance={:.2}, StdDev={:.2}", 
+                     stats.0, stats.1, stats.2);
+
+            let filtered = processor.filter_by_category("premium");
+            println!("Found {} premium records", filtered.len());
+
+            if let Some(max_record) = processor.find_max_value() {
+                println!("Maximum value record: ID={}, Value={}", 
+                         max_record.id, max_record.value);
+            }
+        }
+        Err(e) => eprintln!("Error loading data: {}", e),
+    }
+
+    Ok(())
 }
