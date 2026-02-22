@@ -308,3 +308,173 @@ mod tests {
         assert_eq!(total, 85.0);
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum DataError {
+    #[error("Invalid data format")]
+    InvalidFormat,
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+    #[error("Validation failed: {0}")]
+    ValidationFailed(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: HashMap<String, f64>,
+    pub tags: Vec<String>,
+}
+
+impl DataRecord {
+    pub fn new(id: u64, timestamp: i64) -> Self {
+        Self {
+            id,
+            timestamp,
+            values: HashMap::new(),
+            tags: Vec::new(),
+        }
+    }
+
+    pub fn add_value(&mut self, key: &str, value: f64) -> &mut Self {
+        self.values.insert(key.to_string(), value);
+        self
+    }
+
+    pub fn add_tag(&mut self, tag: &str) -> &mut Self {
+        self.tags.push(tag.to_string());
+        self
+    }
+
+    pub fn validate(&self) -> Result<(), DataError> {
+        if self.values.is_empty() {
+            return Err(DataError::ValidationFailed(
+                "Record must contain at least one value".to_string(),
+            ));
+        }
+
+        if self.timestamp < 0 {
+            return Err(DataError::ValidationFailed(
+                "Timestamp cannot be negative".to_string(),
+            ));
+        }
+
+        for (key, value) in &self.values {
+            if key.trim().is_empty() {
+                return Err(DataError::ValidationFailed(
+                    "Value key cannot be empty".to_string(),
+                ));
+            }
+            if !value.is_finite() {
+                return Err(DataError::ValidationFailed(format!(
+                    "Value for key '{}' must be finite",
+                    key
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn transform(&self, multiplier: f64) -> Self {
+        let mut transformed = self.clone();
+        transformed.values = transformed
+            .values
+            .iter()
+            .map(|(k, v)| (k.clone(), v * multiplier))
+            .collect();
+        transformed.timestamp = transformed.timestamp + 1;
+        transformed
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+    processed_count: usize,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        Self {
+            records: Vec::new(),
+            processed_count: 0,
+        }
+    }
+
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), DataError> {
+        record.validate()?;
+        self.records.push(record);
+        self.processed_count += 1;
+        Ok(())
+    }
+
+    pub fn process_all(&mut self, multiplier: f64) -> Vec<DataRecord> {
+        self.records
+            .iter()
+            .map(|record| record.transform(multiplier))
+            .collect()
+    }
+
+    pub fn get_stats(&self) -> HashMap<String, f64> {
+        let mut stats = HashMap::new();
+        stats.insert("total_records".to_string(), self.records.len() as f64);
+        stats.insert("processed_count".to_string(), self.processed_count as f64);
+
+        if !self.records.is_empty() {
+            let total_values: usize = self.records.iter().map(|r| r.values.len()).sum();
+            stats.insert("avg_values_per_record".to_string(), total_values as f64 / self.records.len() as f64);
+        }
+
+        stats
+    }
+
+    pub fn filter_by_tag(&self, tag: &str) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.tags.contains(&tag.to_string()))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_validation() {
+        let mut record = DataRecord::new(1, 1234567890);
+        record.add_value("temperature", 25.5);
+        
+        assert!(record.validate().is_ok());
+        
+        let empty_record = DataRecord::new(2, 1234567890);
+        assert!(empty_record.validate().is_err());
+    }
+
+    #[test]
+    fn test_record_transformation() {
+        let mut record = DataRecord::new(1, 100);
+        record.add_value("pressure", 1013.25);
+        
+        let transformed = record.transform(2.0);
+        assert_eq!(transformed.values.get("pressure"), Some(&2026.5));
+        assert_eq!(transformed.timestamp, 101);
+    }
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        
+        let mut record = DataRecord::new(1, 100);
+        record.add_value("humidity", 65.0).add_tag("weather");
+        
+        assert!(processor.add_record(record).is_ok());
+        
+        let stats = processor.get_stats();
+        assert_eq!(stats.get("total_records"), Some(&1.0));
+    }
+}
