@@ -604,3 +604,214 @@ mod tests {
         assert_eq!(column, vec!["b".to_string(), "d".to_string()]);
     }
 }
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataRecord {
+    pub id: u64,
+    pub value: f64,
+    pub timestamp: i64,
+    pub category: String,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidValue,
+    InvalidTimestamp,
+    CategoryNotFound,
+    SerializationError(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidValue => write!(f, "Value is outside acceptable range"),
+            ProcessingError::InvalidTimestamp => write!(f, "Timestamp is invalid"),
+            ProcessingError::CategoryNotFound => write!(f, "Category does not exist"),
+            ProcessingError::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    valid_categories: Vec<String>,
+    min_value: f64,
+    max_value: f64,
+}
+
+impl DataProcessor {
+    pub fn new(valid_categories: Vec<String>, min_value: f64, max_value: f64) -> Self {
+        DataProcessor {
+            valid_categories,
+            min_value,
+            max_value,
+        }
+    }
+
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.value < self.min_value || record.value > self.max_value {
+            return Err(ProcessingError::InvalidValue);
+        }
+
+        if record.timestamp < 0 {
+            return Err(ProcessingError::InvalidTimestamp);
+        }
+
+        if !self.valid_categories.contains(&record.category) {
+            return Err(ProcessingError::CategoryNotFound);
+        }
+
+        Ok(())
+    }
+
+    pub fn transform_value(&self, record: &DataRecord) -> f64 {
+        let normalized = (record.value - self.min_value) / (self.max_value - self.min_value);
+        normalized * 100.0
+    }
+
+    pub fn process_records(&self, records: Vec<DataRecord>) -> Result<Vec<DataRecord>, ProcessingError> {
+        let mut processed = Vec::with_capacity(records.len());
+        
+        for record in records {
+            self.validate_record(&record)?;
+            
+            let transformed_value = self.transform_value(&record);
+            let processed_record = DataRecord {
+                value: transformed_value,
+                ..record
+            };
+            
+            processed.push(processed_record);
+        }
+        
+        Ok(processed)
+    }
+
+    pub fn serialize_to_json(&self, records: &[DataRecord]) -> Result<String, ProcessingError> {
+        serde_json::to_string(records)
+            .map_err(|e| ProcessingError::SerializationError(e.to_string()))
+    }
+
+    pub fn filter_by_category(&self, records: Vec<DataRecord>, category: &str) -> Vec<DataRecord> {
+        records
+            .into_iter()
+            .filter(|record| record.category == category)
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_processor() -> DataProcessor {
+        DataProcessor::new(
+            vec!["A".to_string(), "B".to_string(), "C".to_string()],
+            0.0,
+            100.0,
+        )
+    }
+
+    #[test]
+    fn test_validate_valid_record() {
+        let processor = create_test_processor();
+        let record = DataRecord {
+            id: 1,
+            value: 50.0,
+            timestamp: 1234567890,
+            category: "A".to_string(),
+        };
+        
+        assert!(processor.validate_record(&record).is_ok());
+    }
+
+    #[test]
+    fn test_validate_invalid_value() {
+        let processor = create_test_processor();
+        let record = DataRecord {
+            id: 1,
+            value: 150.0,
+            timestamp: 1234567890,
+            category: "A".to_string(),
+        };
+        
+        assert!(matches!(
+            processor.validate_record(&record),
+            Err(ProcessingError::InvalidValue)
+        ));
+    }
+
+    #[test]
+    fn test_transform_value() {
+        let processor = create_test_processor();
+        let record = DataRecord {
+            id: 1,
+            value: 50.0,
+            timestamp: 1234567890,
+            category: "A".to_string(),
+        };
+        
+        let transformed = processor.transform_value(&record);
+        assert_eq!(transformed, 50.0);
+    }
+
+    #[test]
+    fn test_process_records() {
+        let processor = create_test_processor();
+        let records = vec![
+            DataRecord {
+                id: 1,
+                value: 25.0,
+                timestamp: 1234567890,
+                category: "A".to_string(),
+            },
+            DataRecord {
+                id: 2,
+                value: 75.0,
+                timestamp: 1234567891,
+                category: "B".to_string(),
+            },
+        ];
+        
+        let result = processor.process_records(records);
+        assert!(result.is_ok());
+        let processed = result.unwrap();
+        assert_eq!(processed.len(), 2);
+        assert_eq!(processed[0].value, 25.0);
+        assert_eq!(processed[1].value, 75.0);
+    }
+
+    #[test]
+    fn test_filter_by_category() {
+        let processor = create_test_processor();
+        let records = vec![
+            DataRecord {
+                id: 1,
+                value: 25.0,
+                timestamp: 1234567890,
+                category: "A".to_string(),
+            },
+            DataRecord {
+                id: 2,
+                value: 75.0,
+                timestamp: 1234567891,
+                category: "B".to_string(),
+            },
+            DataRecord {
+                id: 3,
+                value: 50.0,
+                timestamp: 1234567892,
+                category: "A".to_string(),
+            },
+        ];
+        
+        let filtered = processor.filter_by_category(records, "A");
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].id, 1);
+        assert_eq!(filtered[1].id, 3);
+    }
+}
