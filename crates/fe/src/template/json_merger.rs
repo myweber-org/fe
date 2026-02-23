@@ -1,55 +1,49 @@
-use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
+use serde_json::{Map, Value};
 
-pub fn merge_json_files(file_paths: &[&str]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let mut merged_map = HashMap::new();
-
-    for path_str in file_paths {
-        let path = Path::new(path_str);
-        if !path.exists() {
-            continue;
-        }
-
-        let content = fs::read_to_string(path)?;
-        let json_value: serde_json::Value = serde_json::from_str(&content)?;
-
-        if let serde_json::Value::Object(map) = json_value {
-            for (key, value) in map {
-                merged_map.insert(key, value);
+pub fn merge_json(base: &mut Value, update: &Value) {
+    match (base, update) {
+        (Value::Object(base_map), Value::Object(update_map)) => {
+            for (key, update_value) in update_map {
+                if let Some(base_value) = base_map.get_mut(key) {
+                    merge_json(base_value, update_value);
+                } else {
+                    base_map.insert(key.clone(), update_value.clone());
+                }
             }
         }
+        (base, update) => *base = update.clone(),
     }
-
-    Ok(serde_json::Value::Object(merged_map))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
+    use serde_json::json;
 
     #[test]
-    fn test_merge_json_files() {
-        let mut file1 = NamedTempFile::new().unwrap();
-        let mut file2 = NamedTempFile::new().unwrap();
+    fn test_merge_json() {
+        let mut base = json!({
+            "name": "Alice",
+            "address": {
+                "city": "Wonderland",
+                "zip": "12345"
+            }
+        });
 
-        writeln!(file1, r#"{"name": "Alice", "age": 30}"#).unwrap();
-        writeln!(file2, r#"{"city": "London", "active": true}"#).unwrap();
+        let update = json!({
+            "age": 30,
+            "address": {
+                "zip": "54321",
+                "country": "Fantasy"
+            }
+        });
 
-        let paths = [
-            file1.path().to_str().unwrap(),
-            file2.path().to_str().unwrap(),
-        ];
+        merge_json(&mut base, &update);
 
-        let result = merge_json_files(&paths).unwrap();
-        let obj = result.as_object().unwrap();
-
-        assert_eq!(obj.get("name").unwrap().as_str().unwrap(), "Alice");
-        assert_eq!(obj.get("age").unwrap().as_u64().unwrap(), 30);
-        assert_eq!(obj.get("city").unwrap().as_str().unwrap(), "London");
-        assert_eq!(obj.get("active").unwrap().as_bool().unwrap(), true);
-        assert_eq!(obj.len(), 4);
+        assert_eq!(base["name"], "Alice");
+        assert_eq!(base["age"], 30);
+        assert_eq!(base["address"]["city"], "Wonderland");
+        assert_eq!(base["address"]["zip"], "54321");
+        assert_eq!(base["address"]["country"], "Fantasy");
     }
 }
