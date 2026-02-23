@@ -277,3 +277,114 @@ mod tests {
         Ok(())
     }
 }
+use aes::Aes256;
+use block_modes::{BlockMode, Cbc};
+use block_modes::block_padding::Pkcs7;
+use rand::RngCore;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::Path;
+
+type Aes256Cbc = Cbc<Aes256, Pkcs7>;
+
+const KEY_SIZE: usize = 32;
+const IV_SIZE: usize = 16;
+
+pub struct EncryptionResult {
+    pub iv: Vec<u8>,
+    pub ciphertext: Vec<u8>,
+}
+
+pub fn generate_key() -> Vec<u8> {
+    let mut key = vec![0u8; KEY_SIZE];
+    rand::thread_rng().fill_bytes(&mut key);
+    key
+}
+
+pub fn encrypt_file(key: &[u8], input_path: &Path, output_path: &Path) -> Result<EncryptionResult, String> {
+    if key.len() != KEY_SIZE {
+        return Err(format!("Key must be {} bytes", KEY_SIZE));
+    }
+
+    let mut input_file = fs::File::open(input_path)
+        .map_err(|e| format!("Failed to open input file: {}", e))?;
+    
+    let mut plaintext = Vec::new();
+    input_file.read_to_end(&mut plaintext)
+        .map_err(|e| format!("Failed to read input file: {}", e))?;
+
+    let mut iv = vec![0u8; IV_SIZE];
+    rand::thread_rng().fill_bytes(&mut iv);
+
+    let cipher = Aes256Cbc::new_from_slices(key, &iv)
+        .map_err(|e| format!("Failed to create cipher: {}", e))?;
+
+    let ciphertext = cipher.encrypt_vec(&plaintext);
+
+    let mut output_file = fs::File::create(output_path)
+        .map_err(|e| format!("Failed to create output file: {}", e))?;
+    
+    output_file.write_all(&ciphertext)
+        .map_err(|e| format!("Failed to write output file: {}", e))?;
+
+    Ok(EncryptionResult {
+        iv,
+        ciphertext,
+    })
+}
+
+pub fn decrypt_file(key: &[u8], iv: &[u8], input_path: &Path, output_path: &Path) -> Result<Vec<u8>, String> {
+    if key.len() != KEY_SIZE {
+        return Err(format!("Key must be {} bytes", KEY_SIZE));
+    }
+    
+    if iv.len() != IV_SIZE {
+        return Err(format!("IV must be {} bytes", IV_SIZE));
+    }
+
+    let mut input_file = fs::File::open(input_path)
+        .map_err(|e| format!("Failed to open input file: {}", e))?;
+    
+    let mut ciphertext = Vec::new();
+    input_file.read_to_end(&mut ciphertext)
+        .map_err(|e| format!("Failed to read input file: {}", e))?;
+
+    let cipher = Aes256Cbc::new_from_slices(key, iv)
+        .map_err(|e| format!("Failed to create cipher: {}", e))?;
+
+    let plaintext = cipher.decrypt_vec(&ciphertext)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+
+    let mut output_file = fs::File::create(output_path)
+        .map_err(|e| format!("Failed to create output file: {}", e))?;
+    
+    output_file.write_all(&plaintext)
+        .map_err(|e| format!("Failed to write output file: {}", e))?;
+
+    Ok(plaintext)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_encryption_decryption() {
+        let key = generate_key();
+        let test_data = b"Hello, this is a secret message!";
+        
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+
+        fs::write(input_file.path(), test_data).unwrap();
+
+        let enc_result = encrypt_file(&key, input_file.path(), encrypted_file.path()).unwrap();
+        
+        let decrypted = decrypt_file(&key, &enc_result.iv, encrypted_file.path(), decrypted_file.path()).unwrap();
+        
+        assert_eq!(test_data.to_vec(), decrypted);
+    }
+}
