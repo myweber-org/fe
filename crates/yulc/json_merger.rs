@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use serde_json::{Map, Value};
 use std::fs;
 use std::path::Path;
 
-pub fn merge_json_files(file_paths: &[&str]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let mut merged_map = HashMap::new();
+pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
 
     for path_str in file_paths {
         let path = Path::new(path_str);
@@ -12,21 +12,22 @@ pub fn merge_json_files(file_paths: &[&str]) -> Result<serde_json::Value, Box<dy
         }
 
         let content = fs::read_to_string(path)?;
-        let json_value: serde_json::Value = serde_json::from_str(&content)?;
+        let json_value: Value = serde_json::from_str(&content)?;
 
-        if let serde_json::Value::Object(map) = json_value {
+        if let Value::Object(map) = json_value {
             for (key, value) in map {
                 merged_map.insert(key, value);
             }
         }
     }
 
-    Ok(serde_json::Value::Object(merged_map))
+    Ok(Value::Object(merged_map))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -35,8 +36,18 @@ mod tests {
         let mut file1 = NamedTempFile::new().unwrap();
         let mut file2 = NamedTempFile::new().unwrap();
 
-        writeln!(file1, r#"{"a": 1, "b": "test"}"#).unwrap();
-        writeln!(file2, r#"{"c": true, "d": [1,2,3]}"#).unwrap();
+        let json1 = json!({
+            "name": "Alice",
+            "age": 30
+        });
+
+        let json2 = json!({
+            "city": "Wonderland",
+            "active": true
+        });
+
+        write!(file1, "{}", json1.to_string()).unwrap();
+        write!(file2, "{}", json2.to_string()).unwrap();
 
         let paths = [
             file1.path().to_str().unwrap(),
@@ -44,11 +55,13 @@ mod tests {
         ];
 
         let result = merge_json_files(&paths).unwrap();
-        let obj = result.as_object().unwrap();
+        let expected = json!({
+            "name": "Alice",
+            "age": 30,
+            "city": "Wonderland",
+            "active": true
+        });
 
-        assert_eq!(obj.get("a").unwrap(), &serde_json::json!(1));
-        assert_eq!(obj.get("b").unwrap(), &serde_json::json!("test"));
-        assert_eq!(obj.get("c").unwrap(), &serde_json::json!(true));
-        assert_eq!(obj.get("d").unwrap(), &serde_json::json!([1,2,3]));
+        assert_eq!(result, expected);
     }
 }
