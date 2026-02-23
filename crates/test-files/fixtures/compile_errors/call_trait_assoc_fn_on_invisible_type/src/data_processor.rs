@@ -49,4 +49,78 @@ pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
     records.into_iter()
         .filter(|r| r.category == category)
         .collect()
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub struct DataProcessor {
+    pub valid_records: Vec<String>,
+    pub invalid_records: Vec<String>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            valid_records: Vec::new(),
+            invalid_records: Vec::new(),
+        }
+    }
+
+    pub fn process_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let record = line?;
+            
+            if self.validate_record(&record) {
+                self.valid_records.push(record);
+            } else {
+                self.invalid_records.push(format!("Line {}: {}", line_num + 1, record));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_record(&self, record: &str) -> bool {
+        let fields: Vec<&str> = record.split(',').collect();
+        
+        if fields.len() != 3 {
+            return false;
+        }
+
+        fields.iter().all(|field| !field.trim().is_empty())
+    }
+
+    pub fn get_statistics(&self) -> (usize, usize) {
+        (self.valid_records.len(), self.invalid_records.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "John,Doe,30").unwrap();
+        writeln!(temp_file, "Jane,Smith,25").unwrap();
+        writeln!(temp_file, "Invalid,Record").unwrap();
+        writeln!(temp_file, ",,").unwrap();
+
+        let result = processor.process_csv(temp_file.path().to_str().unwrap());
+        assert!(result.is_ok());
+
+        let (valid, invalid) = processor.get_statistics();
+        assert_eq!(valid, 2);
+        assert_eq!(invalid, 2);
+        assert_eq!(processor.valid_records.len(), 2);
+        assert_eq!(processor.invalid_records.len(), 2);
+    }
 }
