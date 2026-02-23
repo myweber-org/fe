@@ -254,4 +254,98 @@ pub fn analyze_logs(entries: &[LogEntry]) -> HashMap<String, usize> {
     }
     
     stats
+}use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, Deserialize)]
+pub struct LogEntry {
+    timestamp: String,
+    level: String,
+    service: String,
+    message: String,
+    #[serde(default)]
+    metadata: serde_json::Value,
+}
+
+#[derive(Debug)]
+pub struct LogParser {
+    min_level: String,
+    service_filter: Option<String>,
+}
+
+impl LogParser {
+    pub fn new(min_level: &str) -> Self {
+        LogParser {
+            min_level: min_level.to_lowercase(),
+            service_filter: None,
+        }
+    }
+
+    pub fn with_service_filter(mut self, service: &str) -> Self {
+        self.service_filter = Some(service.to_string());
+        self
+    }
+
+    pub fn parse_file<P: AsRef<Path>>(&self, path: P) -> Result<Vec<LogEntry>, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut entries = Vec::new();
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            match self.parse_line(&line) {
+                Ok(Some(entry)) => entries.push(entry),
+                Ok(None) => continue,
+                Err(e) => eprintln!("Failed to parse line: {} - {}", line, e),
+            }
+        }
+
+        Ok(entries)
+    }
+
+    fn parse_line(&self, line: &str) -> Result<Option<LogEntry>, Box<dyn Error>> {
+        let entry: LogEntry = serde_json::from_str(line)?;
+        
+        if !self.matches_level(&entry.level) {
+            return Ok(None);
+        }
+
+        if let Some(ref service) = self.service_filter {
+            if !entry.service.eq_ignore_ascii_case(service) {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(entry))
+    }
+
+    fn matches_level(&self, level: &str) -> bool {
+        let level_order = ["trace", "debug", "info", "warn", "error"];
+        let min_idx = level_order.iter().position(|&l| l == self.min_level);
+        let entry_idx = level_order.iter().position(|&l| l == level.to_lowercase().as_str());
+        
+        match (min_idx, entry_idx) {
+            (Some(min), Some(entry)) => entry >= min,
+            _ => false,
+        }
+    }
+}
+
+pub fn count_errors(entries: &[LogEntry]) -> usize {
+    entries.iter()
+        .filter(|e| e.level.eq_ignore_ascii_case("error"))
+        .count()
+}
+
+pub fn extract_messages(entries: &[LogEntry]) -> Vec<String> {
+    entries.iter()
+        .map(|e| format!("[{}] {}", e.level.to_uppercase(), e.message))
+        .collect()
 }
