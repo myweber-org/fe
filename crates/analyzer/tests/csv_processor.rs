@@ -153,4 +153,142 @@ mod tests {
         assert_eq!(stats.1, 25);
         assert_eq!(stats.2, 35);
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug)]
+pub struct CsvRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub active: bool,
+}
+
+#[derive(Debug)]
+pub enum CsvError {
+    IoError(String),
+    ParseError(String),
+    ValidationError(String),
+}
+
+impl std::fmt::Display for CsvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CsvError::IoError(msg) => write!(f, "IO Error: {}", msg),
+            CsvError::ParseError(msg) => write!(f, "Parse Error: {}", msg),
+            CsvError::ValidationError(msg) => write!(f, "Validation Error: {}", msg),
+        }
+    }
+}
+
+impl Error for CsvError {}
+
+pub fn process_csv_file(file_path: &Path) -> Result<Vec<CsvRecord>, CsvError> {
+    let file = File::open(file_path)
+        .map_err(|e| CsvError::IoError(format!("Failed to open file: {}", e)))?;
+    
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+    
+    for (line_num, line) in reader.lines().enumerate() {
+        let line = line.map_err(|e| CsvError::IoError(format!("Failed to read line: {}", e)))?;
+        
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() != 4 {
+            return Err(CsvError::ParseError(
+                format!("Line {}: Expected 4 fields, found {}", line_num + 1, fields.len())
+            ));
+        }
+        
+        let id = fields[0].parse::<u32>()
+            .map_err(|e| CsvError::ParseError(
+                format!("Line {}: Invalid ID format: {}", line_num + 1, e)
+            ))?;
+        
+        let name = fields[1].trim().to_string();
+        if name.is_empty() {
+            return Err(CsvError::ValidationError(
+                format!("Line {}: Name cannot be empty", line_num + 1)
+            ));
+        }
+        
+        let value = fields[2].parse::<f64>()
+            .map_err(|e| CsvError::ParseError(
+                format!("Line {}: Invalid value format: {}", line_num + 1, e)
+            ))?;
+        
+        let active = match fields[3].trim().to_lowercase().as_str() {
+            "true" | "1" | "yes" => true,
+            "false" | "0" | "no" => false,
+            _ => return Err(CsvError::ParseError(
+                format!("Line {}: Invalid boolean value: {}", line_num + 1, fields[3])
+            )),
+        };
+        
+        records.push(CsvRecord {
+            id,
+            name,
+            value,
+            active,
+        });
+    }
+    
+    if records.is_empty() {
+        return Err(CsvError::ValidationError("CSV file contains no valid records".to_string()));
+    }
+    
+    Ok(records)
+}
+
+pub fn calculate_statistics(records: &[CsvRecord]) -> (f64, f64, usize) {
+    let total_active = records.iter().filter(|r| r.active).count();
+    let sum_values: f64 = records.iter().map(|r| r.value).sum();
+    let avg_value = if !records.is_empty() {
+        sum_values / records.len() as f64
+    } else {
+        0.0
+    };
+    
+    (sum_values, avg_value, total_active)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_valid_csv_processing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1,ItemA,10.5,true").unwrap();
+        writeln!(temp_file, "2,ItemB,20.0,false").unwrap();
+        writeln!(temp_file, "3,ItemC,15.75,true").unwrap();
+        
+        let records = process_csv_file(temp_file.path()).unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].name, "ItemA");
+        assert_eq!(records[1].value, 20.0);
+        assert!(records[2].active);
+        
+        let (sum, avg, active_count) = calculate_statistics(&records);
+        assert_eq!(sum, 46.25);
+        assert_eq!(avg, 46.25 / 3.0);
+        assert_eq!(active_count, 2);
+    }
+    
+    #[test]
+    fn test_invalid_csv_format() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1,ItemA,10.5").unwrap();
+        
+        let result = process_csv_file(temp_file.path());
+        assert!(matches!(result, Err(CsvError::ParseError(_))));
+    }
 }
