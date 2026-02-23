@@ -1,4 +1,3 @@
-
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -22,33 +21,41 @@ impl DataProcessor {
         let reader = BufReader::new(file);
         let mut records = Vec::new();
 
-        for (line_number, line_result) in reader.lines().enumerate() {
-            let line = line_result?;
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
             
-            if self.has_header && line_number == 0 {
+            if line_num == 0 && self.has_header {
                 continue;
             }
 
-            let record: Vec<String> = line
+            let fields: Vec<String> = line
                 .split(self.delimiter)
-                .map(|field| field.trim().to_string())
+                .map(|s| s.trim().to_string())
                 .collect();
 
-            if !record.is_empty() {
-                records.push(record);
+            if !fields.is_empty() && !fields.iter().all(|f| f.is_empty()) {
+                records.push(fields);
             }
         }
 
         Ok(records)
     }
 
-    pub fn validate_record(&self, record: &[String]) -> bool {
-        !record.is_empty() && record.iter().all(|field| !field.is_empty())
+    pub fn validate_records(&self, records: &[Vec<String>]) -> Vec<usize> {
+        let mut invalid_indices = Vec::new();
+        
+        for (idx, record) in records.iter().enumerate() {
+            if record.is_empty() || record.iter().any(|field| field.is_empty()) {
+                invalid_indices.push(idx);
+            }
+        }
+        
+        invalid_indices
     }
 
     pub fn calculate_statistics(&self, records: &[Vec<String>], column_index: usize) -> Option<(f64, f64, f64)> {
         let mut values = Vec::new();
-
+        
         for record in records {
             if column_index < record.len() {
                 if let Ok(value) = record[column_index].parse::<f64>() {
@@ -56,21 +63,21 @@ impl DataProcessor {
                 }
             }
         }
-
+        
         if values.is_empty() {
             return None;
         }
-
+        
         let sum: f64 = values.iter().sum();
         let count = values.len() as f64;
         let mean = sum / count;
-
+        
         let variance: f64 = values.iter()
-            .map(|x| (x - mean).powi(2))
+            .map(|v| (v - mean).powi(2))
             .sum::<f64>() / count;
-
+        
         let std_dev = variance.sqrt();
-
+        
         Some((mean, variance, std_dev))
     }
 }
@@ -82,69 +89,45 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_data_processor() {
+    fn test_process_file_with_header() {
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "name,age,salary").unwrap();
-        writeln!(temp_file, "Alice,30,50000.0").unwrap();
-        writeln!(temp_file, "Bob,25,45000.0").unwrap();
-        writeln!(temp_file, "Charlie,35,55000.0").unwrap();
-
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "John,25,New York").unwrap();
+        writeln!(temp_file, "Alice,30,London").unwrap();
+        
         let processor = DataProcessor::new(',', true);
-        let records = processor.process_file(temp_file.path()).unwrap();
-
-        assert_eq!(records.len(), 3);
-        assert!(processor.validate_record(&records[0]));
-
-        let stats = processor.calculate_statistics(&records, 2).unwrap();
-        assert!((stats.0 - 50000.0).abs() < 0.1);
-    }
-}
-use csv::Reader;
-use serde::Deserialize;
-use std::error::Error;
-use std::fs::File;
-
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    name: String,
-    value: f64,
-    category: String,
-}
-
-pub fn process_data_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
-    let file = File::open(file_path)?;
-    let mut rdr = Reader::from_reader(file);
-    let mut records = Vec::new();
-
-    for result in rdr.deserialize() {
-        let record: Record = result?;
-        if record.value >= 0.0 {
-            records.push(record);
-        }
+        let result = processor.process_file(temp_file.path()).unwrap();
+        
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], vec!["John", "25", "New York"]);
     }
 
-    Ok(records)
-}
-
-pub fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
-    let count = records.len() as f64;
-    if count == 0.0 {
-        return (0.0, 0.0, 0.0);
+    #[test]
+    fn test_validate_records() {
+        let records = vec![
+            vec!["a".to_string(), "b".to_string()],
+            vec!["".to_string(), "c".to_string()],
+            vec!["d".to_string()],
+        ];
+        
+        let processor = DataProcessor::new(',', false);
+        let invalid = processor.validate_records(&records);
+        
+        assert_eq!(invalid, vec![1]);
     }
 
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let mean = sum / count;
-    let variance: f64 = records.iter()
-        .map(|r| (r.value - mean).powi(2))
-        .sum::<f64>() / count;
-    let std_dev = variance.sqrt();
-
-    (mean, variance, std_dev)
-}
-
-pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
-    records.into_iter()
-        .filter(|r| r.category == category)
-        .collect()
+    #[test]
+    fn test_calculate_statistics() {
+        let records = vec![
+            vec!["10.5".to_string()],
+            vec!["20.0".to_string()],
+            vec!["15.5".to_string()],
+        ];
+        
+        let processor = DataProcessor::new(',', false);
+        let stats = processor.calculate_statistics(&records, 0).unwrap();
+        
+        assert!((stats.0 - 15.333).abs() < 0.001);
+        assert!((stats.2 - 4.041).abs() < 0.001);
+    }
 }
