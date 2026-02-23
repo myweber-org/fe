@@ -1,147 +1,192 @@
 
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
-#[derive(Debug)]
-pub struct CsvRecord {
-    pub id: u32,
-    pub name: String,
-    pub value: f64,
-    pub active: bool,
-}
-
-#[derive(Debug)]
-pub enum CsvError {
-    IoError(std::io::Error),
-    ParseError(String),
-    ValidationError(String),
-}
-
-impl From<std::io::Error> for CsvError {
-    fn from(err: std::io::Error) -> Self {
-        CsvError::IoError(err)
-    }
-}
-
 pub struct CsvProcessor {
-    records: Vec<CsvRecord>,
+    delimiter: char,
+    has_headers: bool,
 }
 
 impl CsvProcessor {
-    pub fn new() -> Self {
+    pub fn new(delimiter: char, has_headers: bool) -> Self {
         CsvProcessor {
-            records: Vec::new(),
+            delimiter,
+            has_headers,
         }
     }
 
-    pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<(), CsvError> {
-        let file = File::open(path)?;
+    pub fn validate_file<P: AsRef<Path>>(&self, file_path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(file_path)?;
         let reader = BufReader::new(file);
-        
-        for (line_num, line) in reader.lines().enumerate() {
+        let mut line_count = 0;
+        let mut column_count: Option<usize> = None;
+
+        for (index, line) in reader.lines().enumerate() {
             let line = line?;
+            let columns: Vec<&str> = line.split(self.delimiter).collect();
             
-            if line.trim().is_empty() || line.starts_with('#') {
+            if let Some(expected) = column_count {
+                if columns.len() != expected {
+                    return Err(format!("Line {} has {} columns, expected {}", 
+                        index + 1, columns.len(), expected).into());
+                }
+            } else {
+                column_count = Some(columns.len());
+            }
+            
+            line_count += 1;
+        }
+
+        if line_count == 0 {
+            return Err("File is empty".into());
+        }
+
+        Ok(line_count)
+    }
+
+    pub fn transform_column<P: AsRef<Path>>(
+        &self,
+        input_path: P,
+        output_path: P,
+        column_index: usize,
+        transformer: fn(&str) -> String,
+    ) -> Result<(), Box<dyn Error>> {
+        let input_file = File::open(input_path)?;
+        let reader = BufReader::new(input_file);
+        let mut output_file = File::create(output_path)?;
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let mut line = line?;
+            
+            if line_num == 0 && self.has_headers {
+                writeln!(output_file, "{}", line)?;
                 continue;
             }
-            
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() != 4 {
-                return Err(CsvError::ParseError(
-                    format!("Line {}: Expected 4 columns, found {}", line_num + 1, parts.len())
-                ));
+
+            let mut columns: Vec<String> = line
+                .split(self.delimiter)
+                .map(String::from)
+                .collect();
+
+            if column_index < columns.len() {
+                columns[column_index] = transformer(&columns[column_index]);
             }
-            
-            let id = parts[0].parse::<u32>()
-                .map_err(|e| CsvError::ParseError(
-                    format!("Line {}: Invalid ID: {}", line_num + 1, e)
-                ))?;
-            
-            let name = parts[1].trim().to_string();
-            if name.is_empty() {
-                return Err(CsvError::ValidationError(
-                    format!("Line {}: Name cannot be empty", line_num + 1)
-                ));
-            }
-            
-            let value = parts[2].parse::<f64>()
-                .map_err(|e| CsvError::ParseError(
-                    format!("Line {}: Invalid value: {}", line_num + 1, e)
-                ))?;
-            
-            let active = match parts[3].trim().to_lowercase().as_str() {
-                "true" | "1" | "yes" => true,
-                "false" | "0" | "no" => false,
-                _ => return Err(CsvError::ParseError(
-                    format!("Line {}: Invalid boolean value: {}", line_num + 1, parts[3])
-                )),
-            };
-            
-            self.records.push(CsvRecord {
-                id,
-                name,
-                value,
-                active,
-            });
+
+            let transformed_line = columns.join(&self.delimiter.to_string());
+            writeln!(output_file, "{}", transformed_line)?;
         }
-        
+
         Ok(())
     }
 
-    pub fn get_active_records(&self) -> Vec<&CsvRecord> {
-        self.records.iter()
-            .filter(|record| record.active)
-            .collect()
-    }
+    pub fn filter_rows<P: AsRef<Path>>(
+        &self,
+        input_path: P,
+        output_path: P,
+        predicate: fn(&[String]) -> bool,
+    ) -> Result<usize, Box<dyn Error>> {
+        let input_file = File::open(input_path)?;
+        let reader = BufReader::new(input_file);
+        let mut output_file = File::create(output_path)?;
+        let mut kept_rows = 0;
 
-    pub fn calculate_total_value(&self) -> f64 {
-        self.records.iter()
-            .map(|record| record.value)
-            .sum()
-    }
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if line_num == 0 && self.has_headers {
+                writeln!(output_file, "{}", line)?;
+                continue;
+            }
 
-    pub fn find_by_name(&self, name: &str) -> Option<&CsvRecord> {
-        self.records.iter()
-            .find(|record| record.name == name)
-    }
+            let columns: Vec<String> = line
+                .split(self.delimiter)
+                .map(String::from)
+                .collect();
 
-    pub fn record_count(&self) -> usize {
-        self.records.len()
+            if predicate(&columns) {
+                writeln!(output_file, "{}", line)?;
+                kept_rows += 1;
+            }
+        }
+
+        Ok(kept_rows)
+    }
+}
+
+fn uppercase_transform(value: &str) -> String {
+    value.to_uppercase()
+}
+
+fn numeric_filter(columns: &[String]) -> bool {
+    if let Some(first_col) = columns.get(0) {
+        first_col.parse::<f64>().is_ok()
+    } else {
+        false
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::Read;
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_csv_loading() {
+    fn test_csv_validation() {
+        let processor = CsvProcessor::new(',', false);
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "1,Alice,42.5,true").unwrap();
-        writeln!(temp_file, "2,Bob,33.7,false").unwrap();
-        writeln!(temp_file, "3,Charlie,19.2,true").unwrap();
         
-        let mut processor = CsvProcessor::new();
-        let result = processor.load_from_file(temp_file.path());
+        writeln!(temp_file, "a,b,c").unwrap();
+        writeln!(temp_file, "1,2,3").unwrap();
         
+        let result = processor.validate_file(temp_file.path());
         assert!(result.is_ok());
-        assert_eq!(processor.record_count(), 3);
-        assert_eq!(processor.get_active_records().len(), 2);
-        assert!((processor.calculate_total_value() - 95.4).abs() < 0.001);
+        assert_eq!(result.unwrap(), 2);
     }
 
     #[test]
-    fn test_invalid_csv() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "1,Alice,not_a_number,true").unwrap();
+    fn test_column_transformation() {
+        let processor = CsvProcessor::new(',', true);
+        let mut input_file = NamedTempFile::new().unwrap();
+        let output_file = NamedTempFile::new().unwrap();
         
-        let mut processor = CsvProcessor::new();
-        let result = processor.load_from_file(temp_file.path());
+        writeln!(input_file, "name,value").unwrap();
+        writeln!(input_file, "test,123").unwrap();
         
-        assert!(result.is_err());
+        processor.transform_column(
+            input_file.path(),
+            output_file.path(),
+            0,
+            uppercase_transform,
+        ).unwrap();
+
+        let mut content = String::new();
+        File::open(output_file.path())
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        
+        assert!(content.contains("TEST,123"));
+    }
+
+    #[test]
+    fn test_row_filtering() {
+        let processor = CsvProcessor::new(',', false);
+        let mut input_file = NamedTempFile::new().unwrap();
+        let output_file = NamedTempFile::new().unwrap();
+        
+        writeln!(input_file, "abc,def").unwrap();
+        writeln!(input_file, "123,456").unwrap();
+        writeln!(input_file, "xyz,789").unwrap();
+        
+        let kept = processor.filter_rows(
+            input_file.path(),
+            output_file.path(),
+            numeric_filter,
+        ).unwrap();
+        
+        assert_eq!(kept, 1);
     }
 }
