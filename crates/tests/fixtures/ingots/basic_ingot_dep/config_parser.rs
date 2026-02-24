@@ -1,106 +1,115 @@
-
-use std::collections::HashMap;
-use std::env;
+use serde::{Deserialize, Serialize};
 use std::fs;
-use regex::Regex;
+use std::path::Path;
 
-pub struct ConfigParser {
-    values: HashMap<String, String>,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DatabaseConfig {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub database: String,
+    pub pool_size: u32,
 }
 
-impl ConfigParser {
-    pub fn new() -> Self {
-        ConfigParser {
-            values: HashMap::new(),
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServerConfig {
+    pub address: String,
+    pub port: u16,
+    pub enable_ssl: bool,
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AppConfig {
+    pub database: DatabaseConfig,
+    pub server: ServerConfig,
+    pub log_level: String,
+    pub cache_ttl: u64,
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        DatabaseConfig {
+            host: "localhost".to_string(),
+            port: 5432,
+            username: "postgres".to_string(),
+            password: "".to_string(),
+            database: "app_db".to_string(),
+            pool_size: 10,
+        }
+    }
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig {
+            address: "0.0.0.0".to_string(),
+            port: 8080,
+            enable_ssl: false,
+            timeout_seconds: 30,
+        }
+    }
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        AppConfig {
+            database: DatabaseConfig::default(),
+            server: ServerConfig::default(),
+            log_level: "info".to_string(),
+            cache_ttl: 300,
+        }
+    }
+}
+
+impl AppConfig {
+    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let config_str = fs::read_to_string(path)?;
+        let config: AppConfig = toml::from_str(&config_str)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn load_or_default<P: AsRef<Path>>(path: P) -> Self {
+        match Self::load_from_file(path) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("Failed to load config: {}. Using defaults.", e);
+                AppConfig::default()
+            }
         }
     }
 
-    pub fn load_from_file(&mut self, path: &str) -> Result<(), String> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read config file: {}", e))?;
-
-        let var_regex = Regex::new(r"\$\{([A-Za-z0-9_]+)\}").unwrap();
-
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-
-            if let Some(equal_pos) = trimmed.find('=') {
-                let key = trimmed[..equal_pos].trim().to_string();
-                let mut value = trimmed[equal_pos + 1..].trim().to_string();
-
-                for cap in var_regex.captures_iter(&value) {
-                    if let Some(var_name) = cap.get(1) {
-                        if let Ok(env_value) = env::var(var_name.as_str()) {
-                            value = value.replace(&cap[0], &env_value);
-                        }
-                    }
-                }
-
-                self.values.insert(key, value);
-            }
+    pub fn validate(&self) -> Result<(), String> {
+        if self.server.port == 0 {
+            return Err("Server port cannot be 0".to_string());
         }
-
+        
+        if self.database.pool_size == 0 {
+            return Err("Database pool size cannot be 0".to_string());
+        }
+        
+        if self.cache_ttl > 86400 {
+            return Err("Cache TTL cannot exceed 24 hours".to_string());
+        }
+        
+        let valid_log_levels = ["error", "warn", "info", "debug", "trace"];
+        if !valid_log_levels.contains(&self.log_level.as_str()) {
+            return Err(format!("Invalid log level: {}", self.log_level));
+        }
+        
         Ok(())
     }
 
-    pub fn get(&self, key: &str) -> Option<&String> {
-        self.values.get(key)
+    pub fn to_toml_string(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let toml_string = toml::to_string_pretty(self)?;
+        Ok(toml_string)
     }
 
-    pub fn get_or_default(&self, key: &str, default: &str) -> String {
-        self.values.get(key)
-            .map(|s| s.as_str())
-            .unwrap_or(default)
-            .to_string()
-    }
-
-    pub fn get_all(&self) -> &HashMap<String, String> {
-        &self.values
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_basic_parsing() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "DATABASE_HOST=localhost").unwrap();
-        writeln!(file, "DATABASE_PORT=5432").unwrap();
-        writeln!(file, "# This is a comment").unwrap();
-        writeln!(file, "APP_NAME=MyApp").unwrap();
-
-        let mut parser = ConfigParser::new();
-        parser.load_from_file(file.path().to_str().unwrap()).unwrap();
-
-        assert_eq!(parser.get("DATABASE_HOST"), Some(&"localhost".to_string()));
-        assert_eq!(parser.get("DATABASE_PORT"), Some(&"5432".to_string()));
-        assert_eq!(parser.get("APP_NAME"), Some(&"MyApp".to_string()));
-        assert_eq!(parser.get("NON_EXISTENT"), None);
-    }
-
-    #[test]
-    fn test_env_substitution() {
-        env::set_var("DB_PASSWORD", "secret123");
-
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "DB_HOST=localhost").unwrap();
-        writeln!(file, "DB_PASS=${DB_PASSWORD}").unwrap();
-        writeln!(file, "CONNECTION=postgres://user:${DB_PASSWORD}@localhost").unwrap();
-
-        let mut parser = ConfigParser::new();
-        parser.load_from_file(file.path().to_str().unwrap()).unwrap();
-
-        assert_eq!(parser.get("DB_PASS"), Some(&"secret123".to_string()));
-        assert_eq!(
-            parser.get("CONNECTION"),
-            Some(&"postgres://user:secret123@localhost".to_string())
-        );
+    pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let toml_string = self.to_toml_string()?;
+        fs::write(path, toml_string)?;
+        Ok(())
     }
 }
