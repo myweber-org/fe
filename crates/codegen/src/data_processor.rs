@@ -423,3 +423,191 @@ mod tests {
         assert_eq!(processor.calculate_average(), 100.0);
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::error::Error;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DataRecord {
+    id: u32,
+    timestamp: i64,
+    values: Vec<f64>,
+    metadata: HashMap<String, String>,
+}
+
+pub struct DataProcessor {
+    validation_rules: Vec<ValidationRule>,
+    transformation_pipeline: Vec<Transformation>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            validation_rules: Vec::new(),
+            transformation_pipeline: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn add_transformation(&mut self, transformation: Transformation) {
+        self.transformation_pipeline.push(transformation);
+    }
+
+    pub fn process(&self, record: &mut DataRecord) -> Result<(), Box<dyn Error>> {
+        for rule in &self.validation_rules {
+            rule.validate(record)?;
+        }
+
+        for transformation in &self.transformation_pipeline {
+            transformation.apply(record)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn batch_process(&self, records: &mut [DataRecord]) -> Vec<Result<(), Box<dyn Error>>> {
+        records
+            .iter_mut()
+            .map(|record| self.process(record))
+            .collect()
+    }
+}
+
+pub trait ValidationRule {
+    fn validate(&self, record: &DataRecord) -> Result<(), Box<dyn Error>>;
+}
+
+pub trait Transformation {
+    fn apply(&self, record: &mut DataRecord) -> Result<(), Box<dyn Error>>;
+}
+
+pub struct RangeValidation {
+    min_value: f64,
+    max_value: f64,
+    field_index: usize,
+}
+
+impl RangeValidation {
+    pub fn new(min_value: f64, max_value: f64, field_index: usize) -> Self {
+        RangeValidation {
+            min_value,
+            max_value,
+            field_index,
+        }
+    }
+}
+
+impl ValidationRule for RangeValidation {
+    fn validate(&self, record: &DataRecord) -> Result<(), Box<dyn Error>> {
+        if self.field_index >= record.values.len() {
+            return Err("Field index out of bounds".into());
+        }
+
+        let value = record.values[self.field_index];
+        if value < self.min_value || value > self.max_value {
+            return Err(format!(
+                "Value {} is outside valid range [{}, {}]",
+                value, self.min_value, self.max_value
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+}
+
+pub struct NormalizationTransformation {
+    field_index: usize,
+    mean: f64,
+    std_dev: f64,
+}
+
+impl NormalizationTransformation {
+    pub fn new(field_index: usize, mean: f64, std_dev: f64) -> Self {
+        NormalizationTransformation {
+            field_index,
+            mean,
+            std_dev,
+        }
+    }
+}
+
+impl Transformation for NormalizationTransformation {
+    fn apply(&self, record: &mut DataRecord) -> Result<(), Box<dyn Error>> {
+        if self.field_index >= record.values.len() {
+            return Err("Field index out of bounds".into());
+        }
+
+        if self.std_dev.abs() < f64::EPSILON {
+            return Err("Standard deviation cannot be zero".into());
+        }
+
+        let value = record.values[self.field_index];
+        record.values[self.field_index] = (value - self.mean) / self.std_dev;
+        Ok(())
+    }
+}
+
+pub fn create_sample_processor() -> DataProcessor {
+    let mut processor = DataProcessor::new();
+    
+    processor.add_validation_rule(Box::new(RangeValidation::new(0.0, 100.0, 0)));
+    processor.add_validation_rule(Box::new(RangeValidation::new(-50.0, 50.0, 1)));
+    
+    processor.add_transformation(Box::new(NormalizationTransformation::new(0, 50.0, 15.0)));
+    processor.add_transformation(Box::new(NormalizationTransformation::new(1, 0.0, 25.0)));
+    
+    processor
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validation_success() {
+        let mut record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![75.0, 25.0],
+            metadata: HashMap::new(),
+        };
+
+        let processor = create_sample_processor();
+        let result = processor.process(&mut record);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validation_failure() {
+        let mut record = DataRecord {
+            id: 2,
+            timestamp: 1234567890,
+            values: vec![150.0, 25.0],
+            metadata: HashMap::new(),
+        };
+
+        let processor = create_sample_processor();
+        let result = processor.process(&mut record);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_normalization() {
+        let mut record = DataRecord {
+            id: 3,
+            timestamp: 1234567890,
+            values: vec![65.0, 25.0],
+            metadata: HashMap::new(),
+        };
+
+        let processor = create_sample_processor();
+        processor.process(&mut record).unwrap();
+        
+        let normalized_value = (65.0 - 50.0) / 15.0;
+        assert!((record.values[0] - normalized_value).abs() < f64::EPSILON);
+    }
+}
