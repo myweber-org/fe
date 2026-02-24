@@ -233,3 +233,133 @@ mod tests {
         Ok(())
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: &str) -> Result<Self, String> {
+        if value < 0.0 {
+            return Err(format!("Invalid value: {} for record {}", value, id));
+        }
+        if category.trim().is_empty() {
+            return Err(format!("Empty category for record {}", id));
+        }
+        Ok(Self {
+            id,
+            value,
+            category: category.to_string(),
+        })
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        Self {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            if line_num == 0 {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 3 {
+                continue;
+            }
+
+            let id = parts[0].parse::<u32>()?;
+            let value = parts[1].parse::<f64>()?;
+            let category = parts[2];
+
+            match DataRecord::new(id, value, category) {
+                Ok(record) => {
+                    self.records.push(record);
+                    count += 1;
+                }
+                Err(e) => eprintln!("Warning: {}", e),
+            }
+        }
+
+        Ok(count)
+    }
+
+    pub fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|r| r.category == category)
+            .collect()
+    }
+
+    pub fn total_records(&self) -> usize {
+        self.records.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_record_creation() {
+        let record = DataRecord::new(1, 42.5, "test").unwrap();
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 42.5);
+        assert_eq!(record.category, "test");
+
+        let invalid = DataRecord::new(2, -1.0, "test");
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        assert_eq!(processor.total_records(), 0);
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,value,category").unwrap();
+        writeln!(temp_file, "1,10.5,alpha").unwrap();
+        writeln!(temp_file, "2,20.0,beta").unwrap();
+        writeln!(temp_file, "3,30.5,alpha").unwrap();
+
+        let count = processor.load_from_csv(temp_file.path()).unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(processor.total_records(), 3);
+
+        let avg = processor.calculate_average().unwrap();
+        assert!((avg - 20.3333).abs() < 0.001);
+
+        let alpha_records = processor.filter_by_category("alpha");
+        assert_eq!(alpha_records.len(), 2);
+    }
+}
