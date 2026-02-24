@@ -237,4 +237,76 @@ mod tests {
         let result = wrong_encryptor.decrypt_file(encrypted_file.path(), decrypted_file.path());
         assert!(result.is_err());
     }
+}use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use argon2::{
+    password_hash::{
+        rand_core::OsRng,
+        PasswordHasher, SaltString
+    },
+    Argon2
+};
+use std::fs;
+use std::io::{Read, Write};
+
+const SALT_LENGTH: usize = 16;
+const NONCE_LENGTH: usize = 12;
+
+pub struct FileEncryptor {
+    key: Key<Aes256Gcm>,
+}
+
+impl FileEncryptor {
+    pub fn from_password(password: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        let password_hash = argon2.hash_password(password.as_bytes(), &salt)?;
+        
+        let key_bytes = password_hash.hash.ok_or("Hash generation failed")?;
+        let key = Key::<Aes256Gcm>::from_slice(key_bytes.as_bytes());
+        
+        Ok(Self { key: *key })
+    }
+    
+    pub fn encrypt_file(&self, input_path: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut file = fs::File::open(input_path)?;
+        let mut plaintext = Vec::new();
+        file.read_to_end(&mut plaintext)?;
+        
+        let cipher = Aes256Gcm::new(&self.key);
+        let nonce = Nonce::from_slice(&[0u8; NONCE_LENGTH]);
+        
+        let ciphertext = cipher.encrypt(nonce, plaintext.as_ref())
+            .map_err(|e| format!("Encryption failed: {}", e))?;
+        
+        let mut output_file = fs::File::create(output_path)?;
+        output_file.write_all(&ciphertext)?;
+        
+        Ok(())
+    }
+    
+    pub fn decrypt_file(&self, input_path: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut file = fs::File::open(input_path)?;
+        let mut ciphertext = Vec::new();
+        file.read_to_end(&mut ciphertext)?;
+        
+        let cipher = Aes256Gcm::new(&self.key);
+        let nonce = Nonce::from_slice(&[0u8; NONCE_LENGTH]);
+        
+        let plaintext = cipher.decrypt(nonce, ciphertext.as_ref())
+            .map_err(|e| format!("Decryption failed: {}", e))?;
+        
+        let mut output_file = fs::File::create(output_path)?;
+        output_file.write_all(&plaintext)?;
+        
+        Ok(())
+    }
+}
+
+pub fn generate_random_key() -> Vec<u8> {
+    let mut key = vec![0u8; 32];
+    OsRng.fill_bytes(&mut key);
+    key
 }
