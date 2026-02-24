@@ -115,3 +115,61 @@ fn merge_objects(target: &mut Map<String, Value>, source: Map<String, Value>) {
         }
     }
 }
+use serde_json::{Value, Map};
+use std::fs;
+use std::path::Path;
+
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], output_path: P) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged: Map<String, Value> = Map::new();
+
+    for path in paths {
+        let content = fs::read_to_string(path)?;
+        let json: Value = serde_json::from_str(&content)?;
+
+        if let Value::Object(obj) = json {
+            for (key, value) in obj {
+                if merged.contains_key(&key) {
+                    let existing = &merged[&key];
+                    if existing != &value {
+                        let resolved = resolve_conflict(&key, existing, &value);
+                        merged.insert(key, resolved);
+                    }
+                } else {
+                    merged.insert(key, value);
+                }
+            }
+        }
+    }
+
+    let output_json = Value::Object(merged);
+    let serialized = serde_json::to_string_pretty(&output_json)?;
+    fs::write(output_path, serialized)?;
+
+    Ok(())
+}
+
+fn resolve_conflict(key: &str, existing: &Value, new: &Value) -> Value {
+    match (existing, new) {
+        (Value::Array(arr1), Value::Array(arr2)) => {
+            let mut combined = arr1.clone();
+            combined.extend(arr2.clone());
+            Value::Array(combined)
+        },
+        (Value::Object(obj1), Value::Object(obj2)) => {
+            let mut merged_obj = obj1.clone();
+            for (k, v) in obj2 {
+                if merged_obj.contains_key(k) {
+                    let resolved = resolve_conflict(k, &merged_obj[k], v);
+                    merged_obj.insert(k.clone(), resolved);
+                } else {
+                    merged_obj.insert(k.clone(), v.clone());
+                }
+            }
+            Value::Object(merged_obj)
+        },
+        _ => {
+            eprintln!("Conflict detected for key '{}', using new value", key);
+            new.clone()
+        }
+    }
+}
