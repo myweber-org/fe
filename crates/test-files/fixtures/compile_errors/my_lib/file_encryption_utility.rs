@@ -1,84 +1,64 @@
-
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::Path;
 
-const DEFAULT_KEY: u8 = 0x55;
-
-pub fn encrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
-    let encryption_key = key.unwrap_or(DEFAULT_KEY);
-    
-    let mut input_file = fs::File::open(input_path)?;
-    let mut buffer = Vec::new();
-    input_file.read_to_end(&mut buffer)?;
-    
-    let encrypted_data: Vec<u8> = buffer.iter()
-        .map(|byte| byte ^ encryption_key)
-        .collect();
-    
-    let mut output_file = fs::File::create(output_path)?;
-    output_file.write_all(&encrypted_data)?;
-    
-    Ok(())
+pub struct FileEncryptor {
+    cipher: Aes256Gcm,
 }
 
-pub fn decrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
-    encrypt_file(input_path, output_path, key)
-}
-
-pub fn encrypt_string(text: &str, key: Option<u8>) -> Vec<u8> {
-    let encryption_key = key.unwrap_or(DEFAULT_KEY);
-    text.bytes()
-        .map(|byte| byte ^ encryption_key)
-        .collect()
-}
-
-pub fn decrypt_string(data: &[u8], key: Option<u8>) -> String {
-    let encryption_key = key.unwrap_or(DEFAULT_KEY);
-    data.iter()
-        .map(|byte| (byte ^ encryption_key) as char)
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::NamedTempFile;
-    
-    #[test]
-    fn test_string_encryption() {
-        let original = "Hello, World!";
-        let encrypted = encrypt_string(original, Some(0x42));
-        let decrypted = decrypt_string(&encrypted, Some(0x42));
-        
-        assert_eq!(original, decrypted);
+impl FileEncryptor {
+    pub fn new(key: &[u8; 32]) -> Self {
+        let key = Key::<Aes256Gcm>::from_slice(key);
+        let cipher = Aes256Gcm::new(key);
+        FileEncryptor { cipher }
     }
-    
-    #[test]
-    fn test_file_encryption() -> io::Result<()> {
-        let original_content = b"Secret file content";
+
+    pub fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> io::Result<()> {
+        let data = fs::read(input_path)?;
         
-        let input_file = NamedTempFile::new()?;
-        let output_file = NamedTempFile::new()?;
-        let decrypted_file = NamedTempFile::new()?;
+        let mut nonce = [0u8; 12];
+        OsRng.fill_bytes(&mut nonce);
         
-        fs::write(input_file.path(), original_content)?;
+        let encrypted_data = self.cipher
+            .encrypt(Nonce::from_slice(&nonce), data.as_ref())
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         
-        encrypt_file(
-            input_file.path().to_str().unwrap(),
-            output_file.path().to_str().unwrap(),
-            Some(0x99)
-        )?;
-        
-        decrypt_file(
-            output_file.path().to_str().unwrap(),
-            decrypted_file.path().to_str().unwrap(),
-            Some(0x99)
-        )?;
-        
-        let decrypted_content = fs::read(decrypted_file.path())?;
-        assert_eq!(original_content.to_vec(), decrypted_content);
+        let mut output = fs::File::create(output_path)?;
+        output.write_all(&nonce)?;
+        output.write_all(&encrypted_data)?;
         
         Ok(())
     }
+
+    pub fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> io::Result<()> {
+        let data = fs::read(input_path)?;
+        
+        if data.len() < 12 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "File too short to contain nonce"
+            ));
+        }
+        
+        let nonce = &data[0..12];
+        let encrypted_data = &data[12..];
+        
+        let decrypted_data = self.cipher
+            .decrypt(Nonce::from_slice(nonce), encrypted_data)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        
+        fs::write(output_path, decrypted_data)?;
+        
+        Ok(())
+    }
+}
+
+pub fn generate_random_key() -> [u8; 32] {
+    let mut key = [0u8; 32];
+    OsRng.fill_bytes(&mut key);
+    key
 }
