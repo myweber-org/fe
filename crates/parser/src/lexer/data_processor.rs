@@ -213,3 +213,131 @@ mod tests {
         assert_eq!(stats.1, 20.3);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, PartialEq)]
+pub struct DataRecord {
+    id: u32,
+    value: f64,
+    category: String,
+    valid: bool,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Self {
+        let valid = value >= 0.0 && !category.is_empty();
+        DataRecord {
+            id,
+            value,
+            category,
+            valid,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.valid
+    }
+
+    pub fn process_value(&self) -> f64 {
+        if self.valid {
+            self.value * 2.5
+        } else {
+            0.0
+        }
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if line_num == 0 {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 3 {
+                continue;
+            }
+
+            let id = parts[0].parse::<u32>().unwrap_or(0);
+            let value = parts[1].parse::<f64>().unwrap_or(0.0);
+            let category = parts[2].to_string();
+
+            let record = DataRecord::new(id, value, category);
+            self.records.push(record);
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    pub fn filter_valid(&self) -> Vec<&DataRecord> {
+        self.records.iter().filter(|r| r.is_valid()).collect()
+    }
+
+    pub fn calculate_total(&self) -> f64 {
+        self.filter_valid()
+            .iter()
+            .map(|r| r.process_value())
+            .sum()
+    }
+
+    pub fn get_categories(&self) -> Vec<String> {
+        let mut categories = Vec::new();
+        for record in &self.records {
+            if !categories.contains(&record.category) {
+                categories.push(record.category.clone());
+            }
+        }
+        categories.sort();
+        categories
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_creation() {
+        let record = DataRecord::new(1, 42.5, "A".to_string());
+        assert_eq!(record.id, 1);
+        assert_eq!(record.value, 42.5);
+        assert_eq!(record.category, "A");
+        assert!(record.is_valid());
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        let record = DataRecord::new(2, -5.0, "B".to_string());
+        assert!(!record.is_valid());
+    }
+
+    #[test]
+    fn test_process_value() {
+        let valid_record = DataRecord::new(3, 10.0, "C".to_string());
+        assert_eq!(valid_record.process_value(), 25.0);
+
+        let invalid_record = DataRecord::new(4, -10.0, "D".to_string());
+        assert_eq!(invalid_record.process_value(), 0.0);
+    }
+}
