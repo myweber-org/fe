@@ -1424,3 +1424,42 @@ mod tests {
         assert_eq!(invalid, 2);
     }
 }
+use csv;
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+pub fn process_csv_file(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let mut rdr = csv::Reader::from_reader(file);
+    
+    let mut records = Vec::new();
+    for result in rdr.deserialize() {
+        let record: Record = result?;
+        if record.value >= 0.0 {
+            records.push(record);
+        }
+    }
+    
+    Ok(records)
+}
+
+pub fn filter_records(records: Vec<Record>, min_value: f64) -> Vec<Record> {
+    records.into_iter()
+        .filter(|r| r.value >= min_value && r.active)
+        .collect()
+}
+
+pub fn calculate_total(records: &[Record]) -> f64 {
+    records.iter()
+        .map(|r| r.value)
+        .sum()
+}
