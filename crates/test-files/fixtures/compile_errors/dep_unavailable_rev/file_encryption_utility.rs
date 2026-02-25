@@ -410,4 +410,145 @@ mod tests {
         let result = encryptor.decrypt_data(&encrypted);
         assert!(result.is_err());
     }
+}use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
+    Argon2,
+};
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+const NONCE_SIZE: usize = 12;
+const SALT_SIZE: usize = 16;
+
+pub struct FileEncryptor {
+    cipher: Aes256Gcm,
+}
+
+impl FileEncryptor {
+    pub fn from_password(password: &str, salt: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        let argon2 = Argon2::default();
+        let salt_string = SaltString::encode_b64(salt)?;
+        let password_hash = argon2.hash_password(password.as_bytes(), &salt_string)?;
+        let key_bytes = password_hash.hash.ok_or("Hash generation failed")?;
+        let key = Key::<Aes256Gcm>::from_slice(key_bytes.as_bytes());
+        let cipher = Aes256Gcm::new(key);
+        Ok(FileEncryptor { cipher })
+    }
+
+    pub fn encrypt_file(
+        &self,
+        input_path: &Path,
+        output_path: &Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut file = fs::File::open(input_path)?;
+        let mut plaintext = Vec::new();
+        file.read_to_end(&mut plaintext)?;
+
+        let mut rng = OsRng;
+        let nonce_bytes: [u8; NONCE_SIZE] = rng.random();
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let ciphertext = self
+            .cipher
+            .encrypt(nonce, plaintext.as_ref())
+            .map_err(|e| format!("Encryption failed: {}", e))?;
+
+        let mut output_file = fs::File::create(output_path)?;
+        output_file.write_all(&nonce_bytes)?;
+        output_file.write_all(&ciphertext)?;
+
+        Ok(())
+    }
+
+    pub fn decrypt_file(
+        &self,
+        input_path: &Path,
+        output_path: &Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut file = fs::File::open(input_path)?;
+        let mut encrypted_data = Vec::new();
+        file.read_to_end(&mut encrypted_data)?;
+
+        if encrypted_data.len() < NONCE_SIZE {
+            return Err("File too short to contain nonce".into());
+        }
+
+        let (nonce_bytes, ciphertext) = encrypted_data.split_at(NONCE_SIZE);
+        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let plaintext = self
+            .cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| format!("Decryption failed: {}", e))?;
+
+        let mut output_file = fs::File::create(output_path)?;
+        output_file.write_all(&plaintext)?;
+
+        Ok(())
+    }
+}
+
+pub fn generate_salt() -> [u8; SALT_SIZE] {
+    let mut rng = OsRng;
+    let mut salt = [0u8; SALT_SIZE];
+    rng.fill_bytes(&mut salt);
+    salt
+}
+
+pub fn run_encryption_workflow() -> Result<(), Box<dyn std::error::Error>> {
+    println!("File Encryption Utility");
+    println!("======================");
+
+    print!("Enter password: ");
+    io::stdout().flush()?;
+    let mut password = String::new();
+    io::stdin().read_line(&mut password)?;
+    let password = password.trim();
+
+    let salt = generate_salt();
+    let encryptor = FileEncryptor::from_password(password, &salt)?;
+
+    print!("Enter input file path: ");
+    io::stdout().flush()?;
+    let mut input_path = String::new();
+    io::stdin().read_line(&mut input_path)?;
+    let input_path = Path::new(input_path.trim());
+
+    print!("Enter output file path: ");
+    io::stdout().flush()?;
+    let mut output_path = String::new();
+    io::stdin().read_line(&mut output_path)?;
+    let output_path = Path::new(output_path.trim());
+
+    print!("(E)ncrypt or (D)ecrypt? ");
+    io::stdout().flush()?;
+    let mut choice = String::new();
+    io::stdin().read_line(&mut choice)?;
+
+    match choice.trim().to_lowercase().as_str() {
+        "e" | "encrypt" => {
+            encryptor.encrypt_file(input_path, output_path)?;
+            println!("Encryption completed successfully.");
+            println!("Salt (save this for decryption): {}", hex::encode(salt));
+        }
+        "d" | "decrypt" => {
+            print!("Enter salt (hex encoded): ");
+            io::stdout().flush()?;
+            let mut salt_input = String::new();
+            io::stdin().read_line(&mut salt_input)?;
+            let salt_bytes = hex::decode(salt_input.trim())?;
+
+            let decryptor = FileEncryptor::from_password(password, &salt_bytes)?;
+            decryptor.decrypt_file(input_path, output_path)?;
+            println!("Decryption completed successfully.");
+        }
+        _ => return Err("Invalid choice. Use 'E' for encrypt or 'D' for decrypt.".into()),
+    }
+
+    Ok(())
 }
