@@ -1,115 +1,80 @@
+use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::collections::HashMap;
 
-pub struct DataProcessor {
-    data: Vec<f64>,
-    metadata: HashMap<String, String>,
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
 }
 
-impl DataProcessor {
-    pub fn new() -> Self {
-        DataProcessor {
-            data: Vec::new(),
-            metadata: HashMap::new(),
+pub fn process_data(input_path: &str, output_path: &str, min_value: f64) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let mut reader = Reader::from_reader(input_file);
+    
+    let output_file = File::create(output_path)?;
+    let mut writer = Writer::from_writer(output_file);
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.value >= min_value && record.active {
+            writer.serialize(&record)?;
         }
     }
 
-    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
+    writer.flush()?;
+    Ok(())
+}
+
+pub fn calculate_statistics(path: &str) -> Result<(f64, f64, usize), Box<dyn Error>> {
+    let file = File::open(path)?;
+    let mut reader = Reader::from_reader(file);
+    
+    let mut sum = 0.0;
+    let mut count = 0;
+    let mut max_value = f64::MIN;
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
         
-        for (index, line) in reader.lines().enumerate() {
-            let line = line?;
-            if index == 0 {
-                continue;
-            }
-            
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() >= 2 {
-                if let Ok(value) = parts[1].parse::<f64>() {
-                    self.data.push(value);
-                }
-            }
+        if record.active {
+            sum += record.value;
+            count += 1;
+            max_value = max_value.max(record.value);
         }
-        
-        self.metadata.insert("source".to_string(), file_path.to_string());
-        self.metadata.insert("loaded_at".to_string(), chrono::Local::now().to_rfc3339());
-        
-        Ok(())
     }
 
-    pub fn calculate_statistics(&self) -> HashMap<String, f64> {
-        let mut stats = HashMap::new();
-        
-        if self.data.is_empty() {
-            return stats;
-        }
-        
-        let sum: f64 = self.data.iter().sum();
-        let count = self.data.len() as f64;
-        let mean = sum / count;
-        
-        let variance: f64 = self.data.iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / count;
-        
-        let std_dev = variance.sqrt();
-        
-        let min = self.data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let max = self.data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-        
-        stats.insert("mean".to_string(), mean);
-        stats.insert("std_dev".to_string(), std_dev);
-        stats.insert("min".to_string(), min);
-        stats.insert("max".to_string(), max);
-        stats.insert("count".to_string(), count);
-        
-        stats
-    }
-
-    pub fn filter_by_threshold(&self, threshold: f64) -> Vec<f64> {
-        self.data.iter()
-            .filter(|&&x| x > threshold)
-            .cloned()
-            .collect()
-    }
-
-    pub fn get_metadata(&self) -> &HashMap<String, String> {
-        &self.metadata
-    }
-
-    pub fn data_count(&self) -> usize {
-        self.data.len()
-    }
+    let average = if count > 0 { sum / count as f64 } else { 0.0 };
+    Ok((average, max_value, count))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
     fn test_data_processing() {
-        let mut processor = DataProcessor::new();
+        let input_data = "id,name,value,active\n1,test1,10.5,true\n2,test2,5.0,false\n3,test3,15.0,true\n";
         
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,value").unwrap();
-        writeln!(temp_file, "1,10.5").unwrap();
-        writeln!(temp_file, "2,20.3").unwrap();
-        writeln!(temp_file, "3,15.7").unwrap();
+        let input_file = NamedTempFile::new().unwrap();
+        std::fs::write(input_file.path(), input_data).unwrap();
         
-        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
-        assert!(result.is_ok());
-        assert_eq!(processor.data_count(), 3);
+        let output_file = NamedTempFile::new().unwrap();
         
-        let stats = processor.calculate_statistics();
-        assert!((stats["mean"] - 15.5).abs() < 0.1);
-        assert_eq!(stats["count"], 3.0);
-        
-        let filtered = processor.filter_by_threshold(15.0);
-        assert_eq!(filtered.len(), 2);
+        process_data(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap(),
+            10.0
+        ).unwrap();
+
+        let output_content = std::fs::read_to_string(output_file.path()).unwrap();
+        assert!(output_content.contains("test1"));
+        assert!(!output_content.contains("test2"));
+        assert!(output_content.contains("test3"));
     }
 }
