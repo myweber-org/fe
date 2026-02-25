@@ -649,3 +649,128 @@ mod tests {
         assert_eq!(filtered, vec![1.0, 2.0, 3.0]);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+pub struct DataProcessor {
+    delimiter: char,
+    has_header: bool,
+}
+
+impl DataProcessor {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        DataProcessor {
+            delimiter,
+            has_header,
+        }
+    }
+
+    pub fn process_file<P: AsRef<Path>>(&self, file_path: P) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        
+        let mut records = Vec::new();
+        let mut lines = reader.lines().enumerate();
+
+        if self.has_header {
+            let _ = lines.next();
+        }
+
+        for (line_number, line) in lines {
+            let line_content = line?;
+            let fields: Vec<String> = line_content
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if fields.iter().any(|f| f.is_empty()) {
+                return Err(format!("Empty field detected at line {}", line_number + 1).into());
+            }
+
+            records.push(fields);
+        }
+
+        if records.is_empty() {
+            return Err("No valid data records found".into());
+        }
+
+        Ok(records)
+    }
+
+    pub fn validate_records(&self, records: &[Vec<String>]) -> Result<(), Box<dyn Error>> {
+        if records.is_empty() {
+            return Err("Empty record set".into());
+        }
+
+        let expected_len = records[0].len();
+        for (idx, record) in records.iter().enumerate() {
+            if record.len() != expected_len {
+                return Err(format!("Record {} has inconsistent field count", idx + 1).into());
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn extract_column(&self, records: &[Vec<String>], column_index: usize) -> Result<Vec<String>, Box<dyn Error>> {
+        if column_index >= records[0].len() {
+            return Err("Column index out of bounds".into());
+        }
+
+        let column_data: Vec<String> = records
+            .iter()
+            .map(|record| record[column_index].clone())
+            .collect();
+
+        Ok(column_data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_process_valid_csv() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "John,25,New York").unwrap();
+        writeln!(temp_file, "Alice,30,London").unwrap();
+
+        let processor = DataProcessor::new(',', true);
+        let result = processor.process_file(temp_file.path());
+        
+        assert!(result.is_ok());
+        let records = result.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0], vec!["John", "25", "New York"]);
+    }
+
+    #[test]
+    fn test_empty_field_detection() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "John,25,").unwrap();
+
+        let processor = DataProcessor::new(',', false);
+        let result = processor.process_file(temp_file.path());
+        
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_column() {
+        let records = vec![
+            vec!["A".to_string(), "B".to_string(), "C".to_string()],
+            vec!["D".to_string(), "E".to_string(), "F".to_string()],
+        ];
+        
+        let processor = DataProcessor::new(',', false);
+        let column = processor.extract_column(&records, 1).unwrap();
+        
+        assert_eq!(column, vec!["B", "E"]);
+    }
+}
