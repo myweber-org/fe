@@ -80,4 +80,64 @@ pub fn validate_csv_format(content: &str) -> bool {
 
     let column_count = lines[0].split(',').count();
     lines.iter().all(|line| line.split(',').count() == column_count)
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
+use csv::{ReaderBuilder, WriterBuilder};
+
+pub fn filter_csv(input_path: &str, output_path: &str, column_filter: &str) -> Result<(), Box<dyn Error>> {
+    let file = File::open(input_path)?;
+    let reader = BufReader::new(file);
+    let mut csv_reader = ReaderBuilder::new().has_headers(true).from_reader(reader);
+    
+    let output_file = File::create(output_path)?;
+    let writer = BufWriter::new(output_file);
+    let mut csv_writer = WriterBuilder::new().from_writer(writer);
+    
+    let headers = csv_reader.headers()?.clone();
+    csv_writer.write_record(&headers)?;
+    
+    let column_index = headers.iter()
+        .position(|h| h == column_filter)
+        .ok_or_else(|| format!("Column '{}' not found", column_filter))?;
+    
+    for result in csv_reader.records() {
+        let record = result?;
+        if let Some(field) = record.get(column_index) {
+            if !field.trim().is_empty() && field != "null" && field != "NULL" {
+                csv_writer.write_record(&record)?;
+            }
+        }
+    }
+    
+    csv_writer.flush()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_filter_csv() {
+        let mut input_file = NamedTempFile::new().unwrap();
+        writeln!(input_file, "name,age,city\nJohn,25,NYC\nJane,,London\nBob,30,").unwrap();
+        
+        let output_file = NamedTempFile::new().unwrap();
+        
+        let result = filter_csv(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap(),
+            "age"
+        );
+        
+        assert!(result.is_ok());
+        
+        let output_content = std::fs::read_to_string(output_file.path()).unwrap();
+        assert!(output_content.contains("John,25,NYC"));
+        assert!(output_content.contains("Bob,30,"));
+        assert!(!output_content.contains("Jane,,London"));
+    }
 }
