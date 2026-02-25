@@ -311,3 +311,113 @@ mod tests {
         assert_eq!(result, expected);
     }
 }
+use serde_json::{Value, Map};
+use std::collections::HashSet;
+
+pub enum MergeStrategy {
+    PreferFirst,
+    PreferSecond,
+    CombineArrays,
+    FailOnConflict,
+}
+
+pub fn merge_json(a: &Value, b: &Value, strategy: &MergeStrategy) -> Result<Value, String> {
+    match (a, b) {
+        (Value::Object(map_a), Value::Object(map_b)) => merge_objects(map_a, map_b, strategy),
+        (Value::Array(arr_a), Value::Array(arr_b)) => merge_arrays(arr_a, arr_b, strategy),
+        _ => {
+            if a == b {
+                Ok(a.clone())
+            } else {
+                handle_value_conflict(a, b, strategy)
+            }
+        }
+    }
+}
+
+fn merge_objects(
+    a: &Map<String, Value>,
+    b: &Map<String, Value>,
+    strategy: &MergeStrategy,
+) -> Result<Value, String> {
+    let mut result = Map::new();
+    let keys_a: HashSet<_> = a.keys().collect();
+    let keys_b: HashSet<_> = b.keys().collect();
+    
+    for key in keys_a.union(&keys_b) {
+        let key_str = (*key).clone();
+        match (a.get(&key_str), b.get(&key_str)) {
+            (Some(val_a), Some(val_b)) => {
+                let merged = merge_json(val_a, val_b, strategy)?;
+                result.insert(key_str, merged);
+            }
+            (Some(val), None) | (None, Some(val)) => {
+                result.insert(key_str, val.clone());
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+    
+    Ok(Value::Object(result))
+}
+
+fn merge_arrays(
+    a: &[Value],
+    b: &[Value],
+    strategy: &MergeStrategy,
+) -> Result<Value, String> {
+    match strategy {
+        MergeStrategy::CombineArrays => {
+            let mut combined = Vec::with_capacity(a.len() + b.len());
+            combined.extend_from_slice(a);
+            combined.extend_from_slice(b);
+            Ok(Value::Array(combined))
+        }
+        _ => {
+            if a == b {
+                Ok(Value::Array(a.to_vec()))
+            } else {
+                handle_value_conflict(&Value::Array(a.to_vec()), &Value::Array(b.to_vec()), strategy)
+            }
+        }
+    }
+}
+
+fn handle_value_conflict(a: &Value, b: &Value, strategy: &MergeStrategy) -> Result<Value, String> {
+    match strategy {
+        MergeStrategy::PreferFirst => Ok(a.clone()),
+        MergeStrategy::PreferSecond => Ok(b.clone()),
+        MergeStrategy::FailOnConflict => Err(format!("Conflict between values: {} and {}", a, b)),
+        MergeStrategy::CombineArrays => {
+            if let (Value::Array(arr_a), Value::Array(arr_b)) = (a, b) {
+                merge_arrays(arr_a, arr_b, strategy)
+            } else {
+                Err("Cannot combine non-array values".to_string())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_merge_objects_prefer_first() {
+        let a = json!({"x": 1, "y": 2});
+        let b = json!({"x": 3, "z": 4});
+        let result = merge_json(&a, &b, &MergeStrategy::PreferFirst).unwrap();
+        assert_eq!(result["x"], 1);
+        assert_eq!(result["y"], 2);
+        assert_eq!(result["z"], 4);
+    }
+
+    #[test]
+    fn test_merge_arrays_combine() {
+        let a = json!([1, 2]);
+        let b = json!([3, 4]);
+        let result = merge_json(&a, &b, &MergeStrategy::CombineArrays).unwrap();
+        assert_eq!(result, json!([1, 2, 3, 4]));
+    }
+}
