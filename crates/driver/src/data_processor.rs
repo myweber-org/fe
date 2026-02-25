@@ -438,3 +438,154 @@ mod tests {
         assert_eq!(column, vec!["b".to_string(), "e".to_string()]);
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    data: HashMap<String, Vec<f64>>,
+    validation_rules: ValidationRules,
+}
+
+pub struct ValidationRules {
+    min_value: f64,
+    max_value: f64,
+    required_keys: Vec<String>,
+}
+
+impl DataProcessor {
+    pub fn new(rules: ValidationRules) -> Self {
+        DataProcessor {
+            data: HashMap::new(),
+            validation_rules: rules,
+        }
+    }
+
+    pub fn add_dataset(&mut self, key: String, values: Vec<f64>) -> Result<(), String> {
+        if key.is_empty() {
+            return Err("Dataset key cannot be empty".to_string());
+        }
+
+        for &value in &values {
+            if value < self.validation_rules.min_value || value > self.validation_rules.max_value {
+                return Err(format!("Value {} is outside allowed range [{}, {}]", 
+                    value, self.validation_rules.min_value, self.validation_rules.max_value));
+            }
+        }
+
+        self.data.insert(key, values);
+        Ok(())
+    }
+
+    pub fn validate_all(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        for required_key in &self.validation_rules.required_keys {
+            if !self.data.contains_key(required_key) {
+                errors.push(format!("Missing required dataset: {}", required_key));
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    pub fn calculate_statistics(&self, key: &str) -> Option<Statistics> {
+        self.data.get(key).map(|values| {
+            let sum: f64 = values.iter().sum();
+            let count = values.len() as f64;
+            let mean = sum / count;
+
+            let variance: f64 = values.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / count;
+
+            Statistics {
+                mean,
+                variance,
+                count: values.len(),
+                min: *values.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&0.0),
+                max: *values.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&0.0),
+            }
+        })
+    }
+
+    pub fn normalize_data(&mut self, key: &str) -> Result<(), String> {
+        if let Some(values) = self.data.get_mut(key) {
+            if let Some(stats) = self.calculate_statistics(key) {
+                if stats.variance == 0.0 {
+                    return Err("Cannot normalize data with zero variance".to_string());
+                }
+
+                for value in values.iter_mut() {
+                    *value = (*value - stats.mean) / stats.variance.sqrt();
+                }
+                Ok(())
+            } else {
+                Err("Cannot calculate statistics for normalization".to_string())
+            }
+        } else {
+            Err(format!("Dataset '{}' not found", key))
+        }
+    }
+}
+
+pub struct Statistics {
+    pub mean: f64,
+    pub variance: f64,
+    pub count: usize,
+    pub min: f64,
+    pub max: f64,
+}
+
+impl ValidationRules {
+    pub fn new(min_value: f64, max_value: f64, required_keys: Vec<String>) -> Self {
+        ValidationRules {
+            min_value,
+            max_value,
+            required_keys,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processor() {
+        let rules = ValidationRules::new(
+            0.0,
+            100.0,
+            vec!["temperature".to_string(), "humidity".to_string()]
+        );
+
+        let mut processor = DataProcessor::new(rules);
+
+        assert!(processor.add_dataset("temperature".to_string(), vec![20.0, 25.0, 30.0]).is_ok());
+        assert!(processor.add_dataset("humidity".to_string(), vec![40.0, 50.0, 60.0]).is_ok());
+
+        let validation_result = processor.validate_all();
+        assert!(validation_result.is_ok());
+
+        let stats = processor.calculate_statistics("temperature").unwrap();
+        assert_eq!(stats.mean, 25.0);
+        assert_eq!(stats.count, 3);
+
+        assert!(processor.normalize_data("temperature").is_ok());
+    }
+
+    #[test]
+    fn test_validation_error() {
+        let rules = ValidationRules::new(
+            0.0,
+            100.0,
+            vec!["required_data".to_string()]
+        );
+
+        let processor = DataProcessor::new(rules);
+        let result = processor.validate_all();
+        assert!(result.is_err());
+    }
+}
