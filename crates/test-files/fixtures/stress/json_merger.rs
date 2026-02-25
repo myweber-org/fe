@@ -158,4 +158,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Successfully merged {} JSON files into {}", input_files.len(), output_path);
 
     Ok(())
+}use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
+use std::path::Path;
+
+pub fn merge_json_files(file_paths: &[&str], output_path: &str) -> Result<(), String> {
+    let mut merged_array = Vec::new();
+
+    for file_path in file_paths {
+        let path = Path::new(file_path);
+        if !path.exists() {
+            return Err(format!("File not found: {}", file_path));
+        }
+
+        let file = File::open(path).map_err(|e| e.to_string())?;
+        let mut reader = BufReader::new(file);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents).map_err(|e| e.to_string())?;
+
+        let json_value: serde_json::Value =
+            serde_json::from_str(&contents).map_err(|e| e.to_string())?;
+
+        merged_array.push(json_value);
+    }
+
+    let output_file = File::create(output_path).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(output_file, &merged_array).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+pub fn merge_json_with_key(file_paths: &[&str], key: &str, output_path: &str) -> Result<(), String> {
+    let mut merged_map = HashMap::new();
+
+    for file_path in file_paths {
+        let path = Path::new(file_path);
+        if !path.exists() {
+            return Err(format!("File not found: {}", file_path));
+        }
+
+        let contents = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let json_value: serde_json::Value =
+            serde_json::from_str(&contents).map_err(|e| e.to_string())?;
+
+        if let Some(obj) = json_value.as_object() {
+            if let Some(key_value) = obj.get(key) {
+                if let Some(key_str) = key_value.as_str() {
+                    merged_map.insert(key_str.to_string(), json_value.clone());
+                }
+            }
+        }
+    }
+
+    let output_file = File::create(output_path).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(output_file, &merged_map).map_err(|e| e.to_string())?;
+
+    Ok(())
 }
