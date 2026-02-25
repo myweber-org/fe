@@ -402,4 +402,117 @@ mod tests {
         let decrypted_content = fs::read(decrypted_path).unwrap();
         assert_eq!(original_content, decrypted_content.as_slice());
     }
+}use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use argon2::{
+    password_hash::{rand_core::OsRng as ArgonRng, PasswordHasher, SaltString},
+    Argon2,
+};
+use std::fs;
+use std::io::{self, Read, Write};
+
+const NONCE_SIZE: usize = 12;
+const SALT_SIZE: usize = 16;
+
+pub struct FileEncryptor {
+    cipher: Aes256Gcm,
+}
+
+impl FileEncryptor {
+    pub fn from_password(password: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let salt = SaltString::generate(&mut ArgonRng);
+        let argon2 = Argon2::default();
+        let password_hash = argon2.hash_password(password.as_bytes(), &salt)?;
+        
+        let key_bytes = password_hash.hash.ok_or("Hash generation failed")?;
+        let key = Key::<Aes256Gcm>::from_slice(key_bytes.as_bytes());
+        let cipher = Aes256Gcm::new(key);
+        
+        Ok(Self { cipher })
+    }
+
+    pub fn encrypt_file(
+        &self,
+        input_path: &str,
+        output_path: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut file = fs::File::open(input_path)?;
+        let mut plaintext = Vec::new();
+        file.read_to_end(&mut plaintext)?;
+
+        let nonce = Nonce::generate(&mut OsRng);
+        let ciphertext = self.cipher.encrypt(&nonce, plaintext.as_ref())?;
+
+        let mut output = fs::File::create(output_path)?;
+        output.write_all(&nonce)?;
+        output.write_all(&ciphertext)?;
+
+        Ok(())
+    }
+
+    pub fn decrypt_file(
+        &self,
+        input_path: &str,
+        output_path: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut file = fs::File::open(input_path)?;
+        let mut encrypted_data = Vec::new();
+        file.read_to_end(&mut encrypted_data)?;
+
+        if encrypted_data.len() < NONCE_SIZE {
+            return Err("File too short to contain nonce".into());
+        }
+
+        let (nonce_bytes, ciphertext) = encrypted_data.split_at(NONCE_SIZE);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        let plaintext = self.cipher.decrypt(nonce, ciphertext)?;
+
+        let mut output = fs::File::create(output_path)?;
+        output.write_all(&plaintext)?;
+
+        Ok(())
+    }
+}
+
+pub fn process_encryption() -> Result<(), Box<dyn std::error::Error>> {
+    let password = "secure_password_123";
+    let encryptor = FileEncryptor::from_password(password)?;
+
+    let test_data = b"Confidential data: Operation Midnight";
+    let test_file = "test_plain.txt";
+    let encrypted_file = "test_encrypted.bin";
+    let decrypted_file = "test_decrypted.txt";
+
+    fs::write(test_file, test_data)?;
+    println!("Original file created: {}", test_file);
+
+    encryptor.encrypt_file(test_file, encrypted_file)?;
+    println!("File encrypted: {}", encrypted_file);
+
+    encryptor.decrypt_file(encrypted_file, decrypted_file)?;
+    println!("File decrypted: {}", decrypted_file);
+
+    let restored_data = fs::read(decrypted_file)?;
+    assert_eq!(test_data.as_slice(), &restored_data);
+    println!("Data integrity verified successfully");
+
+    fs::remove_file(test_file)?;
+    fs::remove_file(encrypted_file)?;
+    fs::remove_file(decrypted_file)?;
+    println!("Test files cleaned up");
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encryption_cycle() {
+        let result = process_encryption();
+        assert!(result.is_ok());
+    }
 }
