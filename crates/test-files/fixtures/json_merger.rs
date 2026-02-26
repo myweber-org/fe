@@ -138,3 +138,64 @@ mod tests {
         assert_eq!(parsed["d"], 4);
     }
 }
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, Write};
+use serde_json::{Value, Map};
+
+pub fn merge_json_files(file_paths: &[String], output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged_map: Map<String, Value> = Map::new();
+
+    for file_path in file_paths {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let json_value: Value = serde_json::from_reader(reader)?;
+
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                merged_map.insert(key, value);
+            }
+        } else {
+            return Err("Each JSON file must contain a JSON object".into());
+        }
+    }
+
+    let output_file = File::create(output_path)?;
+    serde_json::to_writer_pretty(output_file, &merged_map)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_json_files() {
+        let json1 = r#"{"name": "Alice", "age": 30}"#;
+        let json2 = r#"{"city": "London", "active": true}"#;
+
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
+        file1.write_all(json1.as_bytes()).unwrap();
+        file2.write_all(json2.as_bytes()).unwrap();
+
+        let output_file = NamedTempFile::new().unwrap();
+        let output_path = output_file.path().to_str().unwrap().to_string();
+
+        let input_paths = vec![
+            file1.path().to_str().unwrap().to_string(),
+            file2.path().to_str().unwrap().to_string(),
+        ];
+
+        let result = merge_json_files(&input_paths, &output_path);
+        assert!(result.is_ok());
+
+        let merged_content = std::fs::read_to_string(output_path).unwrap();
+        let parsed: Value = serde_json::from_str(&merged_content).unwrap();
+        assert_eq!(parsed["name"], "Alice");
+        assert_eq!(parsed["city"], "London");
+        assert_eq!(parsed["active"], true);
+    }
+}
