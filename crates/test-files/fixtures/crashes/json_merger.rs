@@ -1,65 +1,59 @@
-use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufReader, Result};
+use std::io::{self, BufReader};
 use std::path::Path;
 
-pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], output_path: P) -> Result<()> {
-    let mut merged_array = Vec::new();
+use serde_json::{Map, Value};
+
+pub fn merge_json_files<P: AsRef<Path>>(paths: &[P]) -> io::Result<Value> {
+    let mut merged_map = Map::new();
 
     for path in paths {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-        let json_value: Value = serde_json::from_reader(reader)?;
-        merged_array.push(json_value);
-    }
-
-    let output_file = File::create(output_path)?;
-    serde_json::to_writer_pretty(output_file, &json!(merged_array))?;
-    Ok(())
-}
-
-pub fn merge_json_files_in_directory<P: AsRef<Path>>(dir_path: P, output_path: P) -> Result<()> {
-    let mut json_paths = Vec::new();
-
-    for entry in fs::read_dir(dir_path)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
-            json_paths.push(path);
-        }
-    }
-
-    merge_json_files(&json_paths, output_path)
-}use serde_json::{Map, Value};
-use std::fs;
-use std::path::Path;
-
-pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
-    let mut merged_map = Map::new();
-
-    for path_str in file_paths {
-        let path = Path::new(path_str);
-        if !path.exists() {
-            eprintln!("Warning: File {} not found, skipping.", path_str);
-            continue;
-        }
-
-        let content = fs::read_to_string(path)?;
-        let json_value: Value = serde_json::from_str(&content)?;
+        let json_value: Value = serde_json::from_reader(reader)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         if let Value::Object(map) = json_value {
             for (key, value) in map {
-                if merged_map.contains_key(&key) {
-                    eprintln!("Warning: Key '{}' already exists, overwriting.", key);
-                }
                 merged_map.insert(key, value);
             }
         } else {
-            return Err("Top-level JSON value is not an object".into());
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JSON root must be an object",
+            ));
         }
     }
 
     Ok(Value::Object(merged_map))
+}
+
+pub fn merge_json_directories<P: AsRef<Path>>(dir_paths: &[P]) -> io::Result<HashMap<String, Value>> {
+    let mut result = HashMap::new();
+
+    for dir_path in dir_paths {
+        let entries = fs::read_dir(dir_path)?;
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                let file_stem = path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                let file = File::open(&path)?;
+                let reader = BufReader::new(file);
+                let json_value: Value = serde_json::from_reader(reader)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+                result.insert(file_stem, json_value);
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -73,68 +67,28 @@ mod tests {
         let mut file1 = NamedTempFile::new().unwrap();
         let mut file2 = NamedTempFile::new().unwrap();
 
-        writeln!(file1, r#"{"name": "Alice", "age": 30}"#).unwrap();
-        writeln!(file2, r#"{"city": "Berlin", "active": true}"#).unwrap();
+        writeln!(file1, r#"{"a": 1, "b": "test"}"#).unwrap();
+        writeln!(file2, r#"{"c": true, "d": [1,2,3]}"#).unwrap();
 
-        let paths = [
-            file1.path().to_str().unwrap(),
-            file2.path().to_str().unwrap(),
-        ];
-
+        let paths = [file1.path(), file2.path()];
         let result = merge_json_files(&paths).unwrap();
-        let obj = result.as_object().unwrap();
 
-        assert_eq!(obj.get("name").unwrap(), "Alice");
-        assert_eq!(obj.get("age").unwrap(), 30);
-        assert_eq!(obj.get("city").unwrap(), "Berlin");
-        assert_eq!(obj.get("active").unwrap(), true);
+        assert_eq!(result["a"], 1);
+        assert_eq!(result["b"], "test");
+        assert_eq!(result["c"], true);
+        assert_eq!(result["d"][0], 1);
     }
 
     #[test]
-    fn test_merge_with_overwrite() {
-        let mut file1 = NamedTempFile::new().unwrap();
-        let mut file2 = NamedTempFile::new().unwrap();
+    fn test_merge_json_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("config.json");
+        let mut file = File::create(&file_path).unwrap();
+        writeln!(file, r#"{"port": 8080}"#).unwrap();
 
-        writeln!(file1, r#"{"id": 1, "value": "old"}"#).unwrap();
-        writeln!(file2, r#"{"id": 2, "value": "new"}"#).unwrap();
+        let dirs = [dir.path()];
+        let result = merge_json_directories(&dirs).unwrap();
 
-        let paths = [
-            file1.path().to_str().unwrap(),
-            file2.path().to_str().unwrap(),
-        ];
-
-        let result = merge_json_files(&paths).unwrap();
-        let obj = result.as_object().unwrap();
-
-        assert_eq!(obj.get("id").unwrap(), 2);
-        assert_eq!(obj.get("value").unwrap(), "new");
+        assert_eq!(result["config"]["port"], 8080);
     }
-}use serde_json::{Map, Value};
-use std::fs::File;
-use std::io::{BufReader, Write};
-use std::path::Path;
-
-pub fn merge_json_files(input_paths: &[&str], output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut merged_map = Map::new();
-
-    for path_str in input_paths {
-        let path = Path::new(path_str);
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let json_value: Value = serde_json::from_reader(reader)?;
-
-        if let Value::Object(map) = json_value {
-            for (key, value) in map {
-                merged_map.insert(key, value);
-            }
-        } else {
-            return Err("Each input file must contain a JSON object".into());
-        }
-    }
-
-    let merged_value = Value::Object(merged_map);
-    let mut output_file = File::create(output_path)?;
-    write!(output_file, "{}", serde_json::to_string_pretty(&merged_value)?)?;
-
-    Ok(())
 }
