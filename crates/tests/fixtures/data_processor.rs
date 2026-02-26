@@ -525,3 +525,144 @@ mod tests {
         assert_eq!(processed[0].value, 150.0);
     }
 }
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub timestamp: i64,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidValue(f64),
+    InvalidTimestamp(i64),
+    DuplicateId(u32),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidValue(v) => write!(f, "Invalid value: {}", v),
+            ProcessingError::InvalidTimestamp(t) => write!(f, "Invalid timestamp: {}", t),
+            ProcessingError::DuplicateId(id) => write!(f, "Duplicate ID found: {}", id),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    processed_ids: Vec<u32>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            processed_ids: Vec::new(),
+        }
+    }
+
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if !record.value.is_finite() || record.value < 0.0 {
+            return Err(ProcessingError::InvalidValue(record.value));
+        }
+
+        if record.timestamp < 0 {
+            return Err(ProcessingError::InvalidTimestamp(record.timestamp));
+        }
+
+        if self.processed_ids.contains(&record.id) {
+            return Err(ProcessingError::DuplicateId(record.id));
+        }
+
+        Ok(())
+    }
+
+    pub fn process_record(&mut self, record: DataRecord) -> Result<DataRecord, ProcessingError> {
+        self.validate_record(&record)?;
+        
+        self.processed_ids.push(record.id);
+        
+        let processed_value = if record.value > 100.0 {
+            record.value * 0.9
+        } else {
+            record.value * 1.1
+        };
+
+        Ok(DataRecord {
+            id: record.id,
+            value: processed_value,
+            timestamp: record.timestamp,
+        })
+    }
+
+    pub fn process_batch(&mut self, records: Vec<DataRecord>) -> Vec<Result<DataRecord, ProcessingError>> {
+        records
+            .into_iter()
+            .map(|record| self.process_record(record))
+            .collect()
+    }
+
+    pub fn get_processed_count(&self) -> usize {
+        self.processed_ids.len()
+    }
+
+    pub fn clear_processed(&mut self) {
+        self.processed_ids.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record_processing() {
+        let mut processor = DataProcessor::new();
+        let record = DataRecord {
+            id: 1,
+            value: 50.0,
+            timestamp: 1625097600,
+        };
+
+        let result = processor.process_record(record);
+        assert!(result.is_ok());
+        assert_eq!(processor.get_processed_count(), 1);
+    }
+
+    #[test]
+    fn test_invalid_value() {
+        let processor = DataProcessor::new();
+        let record = DataRecord {
+            id: 1,
+            value: -10.0,
+            timestamp: 1625097600,
+        };
+
+        let result = processor.validate_record(&record);
+        assert!(matches!(result, Err(ProcessingError::InvalidValue(_))));
+    }
+
+    #[test]
+    fn test_duplicate_id() {
+        let mut processor = DataProcessor::new();
+        let record1 = DataRecord {
+            id: 1,
+            value: 50.0,
+            timestamp: 1625097600,
+        };
+
+        let record2 = DataRecord {
+            id: 1,
+            value: 60.0,
+            timestamp: 1625097601,
+        };
+
+        let _ = processor.process_record(record1);
+        let result = processor.process_record(record2);
+        assert!(matches!(result, Err(ProcessingError::DuplicateId(1))));
+    }
+}
