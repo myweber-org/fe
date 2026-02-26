@@ -328,4 +328,64 @@ mod tests {
         assert_eq!(processor.total_value(), 60.0);
         assert_eq!(processor.get_record(1).unwrap().value, 20.0);
     }
+}use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
+}
+
+pub fn process_data_file(input_path: &str, output_path: &str, filter_category: &str) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let mut reader = Reader::from_reader(input_file);
+    
+    let mut filtered_records = Vec::new();
+    
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.category == filter_category && record.value > 50.0 {
+            filtered_records.push(record);
+        }
+    }
+    
+    filtered_records.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap());
+    
+    let output_file = File::create(output_path)?;
+    let mut writer = csv::Writer::from_writer(output_file);
+    
+    for record in filtered_records {
+        writer.serialize(record)?;
+    }
+    
+    writer.flush()?;
+    
+    println!("Processed {} records matching category '{}'", filtered_records.len(), filter_category);
+    Ok(())
+}
+
+pub fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
+    if records.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+    
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let count = records.len() as f64;
+    let mean = sum / count;
+    
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let max = records.iter()
+        .map(|r| r.value)
+        .fold(f64::NEG_INFINITY, f64::max);
+    
+    (mean, variance.sqrt(), max)
 }
