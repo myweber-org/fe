@@ -817,3 +817,202 @@ mod tests {
         assert_eq!(column, vec!["b".to_string(), "e".to_string()]);
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    data: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+pub struct ValidationRule {
+    field_name: String,
+    min_value: f64,
+    max_value: f64,
+    required: bool,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            data: HashMap::new(),
+            validation_rules: Vec::new(),
+        }
+    }
+
+    pub fn add_dataset(&mut self, name: String, values: Vec<f64>) -> Result<(), String> {
+        if name.is_empty() {
+            return Err("Dataset name cannot be empty".to_string());
+        }
+        
+        if values.is_empty() {
+            return Err("Dataset values cannot be empty".to_string());
+        }
+
+        self.data.insert(name, values);
+        Ok(())
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn validate_all(&self) -> Vec<ValidationResult> {
+        let mut results = Vec::new();
+        
+        for rule in &self.validation_rules {
+            if let Some(data_values) = self.data.get(&rule.field_name) {
+                let validation_result = self.validate_dataset(&rule, data_values);
+                results.push(validation_result);
+            } else if rule.required {
+                results.push(ValidationResult {
+                    field_name: rule.field_name.clone(),
+                    passed: false,
+                    message: "Required field not found".to_string(),
+                });
+            }
+        }
+        
+        results
+    }
+
+    fn validate_dataset(&self, rule: &ValidationRule, data: &[f64]) -> ValidationResult {
+        let mut passed = true;
+        let mut message = String::new();
+        
+        for (index, &value) in data.iter().enumerate() {
+            if value < rule.min_value || value > rule.max_value {
+                passed = false;
+                message = format!("Value {} at index {} is out of range [{}, {}]", 
+                                value, index, rule.min_value, rule.max_value);
+                break;
+            }
+        }
+        
+        if passed {
+            message = "All values are within valid range".to_string();
+        }
+        
+        ValidationResult {
+            field_name: rule.field_name.clone(),
+            passed,
+            message,
+        }
+    }
+
+    pub fn calculate_statistics(&self, dataset_name: &str) -> Option<Statistics> {
+        self.data.get(dataset_name).map(|values| {
+            let count = values.len();
+            let sum: f64 = values.iter().sum();
+            let mean = sum / count as f64;
+            
+            let variance: f64 = values.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / count as f64;
+            
+            let std_dev = variance.sqrt();
+            
+            let mut sorted_values = values.clone();
+            sorted_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            
+            let median = if count % 2 == 0 {
+                (sorted_values[count/2 - 1] + sorted_values[count/2]) / 2.0
+            } else {
+                sorted_values[count/2]
+            };
+            
+            Statistics {
+                count,
+                mean,
+                median,
+                std_dev,
+                min: *sorted_values.first().unwrap_or(&0.0),
+                max: *sorted_values.last().unwrap_or(&0.0),
+            }
+        })
+    }
+
+    pub fn normalize_data(&mut self, dataset_name: &str) -> Result<Vec<f64>, String> {
+        if let Some(values) = self.data.get_mut(dataset_name) {
+            if values.is_empty() {
+                return Err("Cannot normalize empty dataset".to_string());
+            }
+            
+            let stats = self.calculate_statistics(dataset_name).unwrap();
+            
+            if stats.std_dev == 0.0 {
+                return Err("Cannot normalize dataset with zero standard deviation".to_string());
+            }
+            
+            let normalized: Vec<f64> = values.iter()
+                .map(|&x| (x - stats.mean) / stats.std_dev)
+                .collect();
+            
+            *values = normalized.clone();
+            Ok(normalized)
+        } else {
+            Err(format!("Dataset '{}' not found", dataset_name))
+        }
+    }
+}
+
+pub struct ValidationResult {
+    field_name: String,
+    passed: bool,
+    message: String,
+}
+
+pub struct Statistics {
+    count: usize,
+    mean: f64,
+    median: f64,
+    std_dev: f64,
+    min: f64,
+    max: f64,
+}
+
+impl ValidationRule {
+    pub fn new(field_name: String, min_value: f64, max_value: f64, required: bool) -> Self {
+        ValidationRule {
+            field_name,
+            min_value,
+            max_value,
+            required,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_dataset() {
+        let mut processor = DataProcessor::new();
+        let result = processor.add_dataset("test_data".to_string(), vec![1.0, 2.0, 3.0]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validation() {
+        let mut processor = DataProcessor::new();
+        processor.add_dataset("temperature".to_string(), vec![20.0, 25.0, 30.0]).unwrap();
+        
+        let rule = ValidationRule::new("temperature".to_string(), 15.0, 35.0, true);
+        processor.add_validation_rule(rule);
+        
+        let results = processor.validate_all();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].passed);
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let mut processor = DataProcessor::new();
+        processor.add_dataset("values".to_string(), vec![1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+        
+        let stats = processor.calculate_statistics("values").unwrap();
+        assert_eq!(stats.count, 5);
+        assert_eq!(stats.mean, 3.0);
+        assert_eq!(stats.median, 3.0);
+    }
+}
