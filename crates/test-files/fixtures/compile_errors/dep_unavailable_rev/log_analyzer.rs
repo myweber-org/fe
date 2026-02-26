@@ -86,4 +86,124 @@ mod tests {
         let errors = analyzer.filter_by_level("ERROR");
         assert_eq!(errors.len(), 1);
     }
+}use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use chrono::{DateTime, Utc};
+use regex::Regex;
+
+#[derive(Debug)]
+pub struct LogEntry {
+    timestamp: DateTime<Utc>,
+    level: String,
+    component: String,
+    message: String,
+}
+
+pub struct LogAnalyzer {
+    entries: Vec<LogEntry>,
+    error_count: usize,
+    warning_count: usize,
+}
+
+impl LogAnalyzer {
+    pub fn new() -> Self {
+        LogAnalyzer {
+            entries: Vec::new(),
+            error_count: 0,
+            warning_count: 0,
+        }
+    }
+
+    pub fn load_from_file(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let log_pattern = Regex::new(r"\[(?P<timestamp>[\d\-:T.]+Z)\] \[(?P<level>\w+)\] \[(?P<component>[\w\.]+)\]: (?P<message>.+)")?;
+
+        for line in reader.lines() {
+            let line = line?;
+            if let Some(captures) = log_pattern.captures(&line) {
+                let timestamp_str = captures.name("timestamp").unwrap().as_str();
+                let timestamp = DateTime::parse_from_rfc3339(timestamp_str)?.with_timezone(&Utc);
+                let level = captures.name("level").unwrap().as_str().to_string();
+                let component = captures.name("component").unwrap().as_str().to_string();
+                let message = captures.name("message").unwrap().as_str().to_string();
+
+                match level.as_str() {
+                    "ERROR" => self.error_count += 1,
+                    "WARNING" => self.warning_count += 1,
+                    _ => {}
+                }
+
+                self.entries.push(LogEntry {
+                    timestamp,
+                    level,
+                    component,
+                    message,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn filter_by_level(&self, level: &str) -> Vec<&LogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.level == level)
+            .collect()
+    }
+
+    pub fn get_component_stats(&self) -> HashMap<String, usize> {
+        let mut stats = HashMap::new();
+        for entry in &self.entries {
+            *stats.entry(entry.component.clone()).or_insert(0) += 1;
+        }
+        stats
+    }
+
+    pub fn get_error_count(&self) -> usize {
+        self.error_count
+    }
+
+    pub fn get_warning_count(&self) -> usize {
+        self.warning_count
+    }
+
+    pub fn get_total_entries(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_log_analysis() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let log_data = "[2023-10-05T14:30:00Z] [INFO] [app.core]: Application started\n\
+                       [2023-10-05T14:31:00Z] [WARNING] [app.network]: Connection timeout\n\
+                       [2023-10-05T14:32:00Z] [ERROR] [app.database]: Failed to connect to database\n";
+        
+        write!(temp_file, "{}", log_data).unwrap();
+        
+        let mut analyzer = LogAnalyzer::new();
+        analyzer.load_from_file(temp_file.path().to_str().unwrap()).unwrap();
+        
+        assert_eq!(analyzer.get_total_entries(), 3);
+        assert_eq!(analyzer.get_error_count(), 1);
+        assert_eq!(analyzer.get_warning_count(), 1);
+        
+        let errors = analyzer.filter_by_level("ERROR");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].component, "app.database");
+        
+        let stats = analyzer.get_component_stats();
+        assert_eq!(stats.get("app.core"), Some(&1));
+        assert_eq!(stats.get("app.network"), Some(&1));
+        assert_eq!(stats.get("app.database"), Some(&1));
+    }
 }
