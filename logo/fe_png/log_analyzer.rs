@@ -92,4 +92,147 @@ mod tests {
         assert_eq!(stats.get("warnings").unwrap(), &1);
         assert_eq!(stats.get("info_messages").unwrap(), &2);
     }
+}use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub struct LogEntry {
+    timestamp: String,
+    level: String,
+    component: String,
+    message: String,
+}
+
+#[derive(Debug)]
+pub struct LogStats {
+    total_entries: usize,
+    level_counts: HashMap<String, usize>,
+    component_counts: HashMap<String, usize>,
+    error_messages: Vec<String>,
+}
+
+pub struct LogAnalyzer {
+    entries: Vec<LogEntry>,
+}
+
+impl LogAnalyzer {
+    pub fn new() -> Self {
+        LogAnalyzer {
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<(), std::io::Error> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            if let Some(entry) = Self::parse_log_line(&line) {
+                self.entries.push(entry);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn parse_log_line(line: &str) -> Option<LogEntry> {
+        let parts: Vec<&str> = line.splitn(4, '|').collect();
+        if parts.len() == 4 {
+            Some(LogEntry {
+                timestamp: parts[0].trim().to_string(),
+                level: parts[1].trim().to_string(),
+                component: parts[2].trim().to_string(),
+                message: parts[3].trim().to_string(),
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn filter_by_level(&self, level: &str) -> Vec<&LogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.level.to_lowercase() == level.to_lowercase())
+            .collect()
+    }
+
+    pub fn filter_by_component(&self, component: &str) -> Vec<&LogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.component.to_lowercase() == component.to_lowercase())
+            .collect()
+    }
+
+    pub fn get_statistics(&self) -> LogStats {
+        let mut level_counts = HashMap::new();
+        let mut component_counts = HashMap::new();
+        let mut error_messages = Vec::new();
+
+        for entry in &self.entries {
+            *level_counts.entry(entry.level.clone()).or_insert(0) += 1;
+            *component_counts.entry(entry.component.clone()).or_insert(0) += 1;
+
+            if entry.level.to_lowercase() == "error" {
+                error_messages.push(entry.message.clone());
+            }
+        }
+
+        LogStats {
+            total_entries: self.entries.len(),
+            level_counts,
+            component_counts,
+            error_messages,
+        }
+    }
+
+    pub fn search_messages(&self, keyword: &str) -> Vec<&LogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.message.to_lowercase().contains(&keyword.to_lowercase()))
+            .collect()
+    }
+
+    pub fn get_entries(&self) -> &[LogEntry] {
+        &self.entries
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_log_line() {
+        let line = "2023-10-01 12:00:00 | INFO | Network | Connection established";
+        let entry = LogAnalyzer::parse_log_line(line).unwrap();
+
+        assert_eq!(entry.timestamp, "2023-10-01 12:00:00");
+        assert_eq!(entry.level, "INFO");
+        assert_eq!(entry.component, "Network");
+        assert_eq!(entry.message, "Connection established");
+    }
+
+    #[test]
+    fn test_filter_by_level() {
+        let mut analyzer = LogAnalyzer::new();
+        analyzer.entries.push(LogEntry {
+            timestamp: "2023-10-01 12:00:00".to_string(),
+            level: "INFO".to_string(),
+            component: "Network".to_string(),
+            message: "Test".to_string(),
+        });
+        analyzer.entries.push(LogEntry {
+            timestamp: "2023-10-01 12:01:00".to_string(),
+            level: "ERROR".to_string(),
+            component: "Database".to_string(),
+            message: "Failed".to_string(),
+        });
+
+        let info_entries = analyzer.filter_by_level("INFO");
+        assert_eq!(info_entries.len(), 1);
+        assert_eq!(info_entries[0].level, "INFO");
+    }
 }
