@@ -209,3 +209,113 @@ mod tests {
         assert_eq!(count, 2);
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+pub struct ValidationRule {
+    field_name: String,
+    min_value: f64,
+    max_value: f64,
+    required: bool,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
+            validation_rules: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn process_dataset(&mut self, dataset_name: &str, data: &[f64]) -> Result<Vec<f64>, String> {
+        if data.is_empty() {
+            return Err("Dataset cannot be empty".to_string());
+        }
+
+        self.validate_data(data)?;
+
+        let processed_data: Vec<f64> = data
+            .iter()
+            .map(|&value| self.apply_transformations(value))
+            .collect();
+
+        self.cache.insert(dataset_name.to_string(), processed_data.clone());
+
+        Ok(processed_data)
+    }
+
+    fn validate_data(&self, data: &[f64]) -> Result<(), String> {
+        for rule in &self.validation_rules {
+            if rule.required && data.is_empty() {
+                return Err(format!("Field '{}' is required but missing", rule.field_name));
+            }
+
+            for &value in data {
+                if value < rule.min_value || value > rule.max_value {
+                    return Err(format!(
+                        "Value {} for field '{}' is outside allowed range [{}, {}]",
+                        value, rule.field_name, rule.min_value, rule.max_value
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_transformations(&self, value: f64) -> f64 {
+        value.log10().abs()
+    }
+
+    pub fn get_cached_data(&self, dataset_name: &str) -> Option<&Vec<f64>> {
+        self.cache.get(dataset_name)
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn get_statistics(&self, dataset_name: &str) -> Option<DatasetStatistics> {
+        self.cache.get(dataset_name).map(|data| {
+            let sum: f64 = data.iter().sum();
+            let count = data.len() as f64;
+            let mean = sum / count;
+
+            let variance: f64 = data.iter()
+                .map(|&value| (value - mean).powi(2))
+                .sum::<f64>() / count;
+
+            DatasetStatistics {
+                count: data.len(),
+                mean,
+                variance,
+                std_dev: variance.sqrt(),
+            }
+        })
+    }
+}
+
+pub struct DatasetStatistics {
+    pub count: usize,
+    pub mean: f64,
+    pub variance: f64,
+    pub std_dev: f64,
+}
+
+impl ValidationRule {
+    pub fn new(field_name: &str, min_value: f64, max_value: f64, required: bool) -> Self {
+        ValidationRule {
+            field_name: field_name.to_string(),
+            min_value,
+            max_value,
+            required,
+        }
+    }
+}
