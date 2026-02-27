@@ -309,3 +309,71 @@ mod tests {
         assert_eq!(processor.calculate_average(), None);
     }
 }
+use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    category: String,
+    value: f64,
+    active: bool,
+}
+
+fn filter_and_aggregate(input_path: &str, output_path: &str, category_filter: &str) -> Result<(), Box<dyn Error>> {
+    let mut reader = Reader::from_path(input_path)?;
+    let mut writer = Writer::from_writer(File::create(output_path)?);
+
+    let mut total_value = 0.0;
+    let mut record_count = 0;
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.category == category_filter && record.active {
+            writer.serialize(&record)?;
+            total_value += record.value;
+            record_count += 1;
+        }
+    }
+
+    if record_count > 0 {
+        let average_value = total_value / record_count as f64;
+        println!("Processed {} records in category '{}'", record_count, category_filter);
+        println!("Average value: {:.2}", average_value);
+    } else {
+        println!("No records found matching the criteria");
+    }
+
+    writer.flush()?;
+    Ok(())
+}
+
+fn generate_sample_data() -> Result<(), Box<dyn Error>> {
+    let mut writer = Writer::from_writer(File::create("sample_data.csv")?);
+    
+    let records = vec![
+        Record { id: 1, name: "Item A".to_string(), category: "Electronics".to_string(), value: 299.99, active: true },
+        Record { id: 2, name: "Item B".to_string(), category: "Books".to_string(), value: 24.50, active: true },
+        Record { id: 3, name: "Item C".to_string(), category: "Electronics".to_string(), value: 599.99, active: false },
+        Record { id: 4, name: "Item D".to_string(), category: "Electronics".to_string(), value: 199.99, active: true },
+        Record { id: 5, name: "Item E".to_string(), category: "Clothing".to_string(), value: 49.99, active: true },
+    ];
+
+    for record in records {
+        writer.serialize(&record)?;
+    }
+
+    writer.flush()?;
+    println!("Sample data generated successfully");
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    generate_sample_data()?;
+    filter_and_aggregate("sample_data.csv", "filtered_electronics.csv", "Electronics")?;
+    Ok(())
+}
