@@ -405,3 +405,193 @@ mod tests {
         assert_eq!(stats, (10.0, 30.0, 20.0));
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
+    validation_rules: Vec<ValidationRule>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidationRule {
+    pub field_name: String,
+    pub min_value: f64,
+    pub max_value: f64,
+    pub required: bool,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
+            validation_rules: Vec::new(),
+        }
+    }
+
+    pub fn add_validation_rule(&mut self, rule: ValidationRule) {
+        self.validation_rules.push(rule);
+    }
+
+    pub fn process_data(&mut self, dataset: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, ProcessingError> {
+        if dataset.is_empty() {
+            return Err(ProcessingError::EmptyDataset);
+        }
+
+        let mut processed = Vec::with_capacity(dataset.len());
+        
+        for (index, row) in dataset.iter().enumerate() {
+            match self.validate_row(row) {
+                Ok(validated_row) => {
+                    let transformed = self.transform_row(&validated_row);
+                    processed.push(transformed);
+                    self.cache.insert(format!("row_{}", index), validated_row);
+                }
+                Err(err) => {
+                    return Err(ProcessingError::ValidationFailed {
+                        row_index: index,
+                        reason: err,
+                    });
+                }
+            }
+        }
+
+        Ok(processed)
+    }
+
+    fn validate_row(&self, row: &[f64]) -> Result<Vec<f64>, String> {
+        if row.len() != self.validation_rules.len() {
+            return Err(format!(
+                "Row length {} doesn't match validation rules count {}",
+                row.len(),
+                self.validation_rules.len()
+            ));
+        }
+
+        let mut validated = Vec::with_capacity(row.len());
+        
+        for (i, (&value, rule)) in row.iter().zip(self.validation_rules.iter()).enumerate() {
+            if rule.required && value.is_nan() {
+                return Err(format!("Field '{}' at position {} is required but contains NaN", rule.field_name, i));
+            }
+            
+            if value < rule.min_value || value > rule.max_value {
+                return Err(format!(
+                    "Field '{}' at position {} has value {} outside allowed range [{}, {}]",
+                    rule.field_name, i, value, rule.min_value, rule.max_value
+                ));
+            }
+            
+            validated.push(value);
+        }
+
+        Ok(validated)
+    }
+
+    fn transform_row(&self, row: &[f64]) -> Vec<f64> {
+        row.iter()
+            .map(|&value| {
+                if value > 0.0 {
+                    value.ln()
+                } else if value < 0.0 {
+                    value.abs().ln() * -1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    }
+
+    pub fn get_cached_row(&self, key: &str) -> Option<&Vec<f64>> {
+        self.cache.get(key)
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn statistics(&self) -> ProcessingStatistics {
+        ProcessingStatistics {
+            cache_size: self.cache.len(),
+            rule_count: self.validation_rules.len(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    EmptyDataset,
+    ValidationFailed { row_index: usize, reason: String },
+}
+
+#[derive(Debug)]
+pub struct ProcessingStatistics {
+    pub cache_size: usize,
+    pub rule_count: usize,
+}
+
+impl Default for DataProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        
+        processor.add_validation_rule(ValidationRule {
+            field_name: "temperature".to_string(),
+            min_value: -50.0,
+            max_value: 100.0,
+            required: true,
+        });
+        
+        processor.add_validation_rule(ValidationRule {
+            field_name: "pressure".to_string(),
+            min_value: 0.0,
+            max_value: 1000.0,
+            required: true,
+        });
+
+        let dataset = vec![
+            vec![25.0, 101.3],
+            vec![30.0, 102.1],
+            vec![-10.0, 99.8],
+        ];
+
+        let result = processor.process_data(&dataset);
+        assert!(result.is_ok());
+        
+        let processed = result.unwrap();
+        assert_eq!(processed.len(), 3);
+        
+        let stats = processor.statistics();
+        assert_eq!(stats.cache_size, 3);
+        assert_eq!(stats.rule_count, 2);
+    }
+
+    #[test]
+    fn test_validation_failure() {
+        let mut processor = DataProcessor::new();
+        
+        processor.add_validation_rule(ValidationRule {
+            field_name: "value".to_string(),
+            min_value: 0.0,
+            max_value: 10.0,
+            required: true,
+        });
+
+        let dataset = vec![vec![15.0]];
+        let result = processor.process_data(&dataset);
+        
+        assert!(result.is_err());
+        match result {
+            Err(ProcessingError::ValidationFailed { row_index: 0, reason: _ }) => (),
+            _ => panic!("Expected validation failure"),
+        }
+    }
+}
