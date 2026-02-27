@@ -1,56 +1,58 @@
-use csv::{ReaderBuilder, WriterBuilder};
+use csv::{Reader, Writer};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::File;
-use std::path::Path;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Record {
     id: u32,
     name: String,
-    age: u8,
-    email: String,
-}
-
-impl Record {
-    fn is_valid(&self) -> bool {
-        !self.name.trim().is_empty()
-            && self.age > 0
-            && self.email.contains('@')
-            && self.email.contains('.')
-    }
+    value: f64,
+    category: String,
 }
 
 fn clean_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
-    let input_file = File::open(Path::new(input_path))?;
-    let mut rdr = ReaderBuilder::new()
-        .has_headers(true)
-        .from_reader(input_file);
-
-    let output_file = File::create(Path::new(output_path))?;
-    let mut wtr = WriterBuilder::new()
-        .has_headers(true)
-        .from_writer(output_file);
-
-    let mut valid_count = 0;
-    let mut invalid_count = 0;
+    let file = File::open(input_path)?;
+    let mut rdr = Reader::from_reader(file);
+    let mut wtr = Writer::from_path(output_path)?;
 
     for result in rdr.deserialize() {
-        let record: Record = result?;
+        let mut record: Record = result?;
         
-        if record.is_valid() {
-            wtr.serialize(&record)?;
-            valid_count += 1;
-        } else {
-            invalid_count += 1;
+        record.name = record.name.trim().to_string();
+        record.category = record.category.to_lowercase();
+        
+        if record.value < 0.0 {
+            record.value = 0.0;
         }
+        
+        wtr.serialize(&record)?;
     }
 
     wtr.flush()?;
-    println!("Cleaning complete: {} valid, {} invalid records", valid_count, invalid_count);
     Ok(())
 }
 
+fn validate_record(record: &Record) -> bool {
+    !record.name.is_empty() && record.value.is_finite()
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    clean_csv("input.csv", "cleaned_output.csv")
+    let input = "data/raw.csv";
+    let output = "data/cleaned.csv";
+    
+    clean_csv(input, output)?;
+    
+    let file = File::open(output)?;
+    let mut rdr = Reader::from_reader(file);
+    
+    for result in rdr.deserialize() {
+        let record: Record = result?;
+        if !validate_record(&record) {
+            eprintln!("Invalid record found: {:?}", record);
+        }
+    }
+    
+    println!("Data cleaning completed successfully");
+    Ok(())
 }
