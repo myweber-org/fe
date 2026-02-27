@@ -124,3 +124,78 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     Ok(())
 }
+use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
+}
+
+pub fn clean_csv_data(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let file = File::open(input_path)?;
+    let mut rdr = Reader::from_reader(file);
+    let mut wtr = csv::Writer::from_path(output_path)?;
+
+    for result in rdr.deserialize() {
+        let record: Record = result?;
+        
+        if record.value.is_finite() && !record.name.is_empty() {
+            let cleaned_record = Record {
+                id: record.id,
+                name: record.name.trim().to_string(),
+                value: record.value.max(0.0),
+                category: record.category.to_uppercase(),
+            };
+            wtr.serialize(cleaned_record)?;
+        }
+    }
+
+    wtr.flush()?;
+    Ok(())
+}
+
+pub fn validate_record(record: &Record) -> bool {
+    record.id > 0 && 
+    !record.name.is_empty() && 
+    record.value >= 0.0 && 
+    !record.category.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_validate_record() {
+        let valid_record = Record {
+            id: 1,
+            name: "Test".to_string(),
+            value: 10.5,
+            category: "CATEGORY".to_string(),
+        };
+        assert!(validate_record(&valid_record));
+    }
+
+    #[test]
+    fn test_clean_csv_data() {
+        let input_data = "id,name,value,category\n1,test,10.5,cat";
+        let input_file = NamedTempFile::new().unwrap();
+        std::fs::write(input_file.path(), input_data).unwrap();
+        
+        let output_file = NamedTempFile::new().unwrap();
+        
+        let result = clean_csv_data(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap()
+        );
+        
+        assert!(result.is_ok());
+    }
+}
