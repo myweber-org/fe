@@ -98,4 +98,89 @@ mod tests {
             Some(&"postgres://user:secret123@localhost/db".to_string())
         );
     }
+}use std::collections::HashMap;
+use std::fs;
+use std::io;
+
+#[derive(Debug)]
+pub struct Config {
+    values: HashMap<String, String>,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        Config {
+            values: HashMap::new(),
+        }
+    }
+
+    pub fn from_file(path: &str) -> io::Result<Self> {
+        let content = fs::read_to_string(path)?;
+        let mut config = Config::new();
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            if let Some((key, value)) = trimmed.split_once('=') {
+                let key = key.trim().to_string();
+                let value = value.trim().to_string();
+                config.values.insert(key, value);
+            }
+        }
+
+        Ok(config)
+    }
+
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.values.get(key)
+    }
+
+    pub fn set(&mut self, key: &str, value: &str) {
+        self.values.insert(key.to_string(), value.to_string());
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.values.contains_key(key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_config_parsing() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "# Sample config").unwrap();
+        writeln!(temp_file, "host = localhost").unwrap();
+        writeln!(temp_file, "port = 8080").unwrap();
+        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file, "# Database settings").unwrap();
+        writeln!(temp_file, "db_name = test_db").unwrap();
+
+        let config = Config::from_file(temp_file.path().to_str().unwrap()).unwrap();
+        
+        assert_eq!(config.get("host"), Some(&"localhost".to_string()));
+        assert_eq!(config.get("port"), Some(&"8080".to_string()));
+        assert_eq!(config.get("db_name"), Some(&"test_db".to_string()));
+        assert_eq!(config.get("missing"), None);
+    }
+
+    #[test]
+    fn test_config_operations() {
+        let mut config = Config::new();
+        config.set("timeout", "30");
+        
+        assert!(config.contains_key("timeout"));
+        assert_eq!(config.get("timeout"), Some(&"30".to_string()));
+        
+        config.set("timeout", "60");
+        assert_eq!(config.get("timeout"), Some(&"60".to_string()));
+    }
 }
