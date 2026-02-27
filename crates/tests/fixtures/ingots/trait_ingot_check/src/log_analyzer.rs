@@ -80,4 +80,113 @@ mod tests {
         assert_eq!(stats.get("warnings"), Some(&1));
         assert_eq!(stats.get("errors"), Some(&1));
     }
+}use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use regex::Regex;
+
+pub struct LogAnalyzer {
+    error_patterns: HashMap<String, usize>,
+    warning_patterns: HashMap<String, usize>,
+    total_lines: usize,
+}
+
+impl LogAnalyzer {
+    pub fn new() -> Self {
+        LogAnalyzer {
+            error_patterns: HashMap::new(),
+            warning_patterns: HashMap::new(),
+            total_lines: 0,
+        }
+    }
+
+    pub fn analyze_file(&mut self, file_path: &str) -> Result<(), std::io::Error> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let error_regex = Regex::new(r"ERROR: (.+)").unwrap();
+        let warning_regex = Regex::new(r"WARNING: (.+)").unwrap();
+
+        for line in reader.lines() {
+            let line = line?;
+            self.total_lines += 1;
+
+            if let Some(caps) = error_regex.captures(&line) {
+                let error_msg = caps.get(1).unwrap().as_str().to_string();
+                *self.error_patterns.entry(error_msg).or_insert(0) += 1;
+            } else if let Some(caps) = warning_regex.captures(&line) {
+                let warning_msg = caps.get(1).unwrap().as_str().to_string();
+                *self.warning_patterns.entry(warning_msg).or_insert(0) += 1;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn generate_report(&self) -> String {
+        let mut report = String::new();
+        report.push_str(&format!("Total log lines analyzed: {}\n", self.total_lines));
+        report.push_str("\nError Summary:\n");
+        
+        if self.error_patterns.is_empty() {
+            report.push_str("No errors found\n");
+        } else {
+            for (error, count) in &self.error_patterns {
+                report.push_str(&format!("  {}: {} occurrences\n", error, count));
+            }
+        }
+
+        report.push_str("\nWarning Summary:\n");
+        if self.warning_patterns.is_empty() {
+            report.push_str("No warnings found\n");
+        } else {
+            for (warning, count) in &self.warning_patterns {
+                report.push_str(&format!("  {}: {} occurrences\n", warning, count));
+            }
+        }
+
+        report
+    }
+
+    pub fn get_top_errors(&self, limit: usize) -> Vec<(String, usize)> {
+        let mut errors: Vec<_> = self.error_patterns.iter().collect();
+        errors.sort_by(|a, b| b.1.cmp(a.1));
+        errors.iter()
+            .take(limit)
+            .map(|(msg, count)| (msg.to_string(), *count))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_log_analysis() {
+        let mut log_data = String::new();
+        log_data.push_str("INFO: Application started\n");
+        log_data.push_str("WARNING: Disk space running low\n");
+        log_data.push_str("ERROR: Database connection failed\n");
+        log_data.push_str("WARNING: Disk space running low\n");
+        log_data.push_str("ERROR: Database connection failed\n");
+        log_data.push_str("ERROR: Invalid user input\n");
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "{}", log_data).unwrap();
+
+        let mut analyzer = LogAnalyzer::new();
+        analyzer.analyze_file(temp_file.path().to_str().unwrap()).unwrap();
+
+        let report = analyzer.generate_report();
+        assert!(report.contains("Total log lines analyzed: 6"));
+        assert!(report.contains("Database connection failed: 2 occurrences"));
+        assert!(report.contains("Disk space running low: 2 occurrences"));
+
+        let top_errors = analyzer.get_top_errors(2);
+        assert_eq!(top_errors.len(), 2);
+        assert_eq!(top_errors[0].0, "Database connection failed");
+        assert_eq!(top_errors[0].1, 2);
+    }
 }
