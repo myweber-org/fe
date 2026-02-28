@@ -206,3 +206,140 @@ mod tests {
         assert!(matches!(result, Err(CsvError::InvalidHeader(_))));
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+pub struct CsvProcessor {
+    delimiter: char,
+    has_header: bool,
+}
+
+impl CsvProcessor {
+    pub fn new(delimiter: char, has_header: bool) -> Self {
+        CsvProcessor {
+            delimiter,
+            has_header,
+        }
+    }
+
+    pub fn validate_file(&self, file_path: &str) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut line_count = 0;
+        let mut column_count: Option<usize> = None;
+
+        for (index, line) in reader.lines().enumerate() {
+            let line_content = line?;
+            let columns: Vec<&str> = line_content.split(self.delimiter).collect();
+            
+            if index == 0 && self.has_header {
+                continue;
+            }
+
+            match column_count {
+                Some(expected) => {
+                    if columns.len() != expected {
+                        return Err(format!("Line {} has {} columns, expected {}", 
+                            index + 1, columns.len(), expected).into());
+                    }
+                }
+                None => {
+                    column_count = Some(columns.len());
+                }
+            }
+
+            for (col_idx, value) in columns.iter().enumerate() {
+                if value.trim().is_empty() {
+                    return Err(format!("Empty value at line {}, column {}", 
+                        index + 1, col_idx + 1).into());
+                }
+            }
+
+            line_count += 1;
+        }
+
+        if line_count == 0 {
+            return Err("File contains no data rows".into());
+        }
+
+        Ok(line_count)
+    }
+
+    pub fn transform_column(&self, file_path: &str, column_index: usize, 
+                           transform_fn: fn(&str) -> String) -> Result<Vec<String>, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut results = Vec::new();
+
+        for (index, line) in reader.lines().enumerate() {
+            let line_content = line?;
+            
+            if index == 0 && self.has_header {
+                continue;
+            }
+
+            let columns: Vec<&str> = line_content.split(self.delimiter).collect();
+            
+            if column_index >= columns.len() {
+                return Err(format!("Column index {} out of bounds for line {}", 
+                    column_index, index + 1).into());
+            }
+
+            let transformed = transform_fn(columns[column_index]);
+            results.push(transformed);
+        }
+
+        Ok(results)
+    }
+}
+
+fn uppercase_transform(value: &str) -> String {
+    value.to_uppercase()
+}
+
+fn numeric_validation(value: &str) -> String {
+    if value.parse::<f64>().is_ok() {
+        String::from("VALID_NUMERIC")
+    } else {
+        String::from("INVALID_NUMERIC")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_csv_validation() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "John,25,New York").unwrap();
+        writeln!(temp_file, "Alice,30,London").unwrap();
+        
+        let processor = CsvProcessor::new(',', true);
+        let result = processor.validate_file(temp_file.path().to_str().unwrap());
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 2);
+    }
+
+    #[test]
+    fn test_column_transformation() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age").unwrap();
+        writeln!(temp_file, "john,25").unwrap();
+        writeln!(temp_file, "alice,30").unwrap();
+        
+        let processor = CsvProcessor::new(',', true);
+        let result = processor.transform_column(
+            temp_file.path().to_str().unwrap(),
+            0,
+            uppercase_transform
+        ).unwrap();
+        
+        assert_eq!(result, vec!["JOHN", "ALICE"]);
+    }
+}
