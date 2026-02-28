@@ -595,3 +595,70 @@ mod tests {
         assert_eq!(column, vec!["y1", "y2"]);
     }
 }
+use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+pub fn process_data(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let mut reader = Reader::from_reader(input_file);
+    
+    let output_file = File::create(output_path)?;
+    let mut writer = Writer::from_writer(output_file);
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.active && record.value > 0.0 {
+            let processed_record = Record {
+                id: record.id,
+                name: record.name.to_uppercase(),
+                value: record.value * 1.1,
+                active: record.active,
+            };
+            
+            writer.serialize(processed_record)?;
+        }
+    }
+
+    writer.flush()?;
+    Ok(())
+}
+
+pub fn validate_record(record: &Record) -> bool {
+    !record.name.is_empty() && record.value.is_finite()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_record() {
+        let valid_record = Record {
+            id: 1,
+            name: "Test".to_string(),
+            value: 100.0,
+            active: true,
+        };
+        
+        let invalid_record = Record {
+            id: 2,
+            name: "".to_string(),
+            value: f64::NAN,
+            active: false,
+        };
+
+        assert!(validate_record(&valid_record));
+        assert!(!validate_record(&invalid_record));
+    }
+}
