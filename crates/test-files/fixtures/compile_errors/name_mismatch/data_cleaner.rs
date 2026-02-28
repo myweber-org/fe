@@ -221,4 +221,64 @@ mod tests {
         assert!(validate_record(&valid_record));
         assert!(!validate_record(&invalid_record));
     }
+}use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
+}
+
+fn clean_data(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let mut reader = Reader::from_path(input_path)?;
+    let mut writer = Writer::from_writer(File::create(output_path)?);
+
+    for result in reader.deserialize() {
+        let mut record: Record = result?;
+        
+        record.name = record.name.trim().to_string();
+        record.category = record.category.to_lowercase();
+        
+        if record.value < 0.0 {
+            record.value = 0.0;
+        }
+        
+        if record.name.is_empty() {
+            continue;
+        }
+        
+        writer.serialize(&record)?;
+    }
+
+    writer.flush()?;
+    Ok(())
+}
+
+fn validate_record(record: &Record) -> bool {
+    !record.name.is_empty() && record.value >= 0.0
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let input = "data/raw.csv";
+    let output = "data/cleaned.csv";
+    
+    clean_data(input, output)?;
+    
+    let mut reader = Reader::from_path(output)?;
+    let mut valid_count = 0;
+    
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        if validate_record(&record) {
+            valid_count += 1;
+        }
+    }
+    
+    println!("Processed {} valid records", valid_count);
+    Ok(())
 }
