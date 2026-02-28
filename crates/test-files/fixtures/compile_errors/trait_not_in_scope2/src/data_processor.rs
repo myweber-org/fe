@@ -306,3 +306,171 @@ mod tests {
         assert!((std_dev - 1.4142).abs() < 0.0001);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    id: u32,
+    name: String,
+    value: f64,
+    tags: Vec<String>,
+    metadata: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    EmptyName,
+    NegativeValue,
+    MissingRequiredTag,
+    DuplicateMetadataKey,
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "ID must be greater than zero"),
+            ValidationError::EmptyName => write!(f, "Name cannot be empty"),
+            ValidationError::NegativeValue => write!(f, "Value must be non-negative"),
+            ValidationError::MissingRequiredTag => write!(f, "Required tag is missing"),
+            ValidationError::DuplicateMetadataKey => write!(f, "Duplicate metadata key found"),
+        }
+    }
+}
+
+impl Error for ValidationError {}
+
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64) -> Self {
+        DataRecord {
+            id,
+            name,
+            value,
+            tags: Vec::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.id == 0 {
+            return Err(ValidationError::InvalidId);
+        }
+        
+        if self.name.trim().is_empty() {
+            return Err(ValidationError::EmptyName);
+        }
+        
+        if self.value < 0.0 {
+            return Err(ValidationError::NegativeValue);
+        }
+        
+        if !self.tags.contains(&"verified".to_string()) {
+            return Err(ValidationError::MissingRequiredTag);
+        }
+        
+        Ok(())
+    }
+
+    pub fn add_tag(&mut self, tag: String) {
+        if !self.tags.contains(&tag) {
+            self.tags.push(tag);
+        }
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) -> Result<(), ValidationError> {
+        if self.metadata.contains_key(&key) {
+            return Err(ValidationError::DuplicateMetadataKey);
+        }
+        self.metadata.insert(key, value);
+        Ok(())
+    }
+
+    pub fn transform_value(&mut self, multiplier: f64) {
+        if multiplier > 0.0 {
+            self.value *= multiplier;
+        }
+    }
+
+    pub fn calculate_score(&self) -> f64 {
+        let base_score = self.value * 100.0;
+        let tag_bonus = self.tags.len() as f64 * 10.0;
+        let metadata_bonus = self.metadata.len() as f64 * 5.0;
+        
+        base_score + tag_bonus + metadata_bonus
+    }
+
+    pub fn to_json_string(&self) -> String {
+        let tags_json: Vec<String> = self.tags.iter()
+            .map(|tag| format!("\"{}\"", tag))
+            .collect();
+        
+        let metadata_json: Vec<String> = self.metadata.iter()
+            .map(|(k, v)| format!("\"{}\": \"{}\"", k, v))
+            .collect();
+        
+        format!(
+            "{{\"id\": {}, \"name\": \"{}\", \"value\": {}, \"tags\": [{}], \"metadata\": {{{}}}}}",
+            self.id,
+            self.name,
+            self.value,
+            tags_json.join(", "),
+            metadata_json.join(", ")
+        )
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord]) -> Vec<Result<f64, ValidationError>> {
+    records.iter_mut()
+        .map(|record| {
+            record.validate()?;
+            record.add_tag("processed".to_string());
+            record.transform_value(1.1);
+            Ok(record.calculate_score())
+        })
+        .collect()
+}
+
+pub fn filter_valid_records(records: &[DataRecord]) -> Vec<&DataRecord> {
+    records.iter()
+        .filter(|record| record.validate().is_ok())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_creation() {
+        let record = DataRecord::new(1, "Test Record".to_string(), 42.5);
+        assert_eq!(record.id, 1);
+        assert_eq!(record.name, "Test Record");
+        assert_eq!(record.value, 42.5);
+    }
+
+    #[test]
+    fn test_validation_success() {
+        let mut record = DataRecord::new(1, "Valid Record".to_string(), 100.0);
+        record.add_tag("verified".to_string());
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validation_failure() {
+        let record = DataRecord::new(0, "".to_string(), -10.0);
+        assert!(record.validate().is_err());
+    }
+
+    #[test]
+    fn test_score_calculation() {
+        let mut record = DataRecord::new(1, "Test".to_string(), 50.0);
+        record.add_tag("tag1".to_string());
+        record.add_tag("tag2".to_string());
+        record.add_metadata("key1".to_string(), "value1".to_string()).unwrap();
+        
+        let score = record.calculate_score();
+        assert_eq!(score, 50.0 * 100.0 + 2.0 * 10.0 + 1.0 * 5.0);
+    }
+}
