@@ -380,3 +380,153 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidData(String),
+    TransformationError(String),
+    ValidationError(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
+            ProcessingError::TransformationError(msg) => write!(f, "Transformation error: {}", msg),
+            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    config: ProcessingConfig,
+}
+
+pub struct ProcessingConfig {
+    pub max_value: f64,
+    pub min_value: f64,
+    pub allowed_tags: Vec<String>,
+}
+
+impl DataProcessor {
+    pub fn new(config: ProcessingConfig) -> Self {
+        DataProcessor { config }
+    }
+
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.value > self.config.max_value {
+            return Err(ProcessingError::ValidationError(
+                format!("Value {} exceeds maximum {}", record.value, self.config.max_value)
+            ));
+        }
+
+        if record.value < self.config.min_value {
+            return Err(ProcessingError::ValidationError(
+                format!("Value {} below minimum {}", record.value, self.config.min_value)
+            ));
+        }
+
+        for tag in &record.tags {
+            if !self.config.allowed_tags.contains(tag) {
+                return Err(ProcessingError::ValidationError(
+                    format!("Tag '{}' is not allowed", tag)
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn transform_record(&self, record: &DataRecord) -> Result<HashMap<String, String>, ProcessingError> {
+        let mut result = HashMap::new();
+        
+        result.insert("id".to_string(), record.id.to_string());
+        result.insert("name".to_string(), record.name.to_uppercase());
+        result.insert("value".to_string(), format!("{:.2}", record.value));
+        result.insert("tags".to_string(), record.tags.join(","));
+        result.insert("processed".to_string(), "true".to_string());
+        
+        Ok(result)
+    }
+
+    pub fn process_batch(&self, records: Vec<DataRecord>) -> Result<Vec<HashMap<String, String>>, ProcessingError> {
+        let mut processed = Vec::new();
+        
+        for record in records {
+            self.validate_record(&record)?;
+            let transformed = self.transform_record(&record)?;
+            processed.push(transformed);
+        }
+        
+        Ok(processed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_config() -> ProcessingConfig {
+        ProcessingConfig {
+            max_value: 1000.0,
+            min_value: 0.0,
+            allowed_tags: vec!["important".to_string(), "normal".to_string(), "low".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_valid_record_validation() {
+        let processor = DataProcessor::new(create_test_config());
+        let record = DataRecord {
+            id: 1,
+            name: "test".to_string(),
+            value: 500.0,
+            tags: vec!["important".to_string()],
+        };
+        
+        assert!(processor.validate_record(&record).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_value_validation() {
+        let processor = DataProcessor::new(create_test_config());
+        let record = DataRecord {
+            id: 1,
+            name: "test".to_string(),
+            value: 1500.0,
+            tags: vec!["important".to_string()],
+        };
+        
+        assert!(processor.validate_record(&record).is_err());
+    }
+
+    #[test]
+    fn test_record_transformation() {
+        let processor = DataProcessor::new(create_test_config());
+        let record = DataRecord {
+            id: 42,
+            name: "sample".to_string(),
+            value: 123.456,
+            tags: vec!["important".to_string(), "normal".to_string()],
+        };
+        
+        let result = processor.transform_record(&record).unwrap();
+        assert_eq!(result.get("id").unwrap(), "42");
+        assert_eq!(result.get("name").unwrap(), "SAMPLE");
+        assert_eq!(result.get("value").unwrap(), "123.46");
+        assert_eq!(result.get("tags").unwrap(), "important,normal");
+    }
+}
