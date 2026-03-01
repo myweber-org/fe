@@ -84,4 +84,94 @@ mod tests {
         assert!(!DataCleaner::validate_email("@domain.com"));
         assert!(!DataCleaner::validate_email("user@.com"));
     }
+}use std::collections::HashSet;
+
+pub struct DataCleaner {
+    deduplication_enabled: bool,
+    normalization_enabled: bool,
+}
+
+impl DataCleaner {
+    pub fn new(deduplication: bool, normalization: bool) -> Self {
+        DataCleaner {
+            deduplication_enabled: deduplication,
+            normalization_enabled: normalization,
+        }
+    }
+
+    pub fn clean_dataset(&self, data: Vec<String>) -> Vec<String> {
+        let mut processed_data = data;
+
+        if self.deduplication_enabled {
+            processed_data = Self::remove_duplicates(processed_data);
+        }
+
+        if self.normalization_enabled {
+            processed_data = Self::normalize_entries(processed_data);
+        }
+
+        processed_data
+    }
+
+    fn remove_duplicates(data: Vec<String>) -> Vec<String> {
+        let mut seen = HashSet::new();
+        data.into_iter()
+            .filter(|item| seen.insert(item.clone()))
+            .collect()
+    }
+
+    fn normalize_entries(data: Vec<String>) -> Vec<String> {
+        data.into_iter()
+            .map(|entry| entry.trim().to_lowercase())
+            .collect()
+    }
+}
+
+pub fn validate_email_format(email: &str) -> bool {
+    let parts: Vec<&str> = email.split('@').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+
+    let domain_parts: Vec<&str> = parts[1].split('.').collect();
+    domain_parts.len() >= 2 && !parts[0].is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deduplication() {
+        let cleaner = DataCleaner::new(true, false);
+        let data = vec![
+            "apple".to_string(),
+            "banana".to_string(),
+            "apple".to_string(),
+            "cherry".to_string(),
+        ];
+        let cleaned = cleaner.clean_dataset(data);
+        assert_eq!(cleaned.len(), 3);
+    }
+
+    #[test]
+    fn test_normalization() {
+        let cleaner = DataCleaner::new(false, true);
+        let data = vec![
+            "  APPLE  ".to_string(),
+            "Banana".to_string(),
+            "  CHERRY  ".to_string(),
+        ];
+        let cleaned = cleaner.clean_dataset(data);
+        assert_eq!(cleaned[0], "apple");
+        assert_eq!(cleaned[1], "banana");
+        assert_eq!(cleaned[2], "cherry");
+    }
+
+    #[test]
+    fn test_email_validation() {
+        assert!(validate_email_format("user@example.com"));
+        assert!(!validate_email_format("invalid-email"));
+        assert!(!validate_email_format("@domain.com"));
+    }
 }
