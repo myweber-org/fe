@@ -760,4 +760,74 @@ mod tests {
         let invalid_avg = processor.calculate_statistics(&records, 2);
         assert_eq!(invalid_avg, None);
     }
+}use csv::Reader;
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug)]
+pub struct DataSet {
+    values: Vec<f64>,
+}
+
+impl DataSet {
+    pub fn from_csv(file_path: &str) -> Result<Self, Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let mut rdr = Reader::from_reader(file);
+        let mut values = Vec::new();
+
+        for result in rdr.records() {
+            let record = result?;
+            if let Some(field) = record.get(0) {
+                if let Ok(num) = field.parse::<f64>() {
+                    values.push(num);
+                }
+            }
+        }
+
+        Ok(DataSet { values })
+    }
+
+    pub fn calculate_mean(&self) -> f64 {
+        if self.values.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = self.values.iter().sum();
+        sum / self.values.len() as f64
+    }
+
+    pub fn calculate_variance(&self) -> f64 {
+        if self.values.len() < 2 {
+            return 0.0;
+        }
+        let mean = self.calculate_mean();
+        let sum_squared_diff: f64 = self.values
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum();
+        sum_squared_diff / (self.values.len() - 1) as f64
+    }
+
+    pub fn get_summary(&self) -> Summary {
+        Summary {
+            count: self.values.len(),
+            mean: self.calculate_mean(),
+            variance: self.calculate_variance(),
+            min: self.values.iter().copied().fold(f64::INFINITY, f64::min),
+            max: self.values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Summary {
+    pub count: usize,
+    pub mean: f64,
+    pub variance: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+pub fn process_numeric_data(file_path: &str) -> Result<Summary, Box<dyn Error>> {
+    let dataset = DataSet::from_csv(file_path)?;
+    Ok(dataset.get_summary())
 }
