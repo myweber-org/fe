@@ -780,3 +780,203 @@ mod tests {
         assert_eq!(result, Ok("HELLO".to_string()));
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::error::Error;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DataRecord {
+    pub id: u32,
+    pub timestamp: i64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidData(String),
+    TransformationFailed(String),
+    ValidationError(String),
+}
+
+impl std::fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProcessingError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
+            ProcessingError::TransformationFailed(msg) => write!(f, "Transformation failed: {}", msg),
+            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    validation_threshold: f64,
+    normalization_factor: f64,
+}
+
+impl DataProcessor {
+    pub fn new(validation_threshold: f64, normalization_factor: f64) -> Self {
+        DataProcessor {
+            validation_threshold,
+            normalization_factor,
+        }
+    }
+
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.id == 0 {
+            return Err(ProcessingError::ValidationError("ID cannot be zero".to_string()));
+        }
+
+        if record.timestamp < 0 {
+            return Err(ProcessingError::ValidationError("Timestamp cannot be negative".to_string()));
+        }
+
+        if record.values.is_empty() {
+            return Err(ProcessingError::ValidationError("Values array cannot be empty".to_string()));
+        }
+
+        for value in &record.values {
+            if value.is_nan() || value.is_infinite() {
+                return Err(ProcessingError::InvalidData("Invalid numeric value detected".to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn normalize_values(&self, record: &mut DataRecord) -> Result<(), ProcessingError> {
+        if self.normalization_factor == 0.0 {
+            return Err(ProcessingError::TransformationFailed("Normalization factor cannot be zero".to_string()));
+        }
+
+        for value in &mut record.values {
+            *value /= self.normalization_factor;
+        }
+
+        Ok(())
+    }
+
+    pub fn filter_values(&self, record: &mut DataRecord) {
+        record.values.retain(|&value| value.abs() >= self.validation_threshold);
+    }
+
+    pub fn calculate_statistics(&self, record: &DataRecord) -> HashMap<String, f64> {
+        let mut stats = HashMap::new();
+
+        if record.values.is_empty() {
+            return stats;
+        }
+
+        let sum: f64 = record.values.iter().sum();
+        let count = record.values.len() as f64;
+        let mean = sum / count;
+
+        let variance: f64 = record.values.iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f64>() / count;
+
+        let max = record.values.iter()
+            .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+        let min = record.values.iter()
+            .fold(f64::INFINITY, |a, &b| a.min(b));
+
+        stats.insert("mean".to_string(), mean);
+        stats.insert("variance".to_string(), variance);
+        stats.insert("max".to_string(), max);
+        stats.insert("min".to_string(), min);
+        stats.insert("count".to_string(), count);
+
+        stats
+    }
+
+    pub fn process_record(&self, mut record: DataRecord) -> Result<DataRecord, ProcessingError> {
+        self.validate_record(&record)?;
+        self.normalize_values(&mut record)?;
+        self.filter_values(&mut record);
+        
+        if record.values.is_empty() {
+            return Err(ProcessingError::InvalidData("All values filtered out".to_string()));
+        }
+
+        Ok(record)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validation_success() {
+        let processor = DataProcessor::new(0.1, 1.0);
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0],
+            metadata: HashMap::new(),
+        };
+
+        assert!(processor.validate_record(&record).is_ok());
+    }
+
+    #[test]
+    fn test_validation_failure() {
+        let processor = DataProcessor::new(0.1, 1.0);
+        let record = DataRecord {
+            id: 0,
+            timestamp: -1,
+            values: vec![],
+            metadata: HashMap::new(),
+        };
+
+        assert!(processor.validate_record(&record).is_err());
+    }
+
+    #[test]
+    fn test_normalization() {
+        let processor = DataProcessor::new(0.1, 2.0);
+        let mut record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![2.0, 4.0, 6.0],
+            metadata: HashMap::new(),
+        };
+
+        processor.normalize_values(&mut record).unwrap();
+        assert_eq!(record.values, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_filter_values() {
+        let processor = DataProcessor::new(0.5, 1.0);
+        let mut record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![0.1, 0.6, 0.3, 0.8],
+            metadata: HashMap::new(),
+        };
+
+        processor.filter_values(&mut record);
+        assert_eq!(record.values, vec![0.6, 0.8]);
+    }
+
+    #[test]
+    fn test_statistics_calculation() {
+        let processor = DataProcessor::new(0.1, 1.0);
+        let record = DataRecord {
+            id: 1,
+            timestamp: 1234567890,
+            values: vec![1.0, 2.0, 3.0, 4.0],
+            metadata: HashMap::new(),
+        };
+
+        let stats = processor.calculate_statistics(&record);
+        assert_eq!(stats.get("mean"), Some(&2.5));
+        assert_eq!(stats.get("count"), Some(&4.0));
+        assert_eq!(stats.get("max"), Some(&4.0));
+        assert_eq!(stats.get("min"), Some(&1.0));
+    }
+}
