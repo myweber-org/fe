@@ -121,4 +121,55 @@ mod tests {
         assert_eq!(config.get_or_default("EXISTING", "default"), "value");
         assert_eq!(config.get_or_default("MISSING", "fallback"), "fallback");
     }
+}use std::fs;
+use std::collections::HashMap;
+use std::error::Error;
+
+#[derive(Debug)]
+pub struct Config {
+    pub settings: HashMap<String, String>,
+}
+
+impl Config {
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn Error>> {
+        let content = fs::read_to_string(path)?;
+        let mut settings = HashMap::new();
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
+            if parts.len() == 2 {
+                let key = parts[0].trim().to_string();
+                let value = parts[1].trim().to_string();
+                settings.insert(key, value);
+            } else {
+                return Err(format!("Invalid config line: {}", line).into());
+            }
+        }
+
+        Ok(Config { settings })
+    }
+
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.settings.get(key)
+    }
+
+    pub fn validate_required(&self, required_keys: &[&str]) -> Result<(), Vec<String>> {
+        let mut missing = Vec::new();
+        for key in required_keys {
+            if !self.settings.contains_key(*key) {
+                missing.push(key.to_string());
+            }
+        }
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(missing)
+        }
+    }
 }
