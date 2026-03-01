@@ -1,110 +1,61 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::io;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq)]
 pub struct Config {
-    pub database_url: String,
-    pub max_connections: u32,
-    pub timeout_seconds: u64,
-    pub features: Vec<String>,
-    pub metadata: HashMap<String, String>,
+    pub settings: HashMap<String, String>,
 }
 
 impl Config {
     pub fn new() -> Self {
         Config {
-            database_url: String::from("postgresql://localhost:5432/mydb"),
-            max_connections: 10,
-            timeout_seconds: 30,
-            features: vec![],
-            metadata: HashMap::new(),
+            settings: HashMap::new(),
         }
     }
 
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, String> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read config file: {}", e))?;
-
+    pub fn load_from_file(path: &str) -> Result<Self, io::Error> {
+        let content = fs::read_to_string(path)?;
         let mut config = Config::new();
-        let mut current_section = String::new();
 
-        for (line_num, line) in content.lines().enumerate() {
+        for line in content.lines() {
             let trimmed = line.trim();
-            
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
 
-            if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                current_section = trimmed[1..trimmed.len()-1].to_string();
-                continue;
-            }
-
-            if let Some(equal_pos) = trimmed.find('=') {
-                let key = trimmed[..equal_pos].trim().to_string();
-                let value = trimmed[equal_pos+1..].trim().to_string();
-                
-                config.parse_field(&current_section, &key, &value)
-                    .map_err(|e| format!("Line {}: {}", line_num + 1, e))?;
-            } else {
-                return Err(format!("Line {}: Invalid format, expected key=value", line_num + 1));
+            if let Some((key, value)) = trimmed.split_once('=') {
+                config.settings.insert(
+                    key.trim().to_string(),
+                    value.trim().trim_matches('"').to_string(),
+                );
             }
         }
 
-        config.validate()?;
         Ok(config)
     }
 
-    fn parse_field(&mut self, section: &str, key: &str, value: &str) -> Result<(), String> {
-        match (section, key) {
-            ("database", "url") => {
-                if value.is_empty() {
-                    return Err("Database URL cannot be empty".to_string());
-                }
-                self.database_url = value.to_string();
-            }
-            ("database", "max_connections") => {
-                self.max_connections = value.parse()
-                    .map_err(|_| "max_connections must be a positive integer".to_string())?;
-            }
-            ("connection", "timeout") => {
-                self.timeout_seconds = value.parse()
-                    .map_err(|_| "timeout must be a positive integer".to_string())?;
-            }
-            ("features", _) => {
-                self.features.push(value.to_string());
-            }
-            ("metadata", _) => {
-                self.metadata.insert(key.to_string(), value.to_string());
-            }
-            _ => return Err(format!("Unknown configuration key: {}.{}", section, key)),
-        }
-        Ok(())
+    pub fn get_with_default(&self, key: &str, default: &str) -> String {
+        self.settings
+            .get(key)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| default.to_string())
     }
 
-    fn validate(&self) -> Result<(), String> {
-        if self.max_connections == 0 {
-            return Err("max_connections must be greater than 0".to_string());
-        }
-        
-        if self.timeout_seconds == 0 {
-            return Err("timeout must be greater than 0".to_string());
-        }
+    pub fn validate_required(&self, required_keys: &[&str]) -> Result<(), Vec<String>> {
+        let mut missing = Vec::new();
 
-        if !self.database_url.starts_with("postgresql://") {
-            return Err("Only PostgreSQL database URLs are supported".to_string());
+        for key in required_keys {
+            if !self.settings.contains_key(*key) {
+                missing.push(key.to_string());
+            }
         }
 
-        Ok(())
-    }
-
-    pub fn get_feature(&self, feature: &str) -> bool {
-        self.features.iter().any(|f| f == feature)
-    }
-
-    pub fn get_metadata(&self, key: &str) -> Option<&String> {
-        self.metadata.get(key)
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(missing)
+        }
     }
 }
 
@@ -115,66 +66,39 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_default_config() {
-        let config = Config::new();
-        assert_eq!(config.database_url, "postgresql://localhost:5432/mydb");
-        assert_eq!(config.max_connections, 10);
-        assert_eq!(config.timeout_seconds, 30);
-        assert!(config.features.is_empty());
+    fn test_load_config() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "HOST=localhost").unwrap();
+        writeln!(temp_file, "PORT=8080").unwrap();
+        writeln!(temp_file, "# This is a comment").unwrap();
+        writeln!(temp_file, "TIMEOUT=\"30\"").unwrap();
+
+        let config = Config::load_from_file(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.settings.get("HOST"), Some(&"localhost".to_string()));
+        assert_eq!(config.settings.get("PORT"), Some(&"8080".to_string()));
+        assert_eq!(config.settings.get("TIMEOUT"), Some(&"30".to_string()));
     }
 
     #[test]
-    fn test_valid_config_file() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "[database]").unwrap();
-        writeln!(file, "url = postgresql://localhost:5432/production").unwrap();
-        writeln!(file, "max_connections = 20").unwrap();
-        writeln!(file, "").unwrap();
-        writeln!(file, "# Connection settings").unwrap();
-        writeln!(file, "[connection]").unwrap();
-        writeln!(file, "timeout = 60").unwrap();
-        writeln!(file, "").unwrap();
-        writeln!(file, "[features]").unwrap();
-        writeln!(file, "logging = true").unwrap();
-        writeln!(file, "caching = enabled").unwrap();
-        writeln!(file, "").unwrap();
-        writeln!(file, "[metadata]").unwrap();
-        writeln!(file, "version = 1.0.0").unwrap();
-        writeln!(file, "environment = production").unwrap();
-
-        let config = Config::from_file(file.path()).unwrap();
-        assert_eq!(config.database_url, "postgresql://localhost:5432/production");
-        assert_eq!(config.max_connections, 20);
-        assert_eq!(config.timeout_seconds, 60);
-        assert!(config.get_feature("logging"));
-        assert!(config.get_feature("caching"));
-        assert_eq!(config.get_metadata("version"), Some(&"1.0.0".to_string()));
-        assert_eq!(config.get_metadata("environment"), Some(&"production".to_string()));
-    }
-
-    #[test]
-    fn test_invalid_config() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "[database]").unwrap();
-        writeln!(file, "url = ").unwrap();
-        
-        let result = Config::from_file(file.path());
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Database URL cannot be empty"));
-    }
-
-    #[test]
-    fn test_validation() {
+    fn test_get_with_default() {
         let mut config = Config::new();
-        config.max_connections = 0;
-        assert!(config.validate().is_err());
-        
-        config.max_connections = 10;
-        config.timeout_seconds = 0;
-        assert!(config.validate().is_err());
-        
-        config.timeout_seconds = 30;
-        config.database_url = "mysql://localhost:3306/test".to_string();
-        assert!(config.validate().is_err());
+        config.settings.insert("HOST".to_string(), "127.0.0.1".to_string());
+
+        assert_eq!(config.get_with_default("HOST", "localhost"), "127.0.0.1");
+        assert_eq!(config.get_with_default("MISSING", "default_value"), "default_value");
+    }
+
+    #[test]
+    fn test_validate_required() {
+        let mut config = Config::new();
+        config.settings.insert("API_KEY".to_string(), "secret".to_string());
+        config.settings.insert("ENDPOINT".to_string(), "https://api.example.com".to_string());
+
+        let result = config.validate_required(&["API_KEY", "ENDPOINT"]);
+        assert!(result.is_ok());
+
+        let result = config.validate_required(&["API_KEY", "MISSING"]);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), vec!["MISSING".to_string()]);
     }
 }
