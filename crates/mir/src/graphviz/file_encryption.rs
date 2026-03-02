@@ -367,4 +367,85 @@ mod tests {
         let final_content = fs::read(temp_final.path()).unwrap();
         assert_eq!(original_content.to_vec(), final_content);
     }
+}use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+pub struct XorCipher {
+    key: Vec<u8>,
+    key_index: usize,
+}
+
+impl XorCipher {
+    pub fn new(key: &str) -> Self {
+        XorCipher {
+            key: key.as_bytes().to_vec(),
+            key_index: 0,
+        }
+    }
+
+    fn next_key_byte(&mut self) -> u8 {
+        let byte = self.key[self.key_index];
+        self.key_index = (self.key_index + 1) % self.key.len();
+        byte
+    }
+
+    pub fn process_bytes(&mut self, data: &mut [u8]) {
+        for byte in data.iter_mut() {
+            *byte ^= self.next_key_byte();
+        }
+    }
+}
+
+pub fn encrypt_file(input_path: &Path, output_path: &Path, key: &str) -> io::Result<()> {
+    let mut cipher = XorCipher::new(key);
+    let mut content = fs::read(input_path)?;
+    
+    cipher.process_bytes(&mut content);
+    fs::write(output_path, content)
+}
+
+pub fn decrypt_file(input_path: &Path, output_path: &Path, key: &str) -> io::Result<()> {
+    encrypt_file(input_path, output_path, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_xor_cipher_symmetry() {
+        let key = "secret_key_123";
+        let original = b"Hello, World! This is a test message.";
+        let mut data = original.to_vec();
+        
+        let mut cipher = XorCipher::new(key);
+        cipher.process_bytes(&mut data);
+        
+        let mut cipher2 = XorCipher::new(key);
+        cipher2.process_bytes(&mut data);
+        
+        assert_eq!(original, data.as_slice());
+    }
+
+    #[test]
+    fn test_file_encryption() -> io::Result<()> {
+        let test_content = b"Confidential data: 42";
+        let key = "test_password";
+        
+        let input_file = NamedTempFile::new()?;
+        let encrypted_file = NamedTempFile::new()?;
+        let decrypted_file = NamedTempFile::new()?;
+        
+        fs::write(input_file.path(), test_content)?;
+        
+        encrypt_file(input_file.path(), encrypted_file.path(), key)?;
+        decrypt_file(encrypted_file.path(), decrypted_file.path(), key)?;
+        
+        let restored = fs::read(decrypted_file.path())?;
+        assert_eq!(test_content, restored.as_slice());
+        
+        Ok(())
+    }
 }
