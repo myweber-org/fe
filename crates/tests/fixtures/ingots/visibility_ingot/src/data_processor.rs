@@ -1,112 +1,112 @@
-use std::collections::HashMap;
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
 
-pub struct DataProcessor {
-    cache: HashMap<String, Vec<f64>>,
+pub struct DataSet {
+    values: Vec<f64>,
 }
 
-impl DataProcessor {
+impl DataSet {
     pub fn new() -> Self {
-        DataProcessor {
-            cache: HashMap::new(),
-        }
+        DataSet { values: Vec::new() }
     }
 
-    pub fn process_dataset(&mut self, key: &str, data: &[f64]) -> Result<Vec<f64>, String> {
-        if data.is_empty() {
-            return Err("Empty dataset provided".to_string());
-        }
+    pub fn from_csv<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let mut rdr = csv::Reader::from_reader(file);
+        let mut values = Vec::new();
 
-        if let Some(cached) = self.cache.get(key) {
-            return Ok(cached.clone());
-        }
-
-        let validated = self.validate_data(data)?;
-        let normalized = self.normalize_data(&validated);
-        let transformed = self.apply_transformations(&normalized);
-
-        self.cache.insert(key.to_string(), transformed.clone());
-        Ok(transformed)
-    }
-
-    fn validate_data(&self, data: &[f64]) -> Result<Vec<f64>, String> {
-        for &value in data {
-            if !value.is_finite() {
-                return Err("Invalid numeric value detected".to_string());
+        for result in rdr.records() {
+            let record = result?;
+            if let Some(field) = record.get(0) {
+                if let Ok(num) = field.parse::<f64>() {
+                    values.push(num);
+                }
             }
         }
-        Ok(data.to_vec())
+
+        Ok(DataSet { values })
     }
 
-    fn normalize_data(&self, data: &[f64]) -> Vec<f64> {
-        let mean = data.iter().sum::<f64>() / data.len() as f64;
-        let variance = data.iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / data.len() as f64;
-        let std_dev = variance.sqrt();
+    pub fn add_value(&mut self, value: f64) {
+        self.values.push(value);
+    }
 
-        if std_dev.abs() < 1e-10 {
-            return vec![0.0; data.len()];
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.values.is_empty() {
+            return None;
         }
-
-        data.iter()
-            .map(|&x| (x - mean) / std_dev)
-            .collect()
+        let sum: f64 = self.values.iter().sum();
+        Some(sum / self.values.len() as f64)
     }
 
-    fn apply_transformations(&self, data: &[f64]) -> Vec<f64> {
-        data.iter()
-            .map(|&x| x.powi(2).ln_1p())
-            .collect()
+    pub fn calculate_std_dev(&self) -> Option<f64> {
+        if self.values.len() < 2 {
+            return None;
+        }
+        let mean = self.calculate_mean()?;
+        let variance: f64 = self.values
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / (self.values.len() - 1) as f64;
+        Some(variance.sqrt())
     }
 
-    pub fn clear_cache(&mut self) {
-        self.cache.clear();
+    pub fn count(&self) -> usize {
+        self.values.len()
     }
 
-    pub fn get_cache_stats(&self) -> (usize, usize) {
-        let total_items: usize = self.cache.values().map(|v| v.len()).sum();
-        (self.cache.len(), total_items)
+    pub fn clear(&mut self) {
+        self.values.clear();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_processor_validation() {
-        let processor = DataProcessor::new();
-        let valid_data = vec![1.0, 2.0, 3.0];
-        let invalid_data = vec![1.0, f64::NAN, 3.0];
-
-        assert!(processor.validate_data(&valid_data).is_ok());
-        assert!(processor.validate_data(&invalid_data).is_err());
+    fn test_empty_dataset() {
+        let ds = DataSet::new();
+        assert_eq!(ds.count(), 0);
+        assert_eq!(ds.calculate_mean(), None);
+        assert_eq!(ds.calculate_std_dev(), None);
     }
 
     #[test]
-    fn test_normalization() {
-        let processor = DataProcessor::new();
-        let data = vec![1.0, 2.0, 3.0];
-        let normalized = processor.normalize_data(&data);
-
-        let mean = normalized.iter().sum::<f64>() / normalized.len() as f64;
-        let variance = normalized.iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f64>() / normalized.len() as f64;
-
-        assert!(mean.abs() < 1e-10);
-        assert!((variance - 1.0).abs() < 1e-10);
+    fn test_basic_statistics() {
+        let mut ds = DataSet::new();
+        ds.add_value(10.0);
+        ds.add_value(20.0);
+        ds.add_value(30.0);
+        
+        assert_eq!(ds.count(), 3);
+        assert_eq!(ds.calculate_mean(), Some(20.0));
+        assert!(ds.calculate_std_dev().unwrap() > 8.16 && ds.calculate_std_dev().unwrap() < 8.17);
     }
 
     #[test]
-    fn test_caching() {
-        let mut processor = DataProcessor::new();
-        let data = vec![1.0, 2.0, 3.0];
+    fn test_csv_import() -> Result<(), Box<dyn Error>> {
+        let mut tmp_file = NamedTempFile::new()?;
+        writeln!(tmp_file, "value\n15.5\n25.3\n35.7")?;
+        
+        let ds = DataSet::from_csv(tmp_file.path())?;
+        assert_eq!(ds.count(), 3);
+        assert!(ds.calculate_mean().unwrap() > 25.49 && ds.calculate_mean().unwrap() < 25.51);
+        Ok(())
+    }
 
-        let result1 = processor.process_dataset("test", &data).unwrap();
-        let result2 = processor.process_dataset("test", &data).unwrap();
-
-        assert_eq!(result1, result2);
-        assert_eq!(processor.get_cache_stats(), (1, 1));
+    #[test]
+    fn test_clear_operation() {
+        let mut ds = DataSet::new();
+        ds.add_value(5.0);
+        ds.add_value(15.0);
+        assert_eq!(ds.count(), 2);
+        
+        ds.clear();
+        assert_eq!(ds.count(), 0);
+        assert_eq!(ds.calculate_mean(), None);
     }
 }
