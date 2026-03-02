@@ -347,4 +347,117 @@ mod tests {
         
         Ok(())
     }
+}use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use pbkdf2::{
+    password_hash::{
+        rand_core::RngCore,
+        PasswordHasher, SaltString
+    },
+    Params, Pbkdf2
+};
+use std::fs;
+
+const SALT_LENGTH: usize = 16;
+const NONCE_LENGTH: usize = 12;
+
+pub struct FileEncryptor {
+    key: [u8; 32],
+}
+
+impl FileEncryptor {
+    pub fn new(password: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let salt = SaltString::generate(&mut OsRng);
+        let params = Params {
+            rounds: 100_000,
+            output_length: 32,
+        };
+        
+        let password_hash = Pbkdf2
+            .hash_password_customized(
+                password.as_bytes(),
+                None,
+                None,
+                params,
+                &salt
+            )?
+            .hash
+            .ok_or("Hash generation failed")?;
+        
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&password_hash.as_bytes()[..32]);
+        
+        Ok(Self { key })
+    }
+
+    pub fn encrypt_file(&self, input_path: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let data = fs::read(input_path)?;
+        
+        let mut nonce = [0u8; NONCE_LENGTH];
+        OsRng.fill_bytes(&mut nonce);
+        
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.key));
+        let encrypted_data = cipher
+            .encrypt(Nonce::from_slice(&nonce), data.as_ref())
+            .map_err(|e| format!("Encryption failed: {}", e))?;
+        
+        let mut output = Vec::with_capacity(NONCE_LENGTH + encrypted_data.len());
+        output.extend_from_slice(&nonce);
+        output.extend_from_slice(&encrypted_data);
+        
+        fs::write(output_path, output)?;
+        Ok(())
+    }
+
+    pub fn decrypt_file(&self, input_path: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let encrypted_data = fs::read(input_path)?;
+        
+        if encrypted_data.len() < NONCE_LENGTH {
+            return Err("Invalid encrypted file format".into());
+        }
+        
+        let nonce = &encrypted_data[..NONCE_LENGTH];
+        let ciphertext = &encrypted_data[NONCE_LENGTH..];
+        
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.key));
+        let decrypted_data = cipher
+            .decrypt(Nonce::from_slice(nonce), ciphertext)
+            .map_err(|e| format!("Decryption failed: {}", e))?;
+        
+        fs::write(output_path, decrypted_data)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_encryption_decryption() {
+        let encryptor = FileEncryptor::new("test_password").unwrap();
+        
+        let original_data = b"Secret data that needs protection";
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+        
+        fs::write(input_file.path(), original_data).unwrap();
+        
+        encryptor.encrypt_file(
+            input_file.path().to_str().unwrap(),
+            encrypted_file.path().to_str().unwrap()
+        ).unwrap();
+        
+        encryptor.decrypt_file(
+            encrypted_file.path().to_str().unwrap(),
+            decrypted_file.path().to_str().unwrap()
+        ).unwrap();
+        
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(original_data.to_vec(), decrypted_data);
+    }
 }
