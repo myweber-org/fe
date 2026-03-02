@@ -1,97 +1,26 @@
 
-use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
-use pbkdf2::pbkdf2_hmac;
-use rand::RngCore;
-use sha2::Sha256;
 use std::fs;
-use std::io::{Read, Write};
-use std::path::Path;
+use std::io::{self, Read, Write};
 
-type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
-type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+pub fn xor_encrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> io::Result<()> {
+    let mut input_file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    input_file.read_to_end(&mut buffer)?;
 
-const SALT_LEN: usize = 16;
-const IV_LEN: usize = 16;
-const KEY_LEN: usize = 32;
-const PBKDF2_ITERATIONS: u32 = 100_000;
+    let encrypted_data: Vec<u8> = buffer
+        .iter()
+        .enumerate()
+        .map(|(i, &byte)| byte ^ key[i % key.len()])
+        .collect();
 
-pub struct FileEncryptor {
-    password: String,
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&encrypted_data)?;
+
+    Ok(())
 }
 
-impl FileEncryptor {
-    pub fn new(password: String) -> Self {
-        Self { password }
-    }
-
-    pub fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), String> {
-        let mut file = fs::File::open(input_path)
-            .map_err(|e| format!("Failed to open input file: {}", e))?;
-        
-        let mut plaintext = Vec::new();
-        file.read_to_end(&mut plaintext)
-            .map_err(|e| format!("Failed to read input file: {}", e))?;
-
-        let mut salt = [0u8; SALT_LEN];
-        let mut iv = [0u8; IV_LEN];
-        rand::thread_rng().fill_bytes(&mut salt);
-        rand::thread_rng().fill_bytes(&mut iv);
-
-        let key = self.derive_key(&salt);
-
-        let ciphertext = Aes256CbcEnc::new(&key.into(), &iv.into())
-            .encrypt_padded_vec_mut::<Pkcs7>(&plaintext);
-
-        let mut output = fs::File::create(output_path)
-            .map_err(|e| format!("Failed to create output file: {}", e))?;
-
-        output.write_all(&salt)
-            .map_err(|e| format!("Failed to write salt: {}", e))?;
-        output.write_all(&iv)
-            .map_err(|e| format!("Failed to write IV: {}", e))?;
-        output.write_all(&ciphertext)
-            .map_err(|e| format!("Failed to write ciphertext: {}", e))?;
-
-        Ok(())
-    }
-
-    pub fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), String> {
-        let mut file = fs::File::open(input_path)
-            .map_err(|e| format!("Failed to open input file: {}", e))?;
-        
-        let mut encrypted_data = Vec::new();
-        file.read_to_end(&mut encrypted_data)
-            .map_err(|e| format!("Failed to read input file: {}", e))?;
-
-        if encrypted_data.len() < SALT_LEN + IV_LEN {
-            return Err("File too short to contain salt and IV".to_string());
-        }
-
-        let (salt, rest) = encrypted_data.split_at(SALT_LEN);
-        let (iv, ciphertext) = rest.split_at(IV_LEN);
-
-        let key = self.derive_key(salt.try_into().unwrap());
-
-        let decrypted = Aes256CbcDec::new(&key.into(), iv.into())
-            .decrypt_padded_vec_mut::<Pkcs7>(ciphertext)
-            .map_err(|e| format!("Decryption failed: {}", e))?;
-
-        fs::write(output_path, decrypted)
-            .map_err(|e| format!("Failed to write decrypted file: {}", e))?;
-
-        Ok(())
-    }
-
-    fn derive_key(&self, salt: &[u8; SALT_LEN]) -> [u8; KEY_LEN] {
-        let mut key = [0u8; KEY_LEN];
-        pbkdf2_hmac::<Sha256>(
-            self.password.as_bytes(),
-            salt,
-            PBKDF2_ITERATIONS,
-            &mut key,
-        );
-        key
-    }
+pub fn xor_decrypt_file(input_path: &str, output_path: &str, key: &[u8]) -> io::Result<()> {
+    xor_encrypt_file(input_path, output_path, key)
 }
 
 #[cfg(test)]
@@ -100,22 +29,31 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_encryption_decryption() {
-        let password = "test_password_123".to_string();
-        let encryptor = FileEncryptor::new(password.clone());
-        
-        let original_content = b"Hello, this is a secret message!";
-        
+    fn test_xor_encryption() {
+        let key = b"secret_key";
+        let original_data = b"Hello, Rust encryption!";
+
         let input_file = NamedTempFile::new().unwrap();
-        fs::write(input_file.path(), original_content).unwrap();
-        
-        let encrypted_file = NamedTempFile::new().unwrap();
+        let output_file = NamedTempFile::new().unwrap();
         let decrypted_file = NamedTempFile::new().unwrap();
-        
-        encryptor.encrypt_file(input_file.path(), encrypted_file.path()).unwrap();
-        encryptor.decrypt_file(encrypted_file.path(), decrypted_file.path()).unwrap();
-        
-        let decrypted_content = fs::read(decrypted_file.path()).unwrap();
-        assert_eq!(original_content.to_vec(), decrypted_content);
+
+        fs::write(input_file.path(), original_data).unwrap();
+
+        xor_encrypt_file(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap(),
+            key,
+        )
+        .unwrap();
+
+        xor_decrypt_file(
+            output_file.path().to_str().unwrap(),
+            decrypted_file.path().to_str().unwrap(),
+            key,
+        )
+        .unwrap();
+
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(original_data.to_vec(), decrypted_data);
     }
 }
