@@ -1005,3 +1005,186 @@ mod tests {
         assert_eq!(colors, vec!["red", "yellow"]);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct ValidationError {
+    message: String,
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Validation error: {}", self.message)
+    }
+}
+
+impl Error for ValidationError {}
+
+pub struct DataProcessor {
+    data: HashMap<String, Vec<f64>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            data: HashMap::new(),
+        }
+    }
+
+    pub fn add_dataset(&mut self, key: &str, values: Vec<f64>) -> Result<(), ValidationError> {
+        if values.is_empty() {
+            return Err(ValidationError {
+                message: "Dataset cannot be empty".to_string(),
+            });
+        }
+
+        for value in &values {
+            if value.is_nan() || value.is_infinite() {
+                return Err(ValidationError {
+                    message: "Dataset contains invalid numeric values".to_string(),
+                });
+            }
+        }
+
+        self.data.insert(key.to_string(), values);
+        Ok(())
+    }
+
+    pub fn calculate_statistics(&self, key: &str) -> Result<Statistics, ValidationError> {
+        let values = self.data.get(key).ok_or_else(|| ValidationError {
+            message: format!("Dataset '{}' not found", key),
+        })?;
+
+        let count = values.len() as f64;
+        let sum: f64 = values.iter().sum();
+        let mean = sum / count;
+
+        let variance: f64 = values
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>()
+            / count;
+
+        let std_dev = variance.sqrt();
+
+        let min = values
+            .iter()
+            .fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = values
+            .iter()
+            .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+        Ok(Statistics {
+            count: count as usize,
+            mean,
+            std_dev,
+            min,
+            max,
+        })
+    }
+
+    pub fn normalize_data(&self, key: &str) -> Result<Vec<f64>, ValidationError> {
+        let stats = self.calculate_statistics(key)?;
+        
+        if stats.std_dev == 0.0 {
+            return Err(ValidationError {
+                message: "Cannot normalize data with zero standard deviation".to_string(),
+            });
+        }
+
+        let values = self.data.get(key).unwrap();
+        let normalized: Vec<f64> = values
+            .iter()
+            .map(|&x| (x - stats.mean) / stats.std_dev)
+            .collect();
+
+        Ok(normalized)
+    }
+
+    pub fn merge_datasets(&mut self, key1: &str, key2: &str, new_key: &str) -> Result<(), ValidationError> {
+        let values1 = self.data.get(key1).ok_or_else(|| ValidationError {
+            message: format!("Dataset '{}' not found", key1),
+        })?;
+
+        let values2 = self.data.get(key2).ok_or_else(|| ValidationError {
+            message: format!("Dataset '{}' not found", key2),
+        })?;
+
+        let mut merged = values1.clone();
+        merged.extend(values2.iter().cloned());
+
+        self.add_dataset(new_key, merged)
+    }
+
+    pub fn list_datasets(&self) -> Vec<String> {
+        self.data.keys().cloned().collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Statistics {
+    pub count: usize,
+    pub mean: f64,
+    pub std_dev: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+impl fmt::Display for Statistics {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Statistics: count={}, mean={:.4}, std_dev={:.4}, min={:.4}, max={:.4}",
+            self.count, self.mean, self.std_dev, self.min, self.max
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_and_calculate_statistics() {
+        let mut processor = DataProcessor::new();
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        
+        processor.add_dataset("test", values).unwrap();
+        let stats = processor.calculate_statistics("test").unwrap();
+        
+        assert_eq!(stats.count, 5);
+        assert_eq!(stats.mean, 3.0);
+        assert_eq!(stats.min, 1.0);
+        assert_eq!(stats.max, 5.0);
+    }
+
+    #[test]
+    fn test_normalize_data() {
+        let mut processor = DataProcessor::new();
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        
+        processor.add_dataset("test", values).unwrap();
+        let normalized = processor.normalize_data("test").unwrap();
+        
+        let mean: f64 = normalized.iter().sum::<f64>() / normalized.len() as f64;
+        let variance: f64 = normalized.iter().map(|&x| x.powi(2)).sum::<f64>() / normalized.len() as f64;
+        
+        assert!(mean.abs() < 1e-10);
+        assert!((variance - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_merge_datasets() {
+        let mut processor = DataProcessor::new();
+        
+        processor.add_dataset("set1", vec![1.0, 2.0]).unwrap();
+        processor.add_dataset("set2", vec![3.0, 4.0]).unwrap();
+        processor.merge_datasets("set1", "set2", "merged").unwrap();
+        
+        let stats = processor.calculate_statistics("merged").unwrap();
+        assert_eq!(stats.count, 4);
+        assert_eq!(stats.mean, 2.5);
+    }
+}
