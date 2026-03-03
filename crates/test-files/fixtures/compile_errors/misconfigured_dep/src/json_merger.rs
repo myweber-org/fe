@@ -323,4 +323,91 @@ mod tests {
         assert_eq!(result["id"], 1);
         assert_eq!(result["active"], true);
     }
+}use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
+use std::path::Path;
+
+type JsonValue = serde_json::Value;
+
+pub fn merge_json_files(file_paths: &[impl AsRef<Path>]) -> Result<JsonValue, Box<dyn std::error::Error>> {
+    let mut merged_array = Vec::new();
+
+    for path in file_paths {
+        let file = File::open(path.as_ref())?;
+        let mut reader = BufReader::new(file);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents)?;
+
+        let json_value: JsonValue = serde_json::from_str(&contents)?;
+        
+        match json_value {
+            JsonValue::Array(arr) => {
+                merged_array.extend(arr);
+            }
+            JsonValue::Object(obj) => {
+                merged_array.push(JsonValue::Object(obj));
+            }
+            _ => {
+                return Err("Unsupported JSON structure: expected array or object".into());
+            }
+        }
+    }
+
+    Ok(JsonValue::Array(merged_array))
+}
+
+pub fn merge_json_with_key(file_paths: &[impl AsRef<Path>], key: &str) -> Result<JsonValue, Box<dyn std::error::Error>> {
+    let mut merged_map = HashMap::new();
+
+    for path in file_paths {
+        let contents = fs::read_to_string(path.as_ref())?;
+        let json_value: JsonValue = serde_json::from_str(&contents)?;
+
+        if let JsonValue::Object(obj) = json_value {
+            if let Some(value) = obj.get(key) {
+                let file_name = path.as_ref()
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                
+                merged_map.insert(file_name, value.clone());
+            }
+        }
+    }
+
+    Ok(JsonValue::Object(serde_json::to_value(&merged_map)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_merge_json_arrays() {
+        let file1 = NamedTempFile::new().unwrap();
+        let file2 = NamedTempFile::new().unwrap();
+
+        fs::write(&file1, r#"[{"id": 1}, {"id": 2}]"#).unwrap();
+        fs::write(&file2, r#"[{"id": 3}, {"id": 4}]"#).unwrap();
+
+        let result = merge_json_files(&[&file1, &file2]).unwrap();
+        assert!(result.is_array());
+        assert_eq!(result.as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn test_merge_json_objects() {
+        let file1 = NamedTempFile::new().unwrap();
+        let file2 = NamedTempFile::new().unwrap();
+
+        fs::write(&file1, r#"{"name": "Alice", "age": 30}"#).unwrap();
+        fs::write(&file2, r#"{"name": "Bob", "age": 25}"#).unwrap();
+
+        let result = merge_json_files(&[&file1, &file2]).unwrap();
+        assert!(result.is_array());
+        assert_eq!(result.as_array().unwrap().len(), 2);
+    }
 }
