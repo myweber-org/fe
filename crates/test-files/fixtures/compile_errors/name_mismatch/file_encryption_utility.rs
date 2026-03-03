@@ -727,3 +727,122 @@ mod tests {
         assert!(decryption_result.is_err());
     }
 }
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use pbkdf2::{
+    password_hash::{
+        rand_core::RngCore,
+        PasswordHasher, SaltString
+    },
+    Pbkdf2
+};
+use std::{
+    fs::{File, OpenOptions},
+    io::{Read, Write},
+    path::Path
+};
+
+const SALT_LENGTH: usize = 16;
+const NONCE_LENGTH: usize = 12;
+const PBKDF2_ITERATIONS: u32 = 100_000;
+
+pub struct FileEncryptor {
+    cipher: Aes256Gcm,
+}
+
+impl FileEncryptor {
+    pub fn new(password: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let salt = SaltString::generate(&mut OsRng);
+        let password_hash = Pbkdf2.hash_password(password.as_bytes(), &salt)?;
+        let key_material = password_hash.hash.ok_or("Key derivation failed")?;
+        
+        let mut key_bytes = [0u8; 32];
+        key_bytes.copy_from_slice(&key_material.as_bytes()[..32]);
+        let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+        
+        Ok(Self {
+            cipher: Aes256Gcm::new(key)
+        })
+    }
+    
+    pub fn encrypt_file(&self, source_path: &Path, dest_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let mut source_file = File::open(source_path)?;
+        let mut plaintext = Vec::new();
+        source_file.read_to_end(&mut plaintext)?;
+        
+        let mut nonce_bytes = [0u8; NONCE_LENGTH];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        
+        let ciphertext = self.cipher.encrypt(nonce, plaintext.as_ref())
+            .map_err(|e| format!("Encryption failed: {}", e))?;
+        
+        let mut dest_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(dest_path)?;
+        
+        dest_file.write_all(&nonce_bytes)?;
+        dest_file.write_all(&ciphertext)?;
+        
+        Ok(())
+    }
+    
+    pub fn decrypt_file(&self, source_path: &Path, dest_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let mut source_file = File::open(source_path)?;
+        let mut encrypted_data = Vec::new();
+        source_file.read_to_end(&mut encrypted_data)?;
+        
+        if encrypted_data.len() < NONCE_LENGTH {
+            return Err("Invalid encrypted file format".into());
+        }
+        
+        let nonce_bytes = &encrypted_data[..NONCE_LENGTH];
+        let ciphertext = &encrypted_data[NONCE_LENGTH..];
+        
+        let nonce = Nonce::from_slice(nonce_bytes);
+        let plaintext = self.cipher.decrypt(nonce, ciphertext)
+            .map_err(|e| format!("Decryption failed: {}", e))?;
+        
+        let mut dest_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(dest_path)?;
+        
+        dest_file.write_all(&plaintext)?;
+        
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_encryption_decryption() {
+        let password = "secure_password_123";
+        let encryptor = FileEncryptor::new(password).unwrap();
+        
+        let test_data = b"Test data for encryption and decryption";
+        let mut source_file = NamedTempFile::new().unwrap();
+        source_file.write_all(test_data).unwrap();
+        
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+        
+        encryptor.encrypt_file(source_file.path(), encrypted_file.path()).unwrap();
+        encryptor.decrypt_file(encrypted_file.path(), decrypted_file.path()).unwrap();
+        
+        let mut decrypted_data = Vec::new();
+        File::open(decrypted_file.path()).unwrap()
+            .read_to_end(&mut decrypted_data).unwrap();
+        
+        assert_eq!(decrypted_data, test_data);
+    }
+}
