@@ -97,3 +97,191 @@ mod tests {
         assert_eq!(processor.get_min_value(), Some(10.5));
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+pub struct DataProcessor {
+    data: Vec<f64>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor { data: Vec::new() }
+    }
+
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            for value in line.split(',') {
+                if let Ok(num) = value.trim().parse::<f64>() {
+                    self.data.push(num);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.data.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.data.iter().sum();
+        Some(sum / self.data.len() as f64)
+    }
+
+    pub fn calculate_standard_deviation(&self) -> Option<f64> {
+        if self.data.len() < 2 {
+            return None;
+        }
+
+        let mean = self.calculate_mean()?;
+        let variance: f64 = self.data
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / (self.data.len() - 1) as f64;
+
+        Some(variance.sqrt())
+    }
+
+    pub fn get_summary(&self) -> SummaryStatistics {
+        SummaryStatistics {
+            count: self.data.len(),
+            mean: self.calculate_mean(),
+            std_dev: self.calculate_standard_deviation(),
+            min: self.data.iter().copied().reduce(f64::min),
+            max: self.data.iter().copied().reduce(f64::max),
+        }
+    }
+
+    pub fn add_data_point(&mut self, value: f64) {
+        self.data.push(value);
+    }
+
+    pub fn clear_data(&mut self) {
+        self.data.clear();
+    }
+
+    pub fn data_count(&self) -> usize {
+        self.data.len()
+    }
+}
+
+pub struct SummaryStatistics {
+    pub count: usize,
+    pub mean: Option<f64>,
+    pub std_dev: Option<f64>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+impl std::fmt::Display for SummaryStatistics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Data Summary:")?;
+        writeln!(f, "  Count: {}", self.count)?;
+        
+        if let Some(mean) = self.mean {
+            writeln!(f, "  Mean: {:.4}", mean)?;
+        } else {
+            writeln!(f, "  Mean: N/A")?;
+        }
+
+        if let Some(std_dev) = self.std_dev {
+            writeln!(f, "  Standard Deviation: {:.4}", std_dev)?;
+        } else {
+            writeln!(f, "  Standard Deviation: N/A")?;
+        }
+
+        if let Some(min) = self.min {
+            writeln!(f, "  Minimum: {:.4}", min)?;
+        } else {
+            writeln!(f, "  Minimum: N/A")?;
+        }
+
+        if let Some(max) = self.max {
+            writeln!(f, "  Maximum: {:.4}", max)?;
+        } else {
+            writeln!(f, "  Maximum: N/A")?;
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_empty_processor() {
+        let processor = DataProcessor::new();
+        assert_eq!(processor.data_count(), 0);
+        assert!(processor.calculate_mean().is_none());
+        assert!(processor.calculate_standard_deviation().is_none());
+    }
+
+    #[test]
+    fn test_basic_statistics() {
+        let mut processor = DataProcessor::new();
+        processor.add_data_point(1.0);
+        processor.add_data_point(2.0);
+        processor.add_data_point(3.0);
+        processor.add_data_point(4.0);
+        processor.add_data_point(5.0);
+
+        assert_eq!(processor.data_count(), 5);
+        assert_eq!(processor.calculate_mean(), Some(3.0));
+        assert!(processor.calculate_standard_deviation().unwrap() > 1.58);
+    }
+
+    #[test]
+    fn test_csv_loading() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1.0,2.0,3.0\n4.0,5.0").unwrap();
+
+        let mut processor = DataProcessor::new();
+        let result = processor.load_from_csv(temp_file.path());
+        
+        assert!(result.is_ok());
+        assert_eq!(processor.data_count(), 5);
+        assert_eq!(processor.calculate_mean(), Some(3.0));
+    }
+
+    #[test]
+    fn test_clear_data() {
+        let mut processor = DataProcessor::new();
+        processor.add_data_point(10.0);
+        processor.add_data_point(20.0);
+        
+        assert_eq!(processor.data_count(), 2);
+        
+        processor.clear_data();
+        assert_eq!(processor.data_count(), 0);
+    }
+
+    #[test]
+    fn test_summary_display() {
+        let mut processor = DataProcessor::new();
+        processor.add_data_point(10.0);
+        processor.add_data_point(20.0);
+        
+        let summary = processor.get_summary();
+        let display_output = format!("{}", summary);
+        
+        assert!(display_output.contains("Data Summary:"));
+        assert!(display_output.contains("Count: 2"));
+        assert!(display_output.contains("Mean: 15.0000"));
+    }
+}
