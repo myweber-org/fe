@@ -73,4 +73,85 @@ impl Config {
             Err(errors)
         }
     }
+}use std::env;
+use std::fs;
+use std::collections::HashMap;
+
+pub struct Config {
+    values: HashMap<String, String>,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        let mut values = HashMap::new();
+        
+        for (key, value) in env::vars() {
+            if key.starts_with("APP_") {
+                values.insert(key.to_lowercase(), value);
+            }
+        }
+        
+        Config { values }
+    }
+    
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = fs::read_to_string(path)?;
+        let mut values = HashMap::new();
+        
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            
+            if let Some((key, value)) = trimmed.split_once('=') {
+                let env_key = format!("APP_{}", key.trim().to_uppercase());
+                values.insert(env_key.to_lowercase(), value.trim().to_string());
+            }
+        }
+        
+        Ok(Config { values })
+    }
+    
+    pub fn get(&self, key: &str) -> Option<&String> {
+        let formatted_key = format!("app_{}", key.to_lowercase());
+        self.values.get(&formatted_key)
+    }
+    
+    pub fn set(&mut self, key: &str, value: &str) {
+        let formatted_key = format!("app_{}", key.to_lowercase());
+        self.values.insert(formatted_key, value.to_string());
+    }
+    
+    pub fn merge(&mut self, other: Config) {
+        for (key, value) in other.values {
+            self.values.insert(key, value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_env_config() {
+        env::set_var("APP_DATABASE_URL", "postgres://localhost/test");
+        let config = Config::new();
+        
+        assert_eq!(config.get("database_url"), Some(&"postgres://localhost/test".to_string()));
+    }
+    
+    #[test]
+    fn test_file_config() {
+        let test_content = "database_url=postgres://localhost/prod\napi_key=secret123";
+        let temp_file = "test_config.tmp";
+        
+        fs::write(temp_file, test_content).unwrap();
+        let config = Config::from_file(temp_file).unwrap();
+        fs::remove_file(temp_file).unwrap();
+        
+        assert_eq!(config.get("database_url"), Some(&"postgres://localhost/prod".to_string()));
+        assert_eq!(config.get("api_key"), Some(&"secret123".to_string()));
+    }
 }
