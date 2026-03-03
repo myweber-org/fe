@@ -187,4 +187,121 @@ mod tests {
             assert_eq!(count, 2);
         }
     }
+}extern crate pnet;
+
+use pnet::datalink::{self, NetworkInterface};
+use pnet::datalink::Channel::Ethernet;
+use pnet::packet::ethernet::{EthernetPacket, EtherTypes};
+use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet::packet::ipv4::Ipv4Packet;
+use pnet::packet::tcp::TcpPacket;
+use pnet::packet::udp::UdpPacket;
+use pnet::packet::Packet;
+use std::env;
+
+fn main() {
+    let interface_name = env::args().nth(1).unwrap_or_else(|| {
+        eprintln!("Usage: {} <interface>", env::args().next().unwrap());
+        std::process::exit(1);
+    });
+
+    let interfaces = datalink::interfaces();
+    let interface = interfaces
+        .into_iter()
+        .find(|iface| iface.name == interface_name)
+        .unwrap_or_else(|| {
+            eprintln!("No such interface: {}", interface_name);
+            std::process::exit(1);
+        });
+
+    let (_tx, mut rx) = match datalink::channel(&interface, Default::default()) {
+        Ok(Ethernet(tx, rx)) => (tx, rx),
+        Ok(_) => {
+            eprintln!("Unsupported channel type");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Failed to create channel: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    println!("Starting packet capture on {}...", interface_name);
+    let mut packet_count = 0;
+
+    loop {
+        match rx.next() {
+            Ok(packet) => {
+                packet_count += 1;
+                let ethernet = EthernetPacket::new(packet).unwrap();
+                process_ethernet_frame(&ethernet);
+                
+                if packet_count % 100 == 0 {
+                    println!("Captured {} packets...", packet_count);
+                }
+            }
+            Err(e) => {
+                eprintln!("Error receiving packet: {}", e);
+                break;
+            }
+        }
+    }
+}
+
+fn process_ethernet_frame(ethernet: &EthernetPacket) {
+    match ethernet.get_ethertype() {
+        EtherTypes::Ipv4 => {
+            if let Some(ipv4) = Ipv4Packet::new(ethernet.payload()) {
+                process_ipv4_packet(&ipv4);
+            }
+        }
+        EtherTypes::Ipv6 => {
+            println!("IPv6 packet detected (not processed)");
+        }
+        EtherTypes::Arp => {
+            println!("ARP packet detected");
+        }
+        _ => {
+            println!("Unknown ethertype: {:?}", ethernet.get_ethertype());
+        }
+    }
+}
+
+fn process_ipv4_packet(ipv4: &Ipv4Packet) {
+    match ipv4.get_next_level_protocol() {
+        IpNextHeaderProtocols::Tcp => {
+            if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
+                println!(
+                    "TCP Packet: {}:{} -> {}:{} [Flags: {:?}]",
+                    ipv4.get_source(),
+                    tcp.get_source(),
+                    ipv4.get_destination(),
+                    tcp.get_destination(),
+                    tcp.get_flags()
+                );
+            }
+        }
+        IpNextHeaderProtocols::Udp => {
+            if let Some(udp) = UdpPacket::new(ipv4.payload()) {
+                println!(
+                    "UDP Packet: {}:{} -> {}:{}",
+                    ipv4.get_source(),
+                    udp.get_source(),
+                    ipv4.get_destination(),
+                    udp.get_destination()
+                );
+            }
+        }
+        IpNextHeaderProtocols::Icmp => {
+            println!("ICMP packet from {} to {}", ipv4.get_source(), ipv4.get_destination());
+        }
+        _ => {
+            println!(
+                "Other IPv4 protocol: {} from {} to {}",
+                ipv4.get_next_level_protocol(),
+                ipv4.get_source(),
+                ipv4.get_destination()
+            );
+        }
+    }
 }
