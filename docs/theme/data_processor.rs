@@ -1495,3 +1495,208 @@ mod tests {
         assert_eq!(category_a_records[0].id, 1);
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum DataError {
+    #[error("Invalid data format")]
+    InvalidFormat,
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+    #[error("Validation failed: {0}")]
+    ValidationFailed(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: HashMap<String, f64>,
+    pub tags: Vec<String>,
+}
+
+impl DataRecord {
+    pub fn new(id: u64, timestamp: i64) -> Self {
+        Self {
+            id,
+            timestamp,
+            values: HashMap::new(),
+            tags: Vec::new(),
+        }
+    }
+
+    pub fn add_value(&mut self, key: &str, value: f64) {
+        self.values.insert(key.to_string(), value);
+    }
+
+    pub fn add_tag(&mut self, tag: &str) {
+        self.tags.push(tag.to_string());
+    }
+
+    pub fn validate(&self) -> Result<(), DataError> {
+        if self.id == 0 {
+            return Err(DataError::ValidationFailed("ID cannot be zero".to_string()));
+        }
+
+        if self.timestamp < 0 {
+            return Err(DataError::ValidationFailed(
+                "Timestamp cannot be negative".to_string(),
+            ));
+        }
+
+        if self.values.is_empty() {
+            return Err(DataError::ValidationFailed(
+                "Record must contain at least one value".to_string(),
+            ));
+        }
+
+        for (key, value) in &self.values {
+            if key.trim().is_empty() {
+                return Err(DataError::ValidationFailed(
+                    "Value key cannot be empty".to_string(),
+                ));
+            }
+
+            if !value.is_finite() {
+                return Err(DataError::ValidationFailed(format!(
+                    "Value for '{}' must be finite",
+                    key
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn transform(&mut self, multiplier: f64) {
+        for value in self.values.values_mut() {
+            *value *= multiplier;
+        }
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        Self {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), DataError> {
+        record.validate()?;
+        self.records.push(record);
+        Ok(())
+    }
+
+    pub fn process_all(&mut self, multiplier: f64) {
+        for record in &mut self.records {
+            record.transform(multiplier);
+        }
+    }
+
+    pub fn filter_by_tag(&self, tag: &str) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.tags.contains(&tag.to_string()))
+            .collect()
+    }
+
+    pub fn calculate_average(&self, key: &str) -> Option<f64> {
+        let mut sum = 0.0;
+        let mut count = 0;
+
+        for record in &self.records {
+            if let Some(value) = record.values.get(key) {
+                sum += value;
+                count += 1;
+            }
+        }
+
+        if count > 0 {
+            Some(sum / count as f64)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_statistics(&self) -> HashMap<String, f64> {
+        let mut stats = HashMap::new();
+
+        if self.records.is_empty() {
+            return stats;
+        }
+
+        let mut all_keys = Vec::new();
+        for record in &self.records {
+            for key in record.values.keys() {
+                if !all_keys.contains(key) {
+                    all_keys.push(key.clone());
+                }
+            }
+        }
+
+        for key in all_keys {
+            if let Some(avg) = self.calculate_average(&key) {
+                stats.insert(format!("{}_average", key), avg);
+            }
+        }
+
+        stats
+    }
+}
+
+impl Default for DataProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_validation() {
+        let mut record = DataRecord::new(1, 1625097600);
+        record.add_value("temperature", 25.5);
+        record.add_tag("sensor");
+
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_record_validation_failure() {
+        let record = DataRecord::new(0, 1625097600);
+        assert!(record.validate().is_err());
+    }
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+
+        let mut record1 = DataRecord::new(1, 1625097600);
+        record1.add_value("temperature", 20.0);
+        record1.add_tag("indoor");
+
+        let mut record2 = DataRecord::new(2, 1625097600);
+        record2.add_value("temperature", 30.0);
+        record2.add_tag("outdoor");
+
+        processor.add_record(record1).unwrap();
+        processor.add_record(record2).unwrap();
+
+        processor.process_all(2.0);
+
+        let indoor_records = processor.filter_by_tag("indoor");
+        assert_eq!(indoor_records.len(), 1);
+
+        let avg_temp = processor.calculate_average("temperature");
+        assert_eq!(avg_temp, Some(50.0));
+    }
+}
