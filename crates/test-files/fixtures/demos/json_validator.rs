@@ -1,156 +1,322 @@
-use serde_json::{Value, Map};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
-#[derive(Debug, Clone)]
-pub struct ValidationError {
-    pub path: String,
-    pub message: String,
+#[derive(Debug, Clone, PartialEq)]
+enum JsonValue {
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+    Array(Vec<JsonValue>),
+    Object(HashMap<String, JsonValue>),
 }
 
-impl fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.path, self.message)
+#[derive(Debug)]
+struct JsonParseError {
+    message: String,
+    position: usize,
+}
+
+impl fmt::Display for JsonParseError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "JSON parse error at position {}: {}", self.position, self.message)
     }
 }
 
-impl Error for ValidationError {}
+impl Error for JsonParseError {}
 
-pub struct JsonValidator {
-    required_fields: HashSet<String>,
-    field_types: Map<String, String>,
-    custom_validators: Map<String, Box<dyn Fn(&Value) -> Result<(), ValidationError>>>,
+struct JsonParser {
+    input: Vec<char>,
+    position: usize,
 }
 
-impl JsonValidator {
-    pub fn new() -> Self {
-        JsonValidator {
-            required_fields: HashSet::new(),
-            field_types: Map::new(),
-            custom_validators: Map::new(),
+impl JsonParser {
+    fn new(input: &str) -> Self {
+        JsonParser {
+            input: input.chars().collect(),
+            position: 0,
         }
     }
 
-    pub fn require_field(mut self, field: &str) -> Self {
-        self.required_fields.insert(field.to_string());
-        self
-    }
-
-    pub fn expect_type(mut self, field: &str, type_name: &str) -> Self {
-        self.field_types.insert(field.to_string(), type_name.to_string());
-        self
-    }
-
-    pub fn add_validator<F>(mut self, field: &str, validator: F) -> Self
-    where
-        F: Fn(&Value) -> Result<(), ValidationError> + 'static,
-    {
-        self.custom_validators.insert(field.to_string(), Box::new(validator));
-        self
-    }
-
-    pub fn validate(&self, data: &Value) -> Result<(), Vec<ValidationError>> {
-        let mut errors = Vec::new();
-
-        if let Value::Object(obj) = data {
-            self.validate_required_fields(obj, &mut errors);
-            self.validate_field_types(obj, &mut errors);
-            self.run_custom_validators(obj, &mut errors);
-        } else {
-            errors.push(ValidationError {
-                path: "".to_string(),
-                message: "Expected JSON object".to_string(),
+    fn parse(&mut self) -> Result<JsonValue, JsonParseError> {
+        self.skip_whitespace();
+        let result = self.parse_value()?;
+        self.skip_whitespace();
+        
+        if self.position < self.input.len() {
+            return Err(JsonParseError {
+                message: "Unexpected trailing characters".to_string(),
+                position: self.position,
             });
         }
+        
+        Ok(result)
+    }
 
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
+    fn parse_value(&mut self) -> Result<JsonValue, JsonParseError> {
+        match self.peek_char() {
+            Some('n') => self.parse_null(),
+            Some('t') | Some('f') => self.parse_bool(),
+            Some('"') => self.parse_string(),
+            Some('[') => self.parse_array(),
+            Some('{') => self.parse_object(),
+            Some(c) if c.is_digit(10) || c == '-' => self.parse_number(),
+            _ => Err(JsonParseError {
+                message: "Unexpected character".to_string(),
+                position: self.position,
+            }),
         }
     }
 
-    fn validate_required_fields(&self, obj: &Map<String, Value>, errors: &mut Vec<ValidationError>) {
-        for field in &self.required_fields {
-            if !obj.contains_key(field) {
-                errors.push(ValidationError {
-                    path: field.clone(),
-                    message: "Required field is missing".to_string(),
+    fn parse_null(&mut self) -> Result<JsonValue, JsonParseError> {
+        if self.consume_str("null") {
+            Ok(JsonValue::Null)
+        } else {
+            Err(JsonParseError {
+                message: "Expected 'null'".to_string(),
+                position: self.position,
+            })
+        }
+    }
+
+    fn parse_bool(&mut self) -> Result<JsonValue, JsonParseError> {
+        if self.consume_str("true") {
+            Ok(JsonValue::Bool(true))
+        } else if self.consume_str("false") {
+            Ok(JsonValue::Bool(false))
+        } else {
+            Err(JsonParseError {
+                message: "Expected boolean value".to_string(),
+                position: self.position,
+            })
+        }
+    }
+
+    fn parse_number(&mut self) -> Result<JsonValue, JsonParseError> {
+        let start = self.position;
+        let mut has_decimal = false;
+        
+        if self.consume_char('-') {
+            // Negative number
+        }
+        
+        while let Some(c) = self.peek_char() {
+            if c.is_digit(10) {
+                self.consume_char(c);
+            } else if c == '.' && !has_decimal {
+                has_decimal = true;
+                self.consume_char(c);
+            } else {
+                break;
+            }
+        }
+        
+        let number_str: String = self.input[start..self.position].iter().collect();
+        match number_str.parse::<f64>() {
+            Ok(num) => Ok(JsonValue::Number(num)),
+            Err(_) => Err(JsonParseError {
+                message: "Invalid number format".to_string(),
+                position: start,
+            }),
+        }
+    }
+
+    fn parse_string(&mut self) -> Result<JsonValue, JsonParseError> {
+        self.consume_char('"');
+        let mut result = String::new();
+        
+        while let Some(c) = self.peek_char() {
+            if c == '"' {
+                self.consume_char('"');
+                return Ok(JsonValue::String(result));
+            } else if c == '\\' {
+                self.consume_char('\\');
+                if let Some(escaped) = self.peek_char() {
+                    match escaped {
+                        '"' => result.push('"'),
+                        '\\' => result.push('\\'),
+                        '/' => result.push('/'),
+                        'b' => result.push('\x08'),
+                        'f' => result.push('\x0c'),
+                        'n' => result.push('\n'),
+                        'r' => result.push('\r'),
+                        't' => result.push('\t'),
+                        _ => return Err(JsonParseError {
+                            message: "Invalid escape sequence".to_string(),
+                            position: self.position - 1,
+                        }),
+                    }
+                    self.consume_char(escaped);
+                }
+            } else {
+                result.push(c);
+                self.consume_char(c);
+            }
+        }
+        
+        Err(JsonParseError {
+            message: "Unterminated string".to_string(),
+            position: self.position,
+        })
+    }
+
+    fn parse_array(&mut self) -> Result<JsonValue, JsonParseError> {
+        self.consume_char('[');
+        self.skip_whitespace();
+        
+        let mut array = Vec::new();
+        
+        if self.peek_char() == Some(']') {
+            self.consume_char(']');
+            return Ok(JsonValue::Array(array));
+        }
+        
+        loop {
+            let value = self.parse_value()?;
+            array.push(value);
+            
+            self.skip_whitespace();
+            if self.peek_char() == Some(']') {
+                self.consume_char(']');
+                break;
+            }
+            
+            if self.peek_char() != Some(',') {
+                return Err(JsonParseError {
+                    message: "Expected ',' or ']'".to_string(),
+                    position: self.position,
                 });
             }
+            
+            self.consume_char(',');
+            self.skip_whitespace();
+        }
+        
+        Ok(JsonValue::Array(array))
+    }
+
+    fn parse_object(&mut self) -> Result<JsonValue, JsonParseError> {
+        self.consume_char('{');
+        self.skip_whitespace();
+        
+        let mut object = HashMap::new();
+        
+        if self.peek_char() == Some('}') {
+            self.consume_char('}');
+            return Ok(JsonValue::Object(object));
+        }
+        
+        loop {
+            let key = match self.parse_string()? {
+                JsonValue::String(s) => s,
+                _ => unreachable!(),
+            };
+            
+            self.skip_whitespace();
+            if self.peek_char() != Some(':') {
+                return Err(JsonParseError {
+                    message: "Expected ':'".to_string(),
+                    position: self.position,
+                });
+            }
+            
+            self.consume_char(':');
+            self.skip_whitespace();
+            
+            let value = self.parse_value()?;
+            object.insert(key, value);
+            
+            self.skip_whitespace();
+            if self.peek_char() == Some('}') {
+                self.consume_char('}');
+                break;
+            }
+            
+            if self.peek_char() != Some(',') {
+                return Err(JsonParseError {
+                    message: "Expected ',' or '}'".to_string(),
+                    position: self.position,
+                });
+            }
+            
+            self.consume_char(',');
+            self.skip_whitespace();
+        }
+        
+        Ok(JsonValue::Object(object))
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.input.get(self.position).copied()
+    }
+
+    fn consume_char(&mut self, expected: char) -> bool {
+        if self.peek_char() == Some(expected) {
+            self.position += 1;
+            true
+        } else {
+            false
         }
     }
 
-    fn validate_field_types(&self, obj: &Map<String, Value>, errors: &mut Vec<ValidationError>) {
-        for (field, expected_type) in &self.field_types {
-            if let Some(value) = obj.get(field) {
-                let actual_type = match value {
-                    Value::Null => "null",
-                    Value::Bool(_) => "boolean",
-                    Value::Number(_) => "number",
-                    Value::String(_) => "string",
-                    Value::Array(_) => "array",
-                    Value::Object(_) => "object",
-                };
+    fn consume_str(&mut self, expected: &str) -> bool {
+        let expected_chars: Vec<char> = expected.chars().collect();
+        if self.position + expected_chars.len() <= self.input.len() {
+            let slice = &self.input[self.position..self.position + expected_chars.len()];
+            if slice == expected_chars {
+                self.position += expected_chars.len();
+                return true;
+            }
+        }
+        false
+    }
 
-                if actual_type != expected_type {
-                    errors.push(ValidationError {
-                        path: field.clone(),
-                        message: format!("Expected type '{}', got '{}'", expected_type, actual_type),
-                    });
-                }
+    fn skip_whitespace(&mut self) {
+        while let Some(c) = self.peek_char() {
+            if c.is_whitespace() {
+                self.position += 1;
+            } else {
+                break;
             }
         }
     }
+}
 
-    fn run_custom_validators(&self, obj: &Map<String, Value>, errors: &mut Vec<ValidationError>) {
-        for (field, validator) in &self.custom_validators {
-            if let Some(value) = obj.get(field) {
-                if let Err(err) = validator(value) {
-                    errors.push(err);
-                }
-            }
-        }
-    }
+pub fn validate_json(input: &str) -> Result<JsonValue, JsonParseError> {
+    let mut parser = JsonParser::new(input);
+    parser.parse()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
-    fn test_basic_validation() {
-        let validator = JsonValidator::new()
-            .require_field("name")
-            .expect_type("age", "number")
-            .add_validator("age", |v| {
-                if let Some(age) = v.as_i64() {
-                    if age < 0 || age > 150 {
-                        Err(ValidationError {
-                            path: "age".to_string(),
-                            message: "Age must be between 0 and 150".to_string(),
-                        })
-                    } else {
-                        Ok(())
-                    }
-                } else {
-                    Ok(())
-                }
-            });
+    fn test_valid_json() {
+        let json = r#"{"name": "test", "value": 42.5, "active": true, "tags": ["rust", "json"], "metadata": null}"#;
+        let result = validate_json(json);
+        assert!(result.is_ok());
+    }
 
-        let valid_data = json!({
-            "name": "John",
-            "age": 30
-        });
+    #[test]
+    fn test_invalid_json() {
+        let json = r#"{"name": "test", "value": 42.5"#;
+        let result = validate_json(json);
+        assert!(result.is_err());
+    }
 
-        let invalid_data = json!({
-            "name": "John",
-            "age": -5
-        });
+    #[test]
+    fn test_empty_object() {
+        let json = r#"{}"#;
+        let result = validate_json(json);
+        assert!(result.is_ok());
+    }
 
-        assert!(validator.validate(&valid_data).is_ok());
-        assert!(validator.validate(&invalid_data).is_err());
+    #[test]
+    fn test_escape_sequences() {
+        let json = r#"{"text": "line1\nline2\t tab"}"#;
+        let result = validate_json(json);
+        assert!(result.is_ok());
     }
 }
