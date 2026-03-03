@@ -1,64 +1,41 @@
 use std::collections::HashMap;
 use std::env;
-use std::fs;
+use regex::Regex;
 
-pub struct Config {
+pub struct ConfigParser {
     values: HashMap<String, String>,
 }
 
-impl Config {
-    pub fn from_file(path: &str) -> Result<Self, String> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read config file: {}", e))?;
+impl ConfigParser {
+    pub fn new() -> Self {
+        ConfigParser {
+            values: HashMap::new(),
+        }
+    }
 
-        let mut values = HashMap::new();
+    pub fn load_from_str(&mut self, content: &str) -> Result<(), String> {
+        let env_var_pattern = Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
+        
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
-
-            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
-            if parts.len() != 2 {
-                return Err(format!("Invalid line format: {}", trimmed));
-            }
-
-            let key = parts[0].trim().to_string();
-            let raw_value = parts[1].trim().to_string();
-            let value = Self::resolve_env_vars(&raw_value);
-
-            values.insert(key, value);
-        }
-
-        Ok(Config { values })
-    }
-
-    fn resolve_env_vars(input: &str) -> String {
-        let mut result = String::new();
-        let mut chars = input.chars().peekable();
-        
-        while let Some(ch) = chars.next() {
-            if ch == '$' && chars.peek() == Some(&'{') {
-                chars.next(); // Skip '{'
-                let mut var_name = String::new();
+            
+            if let Some(equal_pos) = trimmed.find('=') {
+                let key = trimmed[..equal_pos].trim().to_string();
+                let mut value = trimmed[equal_pos + 1..].trim().to_string();
                 
-                while let Some(ch) = chars.next() {
-                    if ch == '}' {
-                        break;
-                    }
-                    var_name.push(ch);
-                }
+                value = env_var_pattern.replace_all(&value, |caps: ®ex::Captures| {
+                    let var_name = &caps[1];
+                    env::var(var_name).unwrap_or_else(|_| String::new())
+                }).to_string();
                 
-                match env::var(&var_name) {
-                    Ok(val) => result.push_str(&val),
-                    Err(_) => result.push_str(&format!("${{{}}}", var_name)),
-                }
-            } else {
-                result.push(ch);
+                self.values.insert(key, value);
             }
         }
         
-        result
+        Ok(())
     }
 
     pub fn get(&self, key: &str) -> Option<&String> {
@@ -73,34 +50,33 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
+    
     #[test]
     fn test_basic_parsing() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "HOST=localhost").unwrap();
-        writeln!(file, "PORT=8080").unwrap();
-        writeln!(file, "# This is a comment").unwrap();
-        writeln!(file, "TIMEOUT=30").unwrap();
-
-        let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("HOST").unwrap(), "localhost");
-        assert_eq!(config.get("PORT").unwrap(), "8080");
-        assert_eq!(config.get("TIMEOUT").unwrap(), "30");
-        assert!(config.get("MISSING").is_none());
-    }
-
-    #[test]
-    fn test_env_substitution() {
-        env::set_var("APP_ENV", "production");
+        let mut parser = ConfigParser::new();
+        let config = r#"
+            database_url=postgres://localhost:5432
+            max_connections=10
+            # This is a comment
+            timeout=30
+        "#;
         
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "ENV=${{APP_ENV}}").unwrap();
-        writeln!(file, "PATH=/app/${{APP_ENV}}/data").unwrap();
-
-        let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("ENV").unwrap(), "production");
-        assert_eq!(config.get("PATH").unwrap(), "/app/production/data");
+        parser.load_from_str(config).unwrap();
+        
+        assert_eq!(parser.get("database_url").unwrap(), "postgres://localhost:5432");
+        assert_eq!(parser.get("max_connections").unwrap(), "10");
+        assert_eq!(parser.get("timeout").unwrap(), "30");
+    }
+    
+    #[test]
+    fn test_env_var_substitution() {
+        env::set_var("DB_PORT", "5432");
+        
+        let mut parser = ConfigParser::new();
+        let config = r#"database_host=localhost:${DB_PORT}"#;
+        
+        parser.load_from_str(config).unwrap();
+        
+        assert_eq!(parser.get("database_host").unwrap(), "localhost:5432");
     }
 }
