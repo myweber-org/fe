@@ -113,4 +113,70 @@ mod tests {
         let result = parse_csv_line(line, ',');
         assert_eq!(result, vec!["apple", "banana", "cherry"]);
     }
+}use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+fn validate_record(record: &Record) -> Result<(), String> {
+    if record.name.is_empty() {
+        return Err("Name cannot be empty".to_string());
+    }
+    if record.value < 0.0 {
+        return Err("Value must be non-negative".to_string());
+    }
+    Ok(())
+}
+
+fn process_csv(input_path: &Path, output_path: &Path) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let mut rdr = ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(input_file);
+
+    let output_file = File::create(output_path)?;
+    let mut wtr = WriterBuilder::new()
+        .has_headers(true)
+        .from_writer(output_file);
+
+    let mut valid_count = 0;
+    let mut invalid_count = 0;
+
+    for result in rdr.deserialize() {
+        let record: Record = result?;
+        
+        match validate_record(&record) {
+            Ok(_) => {
+                wtr.serialize(&record)?;
+                valid_count += 1;
+            }
+            Err(err) => {
+                eprintln!("Invalid record {}: {}", record.id, err);
+                invalid_count += 1;
+            }
+        }
+    }
+
+    println!("Processed {} records", valid_count + invalid_count);
+    println!("Valid records: {}", valid_count);
+    println!("Invalid records: {}", invalid_count);
+
+    wtr.flush()?;
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let input_path = Path::new("input.csv");
+    let output_path = Path::new("output.csv");
+    
+    process_csv(input_path, output_path)
 }
