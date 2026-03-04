@@ -787,4 +787,70 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(*record.values.get("temperature").unwrap(), 0.75);
     }
+}use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+impl Record {
+    fn is_valid(&self) -> bool {
+        !self.name.is_empty() && self.value >= 0.0
+    }
+}
+
+pub fn process_csv(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let input_path = Path::new(input_path);
+    let output_path = Path::new(output_path);
+
+    let mut reader = Reader::from_path(input_path)?;
+    let mut writer = Writer::from_path(output_path)?;
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.is_valid() {
+            writer.serialize(&record)?;
+        } else {
+            eprintln!("Skipping invalid record: {:?}", record);
+        }
+    }
+
+    writer.flush()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_valid_record() {
+        let record = Record {
+            id: 1,
+            name: "Test".to_string(),
+            value: 100.0,
+            active: true,
+        };
+        assert!(record.is_valid());
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        let record = Record {
+            id: 2,
+            name: "".to_string(),
+            value: -50.0,
+            active: false,
+        };
+        assert!(!record.is_valid());
+    }
 }
