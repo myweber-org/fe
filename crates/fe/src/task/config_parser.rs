@@ -128,3 +128,65 @@ mod tests {
         assert_eq!(config.get("NORMAL").unwrap(), "value");
     }
 }
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+
+pub struct Config {
+    values: HashMap<String, String>,
+}
+
+impl Config {
+    pub fn from_file(path: &str) -> Result<Self, String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+        
+        let mut values = HashMap::new();
+        
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            
+            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
+            if parts.len() != 2 {
+                return Err(format!("Invalid config line: {}", line));
+            }
+            
+            let key = parts[0].trim().to_string();
+            let mut value = parts[1].trim().to_string();
+            
+            // Replace environment variables
+            if value.starts_with("${") && value.ends_with('}') {
+                let var_name = &value[2..value.len()-1];
+                if let Ok(env_value) = env::var(var_name) {
+                    value = env_value;
+                }
+            }
+            
+            values.insert(key, value);
+        }
+        
+        Ok(Config { values })
+    }
+    
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.values.get(key)
+    }
+    
+    pub fn get_or_default(&self, key: &str, default: &str) -> String {
+        self.values.get(key)
+            .map(|s| s.as_str())
+            .unwrap_or(default)
+            .to_string()
+    }
+    
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.values.contains_key(key)
+    }
+    
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.values.keys()
+    }
+}
