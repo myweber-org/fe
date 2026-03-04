@@ -242,4 +242,120 @@ pub fn generate_key_file(password: &str, output_path: &Path) -> Result<(), Box<d
     
     fs::write(output_path, key_material)?;
     Ok(())
+}use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use pbkdf2::{pbkdf2_hmac, Params};
+use sha2::Sha256;
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+const SALT_LENGTH: usize = 16;
+const NONCE_LENGTH: usize = 12;
+const PBKDF2_ITERATIONS: u32 = 100_000;
+
+pub struct EncryptionResult {
+    pub ciphertext: Vec<u8>,
+    pub salt: [u8; SALT_LENGTH],
+    pub nonce: [u8; NONCE_LENGTH],
+}
+
+pub fn derive_key(password: &[u8], salt: &[u8]) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    let params = Params {
+        rounds: PBKDF2_ITERATIONS,
+        output_length: 32,
+    };
+    pbkdf2_hmac::<Sha256>(password, salt, params.rounds, &mut key);
+    key
+}
+
+pub fn encrypt_file(
+    input_path: &Path,
+    output_path: &Path,
+    password: &str,
+) -> io::Result<EncryptionResult> {
+    let mut file = fs::File::open(input_path)?;
+    let mut plaintext = Vec::new();
+    file.read_to_end(&mut plaintext)?;
+
+    let mut salt = [0u8; SALT_LENGTH];
+    OsRng.fill_bytes(&mut salt);
+
+    let mut nonce = [0u8; NONCE_LENGTH];
+    OsRng.fill_bytes(&mut nonce);
+
+    let key = derive_key(password.as_bytes(), &salt);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&ciphertext)?;
+
+    Ok(EncryptionResult {
+        ciphertext,
+        salt,
+        nonce,
+    })
+}
+
+pub fn decrypt_file(
+    input_path: &Path,
+    output_path: &Path,
+    password: &str,
+    salt: &[u8; SALT_LENGTH],
+    nonce: &[u8; NONCE_LENGTH],
+) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
+    let mut ciphertext = Vec::new();
+    file.read_to_end(&mut ciphertext)?;
+
+    let key = derive_key(password.as_bytes(), salt);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(nonce), ciphertext.as_ref())
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&plaintext)?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_encryption_decryption() {
+        let plaintext = b"Secret data for encryption test";
+        let password = "strong_password_123";
+
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+
+        fs::write(input_file.path(), plaintext).unwrap();
+
+        let result = encrypt_file(input_file.path(), encrypted_file.path(), password).unwrap();
+
+        decrypt_file(
+            encrypted_file.path(),
+            decrypted_file.path(),
+            password,
+            &result.salt,
+            &result.nonce,
+        )
+        .unwrap();
+
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(plaintext.to_vec(), decrypted_data);
+    }
 }
