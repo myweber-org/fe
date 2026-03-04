@@ -1,53 +1,44 @@
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce,
+};
+use anyhow::{anyhow, Result};
 
-use rand::{thread_rng, Rng};
-use rand::distributions::Alphanumeric;
+const NONCE_SIZE: usize = 12;
 
-pub fn generate_password(length: usize) -> String {
-    let rng = thread_rng();
-    rng.sample_iter(&Alphanumeric)
-        .take(length)
-        .map(char::from)
-        .collect()
-}
-
-pub fn generate_secure_password(length: usize) -> String {
-    let mut rng = thread_rng();
-    let mut password = String::with_capacity(length);
-    
-    for _ in 0..length {
-        let char_type: u8 = rng.gen_range(0..4);
-        let c = match char_type {
-            0 => rng.gen_range(b'a'..=b'z') as char,
-            1 => rng.gen_range(b'A'..=b'Z') as char,
-            2 => rng.gen_range(b'0'..=b'9') as char,
-            _ => {
-                let symbols = "!@#$%^&*()-_=+[]{}|;:,.<>?";
-                symbols.chars().nth(rng.gen_range(0..symbols.len())).unwrap()
-            }
-        };
-        password.push(c);
+pub fn encrypt_aes256gcm(plaintext: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+    if key.len() != 32 {
+        return Err(anyhow!("Key must be 32 bytes for AES-256"));
     }
     
-    password
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let nonce = Nonce::from_slice(&OsRng.gen::<[u8; NONCE_SIZE]>());
+    
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+    
+    let mut result = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
+    result.extend_from_slice(nonce);
+    result.extend_from_slice(&ciphertext);
+    
+    Ok(result)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_generate_password() {
-        let password = generate_password(12);
-        assert_eq!(password.len(), 12);
-        assert!(password.chars().all(|c| c.is_ascii_alphanumeric()));
+pub fn decrypt_aes256gcm(ciphertext: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+    if key.len() != 32 {
+        return Err(anyhow!("Key must be 32 bytes for AES-256"));
     }
-
-    #[test]
-    fn test_generate_secure_password() {
-        let password = generate_secure_password(16);
-        assert_eq!(password.len(), 16);
-        assert!(password.chars().any(|c| c.is_lowercase()));
-        assert!(password.chars().any(|c| c.is_uppercase()));
-        assert!(password.chars().any(|c| c.is_numeric()));
+    
+    if ciphertext.len() < NONCE_SIZE {
+        return Err(anyhow!("Ciphertext too short"));
     }
+    
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let (nonce_bytes, encrypted_data) = ciphertext.split_at(NONCE_SIZE);
+    let nonce = Nonce::from_slice(nonce_bytes);
+    
+    cipher
+        .decrypt(nonce, encrypted_data)
+        .map_err(|e| anyhow!("Decryption failed: {}", e))
 }
