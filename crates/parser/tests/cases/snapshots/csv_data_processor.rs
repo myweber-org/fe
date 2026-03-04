@@ -89,3 +89,132 @@ impl CsvProcessor {
         self.headers.len()
     }
 }
+use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DataRecord {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ProcessedRecord {
+    id: u32,
+    normalized_value: f64,
+    category_code: String,
+}
+
+fn validate_record(record: &DataRecord) -> Result<(), String> {
+    if record.name.is_empty() {
+        return Err("Name cannot be empty".to_string());
+    }
+    if record.value < 0.0 {
+        return Err("Value must be non-negative".to_string());
+    }
+    if record.category.len() > 10 {
+        return Err("Category exceeds maximum length".to_string());
+    }
+    Ok(())
+}
+
+fn transform_record(record: DataRecord) -> ProcessedRecord {
+    let normalized_value = if record.value > 100.0 {
+        record.value / 10.0
+    } else {
+        record.value
+    };
+    
+    let category_code = match record.category.as_str() {
+        "A" | "B" | "C" => format!("CAT_{}", record.category),
+        _ => "CAT_OTHER".to_string(),
+    };
+    
+    ProcessedRecord {
+        id: record.id,
+        normalized_value,
+        category_code,
+    }
+}
+
+pub fn process_csv_file(input_path: &Path, output_path: &Path) -> Result<usize, Box<dyn Error>> {
+    let mut reader = Reader::from_path(input_path)?;
+    let mut writer = Writer::from_path(output_path)?;
+    
+    let mut processed_count = 0;
+    let mut error_count = 0;
+    
+    for result in reader.deserialize() {
+        let record: DataRecord = match result {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Failed to deserialize record: {}", e);
+                error_count += 1;
+                continue;
+            }
+        };
+        
+        if let Err(e) = validate_record(&record) {
+            eprintln!("Validation failed for record {}: {}", record.id, e);
+            error_count += 1;
+            continue;
+        }
+        
+        let processed_record = transform_record(record);
+        
+        writer.serialize(&processed_record)?;
+        processed_count += 1;
+    }
+    
+    writer.flush()?;
+    
+    println!("Processing complete: {} records processed, {} errors", processed_count, error_count);
+    Ok(processed_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_validate_record_valid() {
+        let record = DataRecord {
+            id: 1,
+            name: "Test".to_string(),
+            value: 50.0,
+            category: "A".to_string(),
+        };
+        assert!(validate_record(&record).is_ok());
+    }
+    
+    #[test]
+    fn test_validate_record_invalid_name() {
+        let record = DataRecord {
+            id: 1,
+            name: "".to_string(),
+            value: 50.0,
+            category: "A".to_string(),
+        };
+        assert!(validate_record(&record).is_err());
+    }
+    
+    #[test]
+    fn test_transform_record() {
+        let record = DataRecord {
+            id: 1,
+            name: "Test".to_string(),
+            value: 150.0,
+            category: "A".to_string(),
+        };
+        
+        let processed = transform_record(record);
+        assert_eq!(processed.id, 1);
+        assert_eq!(processed.normalized_value, 15.0);
+        assert_eq!(processed.category_code, "CAT_A");
+    }
+}
