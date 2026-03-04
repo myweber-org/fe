@@ -198,4 +198,57 @@ pub fn merge_json_files(input_paths: &[&str], output_path: &str) -> Result<(), B
     fs::write(output_path, output_json)?;
 
     Ok(())
+}use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
+use std::path::Path;
+
+type JsonValue = serde_json::Value;
+type JsonMap = HashMap<String, JsonValue>;
+
+pub fn merge_json_files(file_paths: &[&str]) -> Result<JsonValue, Box<dyn std::error::Error>> {
+    let mut merged_map = JsonMap::new();
+
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            eprintln!("Warning: File {} not found, skipping.", path_str);
+            continue;
+        }
+
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut content = String::new();
+        reader.read_to_string(&mut content)?;
+
+        let json_value: JsonValue = serde_json::from_str(&content)?;
+
+        if let JsonValue::Object(map) = json_value {
+            for (key, value) in map {
+                if merged_map.contains_key(&key) {
+                    eprintln!("Warning: Key '{}' already exists, overwriting.", key);
+                }
+                merged_map.insert(key, value);
+            }
+        } else {
+            return Err("Top-level JSON value must be an object".into());
+        }
+    }
+
+    Ok(JsonValue::Object(
+        merged_map
+            .into_iter()
+            .map(|(k, v)| (k, v))
+            .collect::<serde_json::Map<String, JsonValue>>(),
+    ))
+}
+
+pub fn write_merged_json(
+    output_path: &str,
+    json_value: &JsonValue,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let json_string = serde_json::to_string_pretty(json_value)?;
+    fs::write(output_path, json_string)?;
+    println!("Merged JSON written to {}", output_path);
+    Ok(())
 }
