@@ -3,181 +3,141 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use chrono::{DateTime, Utc};
+use std::path::Path;
 
-#[derive(Debug, Serialize, Deserialize)]
-struct LogEntry {
-    timestamp: DateTime<Utc>,
-    level: String,
-    message: String,
-    #[serde(flatten)]
-    extra_fields: HashMap<String, serde_json::Value>,
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+pub enum LogLevel {
+    DEBUG,
+    INFO,
+    WARN,
+    ERROR,
+    CRITICAL,
 }
 
-struct LogProcessor {
-    min_level: String,
-    include_fields: Vec<String>,
-    exclude_fields: Vec<String>,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: LogLevel,
+    pub message: String,
+    pub metadata: HashMap<String, String>,
+}
+
+pub struct LogProcessor {
+    min_level: LogLevel,
+    include_patterns: Vec<String>,
+    exclude_patterns: Vec<String>,
 }
 
 impl LogProcessor {
-    fn new(min_level: &str) -> Self {
+    pub fn new(min_level: LogLevel) -> Self {
         LogProcessor {
-            min_level: min_level.to_lowercase(),
-            include_fields: Vec::new(),
-            exclude_fields: Vec::new(),
+            min_level,
+            include_patterns: Vec::new(),
+            exclude_patterns: Vec::new(),
         }
     }
 
-    fn with_included_fields(mut self, fields: &[&str]) -> Self {
-        self.include_fields = fields.iter().map(|s| s.to_string()).collect();
-        self
+    pub fn add_include_pattern(&mut self, pattern: String) {
+        self.include_patterns.push(pattern);
     }
 
-    fn with_excluded_fields(mut self, fields: &[&str]) -> Self {
-        self.exclude_fields = fields.iter().map(|s| s.to_string()).collect();
-        self
+    pub fn add_exclude_pattern(&mut self, pattern: String) {
+        self.exclude_patterns.push(pattern);
     }
 
-    fn process_file(&self, file_path: &str) -> Result<Vec<LogEntry>, Box<dyn std::error::Error>> {
-        let file = File::open(file_path)?;
+    pub fn process_file<P: AsRef<Path>>(&self, path: P) -> Result<Vec<LogEntry>, String> {
+        let file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
         let reader = BufReader::new(file);
-        let mut processed_logs = Vec::new();
+        let mut filtered_logs = Vec::new();
 
-        for line in reader.lines() {
-            let line = line?;
-            if let Ok(log_entry) = self.parse_line(&line) {
+        for (line_num, line) in reader.lines().enumerate() {
+            let line_content = line.map_err(|e| format!("Failed to read line {}: {}", line_num + 1, e))?;
+            
+            if let Ok(log_entry) = serde_json::from_str::<LogEntry>(&line_content) {
                 if self.should_include(&log_entry) {
-                    processed_logs.push(log_entry);
+                    filtered_logs.push(log_entry);
                 }
             }
         }
 
-        Ok(processed_logs)
-    }
-
-    fn parse_line(&self, line: &str) -> Result<LogEntry, Box<dyn std::error::Error>> {
-        let mut entry: LogEntry = serde_json::from_str(line)?;
-        
-        if !self.include_fields.is_empty() {
-            entry.extra_fields.retain(|k, _| self.include_fields.contains(k));
-        }
-        
-        if !self.exclude_fields.is_empty() {
-            entry.extra_fields.retain(|k, _| !self.exclude_fields.contains(k));
-        }
-
-        Ok(entry)
+        Ok(filtered_logs)
     }
 
     fn should_include(&self, entry: &LogEntry) -> bool {
-        let level_order = |level: &str| -> u8 {
-            match level.to_lowercase().as_str() {
-                "trace" => 1,
-                "debug" => 2,
-                "info" => 3,
-                "warn" => 4,
-                "error" => 5,
-                "fatal" => 6,
-                _ => 0,
-            }
-        };
-
-        level_order(&entry.level) >= level_order(&self.min_level)
-    }
-
-    fn format_output(&self, entries: &[LogEntry]) -> String {
-        let mut output = String::new();
-        
-        for entry in entries {
-            output.push_str(&format!(
-                "[{}] {}: {}\n",
-                entry.timestamp.format("%Y-%m-%d %H:%M:%S"),
-                entry.level.to_uppercase(),
-                entry.message
-            ));
-
-            if !entry.extra_fields.is_empty() {
-                for (key, value) in &entry.extra_fields {
-                    output.push_str(&format!("  {}: {}\n", key, value));
-                }
-            }
-            output.push('\n');
+        if !self.meets_level_requirement(entry) {
+            return false;
         }
 
-        output
+        if !self.include_patterns.is_empty() && !self.matches_any_pattern(&entry.message, &self.include_patterns) {
+            return false;
+        }
+
+        if self.matches_any_pattern(&entry.message, &self.exclude_patterns) {
+            return false;
+        }
+
+        true
+    }
+
+    fn meets_level_requirement(&self, entry: &LogEntry) -> bool {
+        match (&self.min_level, &entry.level) {
+            (LogLevel::DEBUG, _) => true,
+            (LogLevel::INFO, LogLevel::DEBUG) => false,
+            (LogLevel::INFO, _) => true,
+            (LogLevel::WARN, LogLevel::DEBUG | LogLevel::INFO) => false,
+            (LogLevel::WARN, _) => true,
+            (LogLevel::ERROR, LogLevel::DEBUG | LogLevel::INFO | LogLevel::WARN) => false,
+            (LogLevel::ERROR, _) => true,
+            (LogLevel::CRITICAL, LogLevel::CRITICAL) => true,
+            (LogLevel::CRITICAL, _) => false,
+        }
+    }
+
+    fn matches_any_pattern(&self, text: &str, patterns: &[String]) -> bool {
+        patterns.iter().any(|pattern| text.contains(pattern))
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let processor = LogProcessor::new("info")
-        .with_included_fields(&["user_id", "request_id", "duration_ms"])
-        .with_excluded_fields(&["internal_trace", "sensitive_data"]);
-
-    let logs = processor.process_file("application.log")?;
+pub fn count_logs_by_level(logs: &[LogEntry]) -> HashMap<LogLevel, usize> {
+    let mut counts = HashMap::new();
     
-    if !logs.is_empty() {
-        println!("{}", processor.format_output(&logs));
-        println!("Processed {} log entries", logs.len());
-    } else {
-        println!("No matching log entries found");
+    for log in logs {
+        *counts.entry(log.level.clone()).or_insert(0) += 1;
     }
-
-    Ok(())
+    
+    counts
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_log_parsing() {
-        let log_data = r#"{"timestamp":"2024-01-15T10:30:00Z","level":"info","message":"User login","user_id":123,"request_id":"abc-123"}"#;
+    fn test_log_level_filtering() {
+        let mut processor = LogProcessor::new(LogLevel::WARN);
         
-        let processor = LogProcessor::new("info");
-        let entry = processor.parse_line(log_data).unwrap();
-        
-        assert_eq!(entry.level, "info");
-        assert_eq!(entry.message, "User login");
-        assert_eq!(entry.extra_fields.get("user_id").unwrap().as_i64().unwrap(), 123);
+        let test_log = LogEntry {
+            timestamp: "2024-01-15T10:30:00Z".to_string(),
+            level: LogLevel::INFO,
+            message: "Test message".to_string(),
+            metadata: HashMap::new(),
+        };
+
+        assert!(!processor.should_include(&test_log));
     }
 
     #[test]
-    fn test_level_filtering() {
-        let processor = LogProcessor::new("warn");
+    fn test_pattern_filtering() {
+        let mut processor = LogProcessor::new(LogLevel::DEBUG);
+        processor.add_include_pattern("error".to_string());
         
-        let debug_entry = LogEntry {
-            timestamp: Utc::now(),
-            level: "debug".to_string(),
-            message: "Test debug".to_string(),
-            extra_fields: HashMap::new(),
+        let test_log = LogEntry {
+            timestamp: "2024-01-15T10:30:00Z".to_string(),
+            level: LogLevel::ERROR,
+            message: "Database connection error".to_string(),
+            metadata: HashMap::new(),
         };
-        
-        let warn_entry = LogEntry {
-            timestamp: Utc::now(),
-            level: "warn".to_string(),
-            message: "Test warning".to_string(),
-            extra_fields: HashMap::new(),
-        };
-        
-        assert!(!processor.should_include(&debug_entry));
-        assert!(processor.should_include(&warn_entry));
-    }
 
-    #[test]
-    fn test_file_processing() -> Result<(), Box<dyn std::error::Error>> {
-        let mut temp_file = NamedTempFile::new()?;
-        writeln!(temp_file, r#"{{"timestamp":"2024-01-15T10:30:00Z","level":"error","message":"Database connection failed","error_code":500}}"#)?;
-        writeln!(temp_file, r#"{{"timestamp":"2024-01-15T10:31:00Z","level":"debug","message":"Query executed","duration_ms":45}}"#)?;
-        
-        let processor = LogProcessor::new("error");
-        let logs = processor.process_file(temp_file.path().to_str().unwrap())?;
-        
-        assert_eq!(logs.len(), 1);
-        assert_eq!(logs[0].level, "error");
-        
-        Ok(())
+        assert!(processor.should_include(&test_log));
     }
 }
