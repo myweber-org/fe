@@ -530,3 +530,158 @@ mod tests {
         assert_eq!(result.get("tags").unwrap(), "important,normal");
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    id: u32,
+    name: String,
+    value: f64,
+    tags: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum DataError {
+    InvalidId,
+    InvalidName,
+    InvalidValue,
+    EmptyTags,
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataError::InvalidId => write!(f, "ID must be greater than 0"),
+            DataError::InvalidName => write!(f, "Name cannot be empty"),
+            DataError::InvalidValue => write!(f, "Value must be between 0.0 and 1000.0"),
+            DataError::EmptyTags => write!(f, "At least one tag is required"),
+        }
+    }
+}
+
+impl Error for DataError {}
+
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64, tags: Vec<String>) -> Result<Self, DataError> {
+        if id == 0 {
+            return Err(DataError::InvalidId);
+        }
+        if name.trim().is_empty() {
+            return Err(DataError::InvalidName);
+        }
+        if !(0.0..=1000.0).contains(&value) {
+            return Err(DataError::InvalidValue);
+        }
+        if tags.is_empty() {
+            return Err(DataError::EmptyTags);
+        }
+
+        Ok(Self {
+            id,
+            name,
+            value,
+            tags,
+        })
+    }
+
+    pub fn transform(&self) -> HashMap<String, String> {
+        let mut result = HashMap::new();
+        result.insert("identifier".to_string(), format!("REC-{:04}", self.id));
+        result.insert("processed_name".to_string(), self.name.to_uppercase());
+        result.insert("normalized_value".to_string(), format!("{:.2}", self.value / 100.0));
+        result.insert("tag_count".to_string(), self.tags.len().to_string());
+        result.insert("tags".to_string(), self.tags.join("|"));
+        result
+    }
+
+    pub fn validate(&self) -> Vec<&str> {
+        let mut issues = Vec::new();
+        
+        if self.name.len() > 50 {
+            issues.push("Name exceeds maximum length of 50 characters");
+        }
+        
+        if self.tags.len() > 10 {
+            issues.push("Exceeds maximum of 10 tags");
+        }
+        
+        for tag in &self.tags {
+            if tag.len() > 20 {
+                issues.push("Tag exceeds maximum length of 20 characters");
+                break;
+            }
+        }
+        
+        issues
+    }
+}
+
+pub fn process_records(records: Vec<DataRecord>) -> (Vec<HashMap<String, String>>, Vec<String>) {
+    let mut processed = Vec::new();
+    let mut errors = Vec::new();
+    
+    for record in records {
+        match DataRecord::new(record.id, record.name, record.value, record.tags) {
+            Ok(valid_record) => {
+                let validation_issues = valid_record.validate();
+                if validation_issues.is_empty() {
+                    processed.push(valid_record.transform());
+                } else {
+                    for issue in validation_issues {
+                        errors.push(format!("Record {}: {}", valid_record.id, issue));
+                    }
+                }
+            }
+            Err(e) => {
+                errors.push(format!("Invalid record: {}", e));
+            }
+        }
+    }
+    
+    (processed, errors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(
+            1,
+            "Test Record".to_string(),
+            500.0,
+            vec!["tag1".to_string(), "tag2".to_string()],
+        );
+        assert!(record.is_ok());
+    }
+
+    #[test]
+    fn test_invalid_id() {
+        let record = DataRecord::new(
+            0,
+            "Test".to_string(),
+            100.0,
+            vec!["tag".to_string()],
+        );
+        assert!(matches!(record, Err(DataError::InvalidId)));
+    }
+
+    #[test]
+    fn test_transform_output() {
+        let record = DataRecord::new(
+            42,
+            "sample".to_string(),
+            75.5,
+            vec!["alpha".to_string(), "beta".to_string()],
+        ).unwrap();
+        
+        let transformed = record.transform();
+        assert_eq!(transformed.get("identifier").unwrap(), "REC-0042");
+        assert_eq!(transformed.get("processed_name").unwrap(), "SAMPLE");
+        assert_eq!(transformed.get("normalized_value").unwrap(), "0.76");
+        assert_eq!(transformed.get("tag_count").unwrap(), "2");
+    }
+}
