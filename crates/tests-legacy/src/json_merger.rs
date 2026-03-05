@@ -258,3 +258,125 @@ mod tests {
         assert!(parsed.as_array().unwrap().iter().any(|v| v["id"] == "3"));
     }
 }
+use serde_json::{Map, Value};
+use std::collections::HashSet;
+
+pub fn merge_json(base: &mut Value, addition: &Value, overwrite_arrays: bool) {
+    match (base, addition) {
+        (Value::Object(base_map), Value::Object(add_map)) => {
+            for (key, add_value) in add_map {
+                if let Some(base_value) = base_map.get_mut(key) {
+                    merge_json(base_value, add_value, overwrite_arrays);
+                } else {
+                    base_map.insert(key.clone(), add_value.clone());
+                }
+            }
+        }
+        (Value::Array(base_arr), Value::Array(add_arr)) if !overwrite_arrays => {
+            let mut existing_set = HashSet::new();
+            for item in base_arr.iter() {
+                if let Some(s) = item.as_str() {
+                    existing_set.insert(s.to_string());
+                } else if let Some(n) = item.as_i64() {
+                    existing_set.insert(n.to_string());
+                }
+            }
+            
+            for item in add_arr {
+                let should_add = match item {
+                    Value::String(s) => !existing_set.contains(s),
+                    Value::Number(n) if n.is_i64() => {
+                        !existing_set.contains(&n.as_i64().unwrap().to_string())
+                    }
+                    _ => true,
+                };
+                
+                if should_add {
+                    base_arr.push(item.clone());
+                }
+            }
+        }
+        (base, addition) if overwrite_arrays || !base.is_array() => {
+            *base = addition.clone();
+        }
+        _ => {}
+    }
+}
+
+pub fn merge_json_with_strategy(
+    base: &Value,
+    addition: &Value,
+    strategy: MergeStrategy,
+) -> Result<Value, String> {
+    let mut result = base.clone();
+    
+    match strategy {
+        MergeStrategy::Deep => {
+            merge_json(&mut result, addition, false);
+            Ok(result)
+        }
+        MergeStrategy::Shallow => {
+            if let (Value::Object(base_map), Value::Object(add_map)) = (&result, addition) {
+                let mut merged = base_map.clone();
+                for (key, value) in add_map {
+                    merged.insert(key.clone(), value.clone());
+                }
+                Ok(Value::Object(merged))
+            } else {
+                Err("Both values must be objects for shallow merge".to_string())
+            }
+        }
+        MergeStrategy::ArrayAppend => {
+            if let (Value::Array(base_arr), Value::Array(add_arr)) = (&result, addition) {
+                let mut merged = base_arr.clone();
+                merged.extend(add_arr.clone());
+                Ok(Value::Array(merged))
+            } else {
+                Err("Both values must be arrays for array append".to_string())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MergeStrategy {
+    Deep,
+    Shallow,
+    ArrayAppend,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_deep_merge() {
+        let mut base = json!({
+            "a": 1,
+            "b": {
+                "c": 2,
+                "d": [1, 2]
+            }
+        });
+        
+        let addition = json!({
+            "b": {
+                "d": [3, 4],
+                "e": 5
+            },
+            "f": 6
+        });
+        
+        merge_json(&mut base, &addition, false);
+        
+        assert_eq!(base["a"], 1);
+        assert_eq!(base["b"]["c"], 2);
+        assert_eq!(base["b"]["e"], 5);
+        assert_eq!(base["f"], 6);
+        
+        if let Value::Array(arr) = &base["b"]["d"] {
+            assert_eq!(arr.len(), 4);
+        }
+    }
+}
