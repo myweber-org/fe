@@ -162,3 +162,152 @@ mod tests {
         assert_eq!(processor.get_average_value(), Some(20.0));
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub category: String,
+}
+
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    InvalidName,
+    InvalidValue,
+    InvalidCategory,
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "Invalid record ID"),
+            ValidationError::InvalidName => write!(f, "Invalid record name"),
+            ValidationError::InvalidValue => write!(f, "Invalid record value"),
+            ValidationError::InvalidCategory => write!(f, "Invalid record category"),
+        }
+    }
+}
+
+impl Error for ValidationError {}
+
+impl DataRecord {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.id == 0 {
+            return Err(ValidationError::InvalidId);
+        }
+        
+        if self.name.trim().is_empty() {
+            return Err(ValidationError::InvalidName);
+        }
+        
+        if self.value < 0.0 || self.value > 1000.0 {
+            return Err(ValidationError::InvalidValue);
+        }
+        
+        let valid_categories = vec!["A", "B", "C", "D"];
+        if !valid_categories.contains(&self.category.as_str()) {
+            return Err(ValidationError::InvalidCategory);
+        }
+        
+        Ok(())
+    }
+    
+    pub fn transform(&mut self, multiplier: f64) {
+        self.value *= multiplier;
+        self.name = self.name.to_uppercase();
+    }
+}
+
+pub struct DataProcessor {
+    records: HashMap<u32, DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: HashMap::new(),
+        }
+    }
+    
+    pub fn add_record(&mut self, record: DataRecord) -> Result<(), ValidationError> {
+        record.validate()?;
+        self.records.insert(record.id, record);
+        Ok(())
+    }
+    
+    pub fn process_records(&mut self, multiplier: f64) {
+        for record in self.records.values_mut() {
+            record.transform(multiplier);
+        }
+    }
+    
+    pub fn get_record(&self, id: u32) -> Option<&DataRecord> {
+        self.records.get(&id)
+    }
+    
+    pub fn calculate_average(&self) -> f64 {
+        if self.records.is_empty() {
+            return 0.0;
+        }
+        
+        let sum: f64 = self.records.values().map(|r| r.value).sum();
+        sum / self.records.len() as f64
+    }
+    
+    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+        self.records
+            .values()
+            .filter(|r| r.category == category)
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_record_validation() {
+        let valid_record = DataRecord {
+            id: 1,
+            name: "Test".to_string(),
+            value: 100.0,
+            category: "A".to_string(),
+        };
+        
+        assert!(valid_record.validate().is_ok());
+        
+        let invalid_record = DataRecord {
+            id: 0,
+            name: "".to_string(),
+            value: -10.0,
+            category: "X".to_string(),
+        };
+        
+        assert!(invalid_record.validate().is_err());
+    }
+    
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        
+        let record = DataRecord {
+            id: 1,
+            name: "sample".to_string(),
+            value: 50.0,
+            category: "B".to_string(),
+        };
+        
+        assert!(processor.add_record(record).is_ok());
+        processor.process_records(2.0);
+        
+        let processed_record = processor.get_record(1).unwrap();
+        assert_eq!(processed_record.value, 100.0);
+        assert_eq!(processed_record.name, "SAMPLE");
+    }
+}
