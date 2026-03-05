@@ -70,3 +70,57 @@ mod tests {
         assert!(result.contains(&"cherry".to_string()));
     }
 }
+use csv::{Reader, Writer};
+use std::error::Error;
+use std::fs::File;
+use std::io;
+
+pub fn filter_numeric_column(input_path: &str, output_path: &str, column_index: usize) -> Result<(), Box<dyn Error>> {
+    let mut rdr = Reader::from_path(input_path)?;
+    let mut wtr = Writer::from_path(output_path)?;
+
+    let headers = rdr.headers()?.clone();
+    wtr.write_record(&headers)?;
+
+    for result in rdr.records() {
+        let record = result?;
+        if let Some(field) = record.get(column_index) {
+            if field.parse::<f64>().is_ok() {
+                wtr.write_record(&record)?;
+            }
+        }
+    }
+
+    wtr.flush()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_filter_numeric_column() {
+        let mut input_file = NamedTempFile::new().unwrap();
+        writeln!(input_file, "name,age,city").unwrap();
+        writeln!(input_file, "Alice,25,London").unwrap();
+        writeln!(input_file, "Bob,invalid,Paris").unwrap();
+        writeln!(input_file, "Charlie,30,Berlin").unwrap();
+
+        let output_file = NamedTempFile::new().unwrap();
+
+        filter_numeric_column(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap(),
+            1,
+        ).unwrap();
+
+        let mut rdr = Reader::from_path(output_file.path()).unwrap();
+        let records: Vec<_> = rdr.records().collect::<Result<_, _>>().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0][1], "25");
+        assert_eq!(records[1][1], "30");
+    }
+}
