@@ -264,4 +264,69 @@ mod tests {
         
         assert_eq!(UrlParser::extract_domain("invalid-url"), None);
     }
+}use std::collections::HashMap;
+
+pub fn parse_query_string(query: &str) -> HashMap<String, String> {
+    let mut params = HashMap::new();
+    
+    if query.is_empty() {
+        return params;
+    }
+    
+    for pair in query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        if let Some(key) = parts.next() {
+            let value = parts.next().unwrap_or("");
+            params.insert(
+                urlencoding::decode(key).unwrap_or_default().into_owned(),
+                urlencoding::decode(value).unwrap_or_default().into_owned()
+            );
+        }
+    }
+    
+    params
+}
+
+pub fn build_query_string(params: &HashMap<String, String>) -> String {
+    let mut pairs: Vec<String> = Vec::new();
+    
+    for (key, value) in params {
+        let encoded_key = urlencoding::encode(key);
+        let encoded_value = urlencoding::encode(value);
+        pairs.push(format!("{}={}", encoded_key, encoded_value));
+    }
+    
+    pairs.join("&")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_query_string() {
+        let query = "name=John%20Doe&age=30&city=New%20York";
+        let params = parse_query_string(query);
+        
+        assert_eq!(params.get("name"), Some(&"John Doe".to_string()));
+        assert_eq!(params.get("age"), Some(&"30".to_string()));
+        assert_eq!(params.get("city"), Some(&"New York".to_string()));
+    }
+    
+    #[test]
+    fn test_build_query_string() {
+        let mut params = HashMap::new();
+        params.insert("name".to_string(), "John Doe".to_string());
+        params.insert("age".to_string(), "30".to_string());
+        
+        let query = build_query_string(&params);
+        assert!(query.contains("name=John%20Doe"));
+        assert!(query.contains("age=30"));
+    }
+    
+    #[test]
+    fn test_empty_query() {
+        let params = parse_query_string("");
+        assert!(params.is_empty());
+    }
 }
