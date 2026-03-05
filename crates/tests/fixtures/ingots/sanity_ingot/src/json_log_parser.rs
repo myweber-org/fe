@@ -113,4 +113,99 @@ impl PartialOrd for LogLevel {
         };
         Some(self_val.cmp(&other_val))
     }
+}use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+enum LogLevel {
+    INFO,
+    WARN,
+    ERROR,
+    DEBUG,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LogEntry {
+    timestamp: String,
+    level: LogLevel,
+    message: String,
+    metadata: HashMap<String, String>,
+}
+
+struct LogParser {
+    entries: Vec<LogEntry>,
+}
+
+impl LogParser {
+    fn new() -> Self {
+        LogParser {
+            entries: Vec::new(),
+        }
+    }
+
+    fn load_from_file(&mut self, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line_content = line?;
+            if line_content.trim().is_empty() {
+                continue;
+            }
+
+            let entry: LogEntry = serde_json::from_str(&line_content)?;
+            self.entries.push(entry);
+        }
+
+        Ok(())
+    }
+
+    fn filter_by_level(&self, level: LogLevel) -> Vec<&LogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.level == level)
+            .collect()
+    }
+
+    fn count_by_level(&self) -> HashMap<LogLevel, usize> {
+        let mut counts = HashMap::new();
+        for entry in &self.entries {
+            *counts.entry(entry.level.clone()).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    fn search_messages(&self, keyword: &str) -> Vec<&LogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.message.contains(keyword))
+            .collect()
+    }
+}
+
+fn main() {
+    let mut parser = LogParser::new();
+    
+    if let Err(e) = parser.load_from_file("logs.json") {
+        eprintln!("Failed to load log file: {}", e);
+        return;
+    }
+
+    let error_logs = parser.filter_by_level(LogLevel::ERROR);
+    println!("Found {} error logs:", error_logs.len());
+    
+    for log in error_logs.iter().take(3) {
+        println!("  - {}: {}", log.timestamp, log.message);
+    }
+
+    let level_counts = parser.count_by_level();
+    println!("\nLog level distribution:");
+    for (level, count) in level_counts {
+        println!("  {:?}: {}", level, count);
+    }
+
+    let search_results = parser.search_messages("database");
+    println!("\nFound {} logs containing 'database':", search_results.len());
 }
