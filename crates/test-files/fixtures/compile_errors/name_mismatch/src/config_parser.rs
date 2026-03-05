@@ -170,4 +170,108 @@ mod tests {
         assert_eq!(config.get("SECRET").unwrap(), "super_secret_key");
         assert_eq!(config.get("HOST").unwrap(), "localhost");
     }
+}use std::collections::HashMap;
+use std::env;
+
+pub struct ConfigParser {
+    values: HashMap<String, String>,
+}
+
+impl ConfigParser {
+    pub fn new() -> Self {
+        ConfigParser {
+            values: HashMap::new(),
+        }
+    }
+
+    pub fn load_from_str(&mut self, content: &str) -> Result<(), String> {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
+            if parts.len() != 2 {
+                return Err(format!("Invalid line format: {}", line));
+            }
+
+            let key = parts[0].trim().to_string();
+            let raw_value = parts[1].trim().to_string();
+            let value = self.resolve_value(&raw_value)?;
+            self.values.insert(key, value);
+        }
+        Ok(())
+    }
+
+    fn resolve_value(&self, raw_value: &str) -> Result<String, String> {
+        let mut result = String::new();
+        let mut chars = raw_value.chars().peekable();
+        
+        while let Some(ch) = chars.next() {
+            if ch == '$' && chars.peek() == Some(&'{') {
+                chars.next(); // Skip '{'
+                let mut var_name = String::new();
+                while let Some(ch) = chars.next() {
+                    if ch == '}' {
+                        break;
+                    }
+                    var_name.push(ch);
+                }
+                
+                match env::var(&var_name) {
+                    Ok(val) => result.push_str(&val),
+                    Err(_) => return Err(format!("Environment variable not found: {}", var_name)),
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+        Ok(result)
+    }
+
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.values.get(key)
+    }
+
+    pub fn get_or_default(&self, key: &str, default: &str) -> String {
+        self.values.get(key).map(|s| s.as_str()).unwrap_or(default).to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    #[test]
+    fn test_basic_parsing() {
+        let mut parser = ConfigParser::new();
+        let config = "HOST=localhost\nPORT=8080\nDEBUG=true";
+        parser.load_from_str(config).unwrap();
+        
+        assert_eq!(parser.get("HOST"), Some(&"localhost".to_string()));
+        assert_eq!(parser.get("PORT"), Some(&"8080".to_string()));
+        assert_eq!(parser.get("DEBUG"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn test_env_substitution() {
+        env::set_var("APP_SECRET", "my_secret_key");
+        
+        let mut parser = ConfigParser::new();
+        let config = "SECRET=${APP_SECRET}\nHOST=127.0.0.1";
+        parser.load_from_str(config).unwrap();
+        
+        assert_eq!(parser.get("SECRET"), Some(&"my_secret_key".to_string()));
+        assert_eq!(parser.get("HOST"), Some(&"127.0.0.1".to_string()));
+    }
+
+    #[test]
+    fn test_missing_env_var() {
+        let mut parser = ConfigParser::new();
+        let config = "SECRET=${MISSING_VAR}";
+        let result = parser.load_from_str(config);
+        assert!(result.is_err());
+    }
 }
