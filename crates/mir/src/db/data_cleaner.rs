@@ -146,3 +146,65 @@ mod tests {
         assert_eq!(result, "hello@world.com");
     }
 }
+use std::collections::HashSet;
+
+pub struct DataCleaner<T> {
+    data: Vec<T>,
+}
+
+impl<T> DataCleaner<T> 
+where
+    T: Clone + Eq + std::hash::Hash,
+{
+    pub fn new(data: Vec<T>) -> Self {
+        DataCleaner { data }
+    }
+
+    pub fn remove_null_values(&mut self) -> &mut Self 
+    where
+        T: PartialEq<()>,
+    {
+        self.data.retain(|item| *item != ());
+        self
+    }
+
+    pub fn remove_duplicates(&mut self) -> &mut Self {
+        let mut seen = HashSet::new();
+        self.data.retain(|item| seen.insert(item.clone()));
+        self
+    }
+
+    pub fn get_data(&self) -> Vec<T> {
+        self.data.clone()
+    }
+
+    pub fn process(&mut self) -> Vec<T> 
+    where
+        T: PartialEq<()>,
+    {
+        self.remove_null_values()
+            .remove_duplicates()
+            .get_data()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_remove_duplicates() {
+        let data = vec![1, 2, 2, 3, 4, 4, 5];
+        let mut cleaner = DataCleaner::new(data);
+        let result = cleaner.remove_duplicates().get_data();
+        assert_eq!(result, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_remove_null_values() {
+        let data: Vec<Option<i32>> = vec![Some(1), None, Some(2), None, Some(3)];
+        let mut cleaner = DataCleaner::new(data);
+        let result = cleaner.remove_null_values().get_data();
+        assert_eq!(result, vec![Some(1), Some(2), Some(3)]);
+    }
+}
