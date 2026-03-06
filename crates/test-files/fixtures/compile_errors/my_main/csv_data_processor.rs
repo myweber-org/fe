@@ -180,4 +180,142 @@ mod tests {
         let result = processor.save_filtered_to_csv(&test_records, temp_file.path());
         assert!(result.is_ok());
     }
+}use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    category: String,
+    value: f64,
+    active: bool,
+}
+
+fn load_csv(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let mut reader = Reader::from_reader(file);
+    let mut records = Vec::new();
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        records.push(record);
+    }
+
+    Ok(records)
+}
+
+fn filter_active_records(records: Vec<Record>) -> Vec<Record> {
+    records.into_iter().filter(|r| r.active).collect()
+}
+
+fn calculate_category_totals(records: Vec<Record>) -> Vec<(String, f64)> {
+    let mut totals = std::collections::HashMap::new();
+
+    for record in records {
+        *totals.entry(record.category.clone()).or_insert(0.0) += record.value;
+    }
+
+    totals.into_iter().collect()
+}
+
+fn save_results(results: Vec<(String, f64)>, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let file = File::create(output_path)?;
+    let mut writer = Writer::from_writer(file);
+
+    writer.write_record(&["Category", "Total"])?;
+
+    for (category, total) in results {
+        writer.write_record(&[category, total.to_string()])?;
+    }
+
+    writer.flush()?;
+    Ok(())
+}
+
+fn process_csv_data(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let records = load_csv(input_path)?;
+    let active_records = filter_active_records(records);
+    let category_totals = calculate_category_totals(active_records);
+    save_results(category_totals, output_path)?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_filter_active_records() {
+        let records = vec![
+            Record {
+                id: 1,
+                name: "Item A".to_string(),
+                category: "Electronics".to_string(),
+                value: 100.0,
+                active: true,
+            },
+            Record {
+                id: 2,
+                name: "Item B".to_string(),
+                category: "Books".to_string(),
+                value: 50.0,
+                active: false,
+            },
+        ];
+
+        let active = filter_active_records(records);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].name, "Item A");
+    }
+
+    #[test]
+    fn test_calculate_category_totals() {
+        let records = vec![
+            Record {
+                id: 1,
+                name: "Item A".to_string(),
+                category: "Electronics".to_string(),
+                value: 100.0,
+                active: true,
+            },
+            Record {
+                id: 2,
+                name: "Item B".to_string(),
+                category: "Electronics".to_string(),
+                value: 200.0,
+                active: true,
+            },
+        ];
+
+        let totals = calculate_category_totals(records);
+        assert_eq!(totals.len(), 1);
+        assert_eq!(totals[0].0, "Electronics");
+        assert_eq!(totals[0].1, 300.0);
+    }
+
+    #[test]
+    fn test_process_csv_data() -> Result<(), Box<dyn Error>> {
+        let input_data = "id,name,category,value,active\n1,Item A,Electronics,100.0,true\n2,Item B,Books,50.0,false";
+        
+        let input_file = NamedTempFile::new()?;
+        std::fs::write(input_file.path(), input_data)?;
+        
+        let output_file = NamedTempFile::new()?;
+        
+        process_csv_data(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap(),
+        )?;
+
+        let output_content = std::fs::read_to_string(output_file.path())?;
+        assert!(output_content.contains("Electronics"));
+        assert!(output_content.contains("100"));
+
+        Ok(())
+    }
 }
