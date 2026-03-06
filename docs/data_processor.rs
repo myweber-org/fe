@@ -1313,3 +1313,203 @@ mod tests {
         assert!(stats.1 > 299.0 && stats.1 < 301.0);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+    pub valid: bool,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Self {
+        let valid = value >= 0.0 && !category.is_empty();
+        Self {
+            id,
+            value,
+            category,
+            valid,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.id == 0 {
+            return Err("ID cannot be zero".to_string());
+        }
+        if self.value < 0.0 {
+            return Err("Value must be non-negative".to_string());
+        }
+        if self.category.is_empty() {
+            return Err("Category cannot be empty".to_string());
+        }
+        Ok(())
+    }
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+    stats: ProcessingStats,
+}
+
+#[derive(Debug, Default)]
+pub struct ProcessingStats {
+    pub total_records: usize,
+    pub valid_records: usize,
+    pub average_value: f64,
+    pub categories: Vec<String>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        Self {
+            records: Vec::new(),
+            stats: ProcessingStats::default(),
+        }
+    }
+
+    pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() || line.starts_with('#') {
+                continue;
+            }
+            
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 3 {
+                return Err(format!("Invalid format at line {}", line_num + 1).into());
+            }
+            
+            let id = parts[0].parse::<u32>()?;
+            let value = parts[1].parse::<f64>()?;
+            let category = parts[2].trim().to_string();
+            
+            let record = DataRecord::new(id, value, category);
+            self.records.push(record);
+        }
+        
+        self.calculate_stats();
+        Ok(())
+    }
+
+    pub fn add_record(&mut self, record: DataRecord) {
+        self.records.push(record);
+        self.calculate_stats();
+    }
+
+    pub fn get_valid_records(&self) -> Vec<&DataRecord> {
+        self.records.iter().filter(|r| r.valid).collect()
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|r| r.category == category && r.valid)
+            .collect()
+    }
+
+    pub fn calculate_stats(&mut self) {
+        self.stats.total_records = self.records.len();
+        self.stats.valid_records = self.records.iter().filter(|r| r.valid).count();
+        
+        let valid_values: Vec<f64> = self.records
+            .iter()
+            .filter(|r| r.valid)
+            .map(|r| r.value)
+            .collect();
+        
+        self.stats.average_value = if !valid_values.is_empty() {
+            valid_values.iter().sum::<f64>() / valid_values.len() as f64
+        } else {
+            0.0
+        };
+        
+        let mut categories: Vec<String> = self.records
+            .iter()
+            .map(|r| r.category.clone())
+            .collect();
+        categories.sort();
+        categories.dedup();
+        self.stats.categories = categories;
+    }
+
+    pub fn get_stats(&self) -> &ProcessingStats {
+        &self.stats
+    }
+
+    pub fn export_valid_records(&self) -> String {
+        let mut output = String::new();
+        output.push_str("id,value,category,valid\n");
+        
+        for record in &self.records {
+            if record.valid {
+                output.push_str(&format!("{},{},{},{}\n", 
+                    record.id, 
+                    record.value, 
+                    record.category, 
+                    record.valid));
+            }
+        }
+        
+        output
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = DataRecord::new(1, 10.5, "test".to_string());
+        assert!(valid_record.validate().is_ok());
+        assert!(valid_record.valid);
+
+        let invalid_record = DataRecord::new(0, -5.0, "".to_string());
+        assert!(invalid_record.validate().is_err());
+        assert!(!invalid_record.valid);
+    }
+
+    #[test]
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        
+        let record1 = DataRecord::new(1, 10.0, "A".to_string());
+        let record2 = DataRecord::new(2, 20.0, "B".to_string());
+        
+        processor.add_record(record1);
+        processor.add_record(record2);
+        
+        assert_eq!(processor.get_stats().total_records, 2);
+        assert_eq!(processor.get_stats().valid_records, 2);
+        assert_eq!(processor.get_stats().average_value, 15.0);
+    }
+
+    #[test]
+    fn test_file_loading() -> Result<(), Box<dyn Error>> {
+        let mut file = NamedTempFile::new()?;
+        writeln!(file, "1,10.5,category1")?;
+        writeln!(file, "2,20.3,category2")?;
+        writeln!(file, "# This is a comment")?;
+        writeln!(file, "")?;
+        writeln!(file, "3,15.7,category1")?;
+        
+        let mut processor = DataProcessor::new();
+        processor.load_from_file(file.path())?;
+        
+        assert_eq!(processor.get_stats().total_records, 3);
+        assert_eq!(processor.get_stats().valid_records, 3);
+        assert_eq!(processor.filter_by_category("category1").len(), 2);
+        
+        Ok(())
+    }
+}
