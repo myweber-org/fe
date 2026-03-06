@@ -182,3 +182,80 @@ mod tests {
         Ok(())
     }
 }
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+pub fn xor_cipher(data: &mut [u8], key: &[u8]) {
+    for (i, byte) in data.iter_mut().enumerate() {
+        *byte ^= key[i % key.len()];
+    }
+}
+
+pub fn process_file(input_path: &Path, output_path: &Path, key: &[u8]) -> io::Result<()> {
+    let mut file = fs::File::open(input_path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    
+    xor_cipher(&mut buffer, key);
+    
+    let mut output_file = fs::File::create(output_path)?;
+    output_file.write_all(&buffer)?;
+    
+    Ok(())
+}
+
+pub fn generate_key_from_string(seed: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(32);
+    let bytes = seed.as_bytes();
+    
+    for i in 0..32 {
+        let byte = bytes[i % bytes.len()]
+            .wrapping_add((i * 17) as u8)
+            .rotate_left(3);
+        key.push(byte);
+    }
+    
+    key
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_xor_cipher_symmetry() {
+        let mut data = vec![0xAA, 0xBB, 0xCC, 0xDD];
+        let original = data.clone();
+        let key = b"secret";
+        
+        xor_cipher(&mut data, key);
+        assert_ne!(data, original);
+        
+        xor_cipher(&mut data, key);
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_file_encryption() -> io::Result<()> {
+        let mut input_file = NamedTempFile::new()?;
+        let test_data = b"Hello, XOR encryption!";
+        input_file.write_all(test_data)?;
+        
+        let output_file = NamedTempFile::new()?;
+        let key = generate_key_from_string("test-key");
+        
+        process_file(input_file.path(), output_file.path(), &key)?;
+        
+        let mut encrypted = Vec::new();
+        fs::File::open(output_file.path())?.read_to_end(&mut encrypted)?;
+        assert_ne!(encrypted, test_data);
+        
+        xor_cipher(&mut encrypted, &key);
+        assert_eq!(encrypted, test_data);
+        
+        Ok(())
+    }
+}
