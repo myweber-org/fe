@@ -437,3 +437,149 @@ mod tests {
         assert!(!validate_key(""));
     }
 }
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use argon2::{
+    password_hash::{
+        rand_core::OsRng,
+        PasswordHasher, SaltString
+    },
+    Argon2
+};
+use std::fs;
+use std::io::{self, Write};
+
+const NONCE_SIZE: usize = 12;
+
+pub struct FileEncryptor {
+    cipher: Aes256Gcm,
+}
+
+impl FileEncryptor {
+    pub fn new_from_password(password: &str) -> io::Result<Self> {
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        
+        let password_hash = argon2
+            .hash_password(password.as_bytes(), &salt)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        
+        let hash_bytes = password_hash.hash.unwrap().as_bytes();
+        let key = Key::<Aes256Gcm>::from_slice(&hash_bytes[..32]);
+        let cipher = Aes256Gcm::new(key);
+        
+        Ok(Self { cipher })
+    }
+    
+    pub fn encrypt_file(&self, input_path: &str, output_path: &str) -> io::Result<()> {
+        let plaintext = fs::read(input_path)?;
+        
+        let nonce_bytes: [u8; NONCE_SIZE] = OsRng.fill_bytes();
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        
+        let ciphertext = self.cipher
+            .encrypt(nonce, plaintext.as_ref())
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        
+        let mut output_data = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
+        output_data.extend_from_slice(&nonce_bytes);
+        output_data.extend_from_slice(&ciphertext);
+        
+        fs::write(output_path, output_data)?;
+        Ok(())
+    }
+    
+    pub fn decrypt_file(&self, input_path: &str, output_path: &str) -> io::Result<()> {
+        let encrypted_data = fs::read(input_path)?;
+        
+        if encrypted_data.len() < NONCE_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Encrypted file too short"
+            ));
+        }
+        
+        let (nonce_bytes, ciphertext) = encrypted_data.split_at(NONCE_SIZE);
+        let nonce = Nonce::from_slice(nonce_bytes);
+        
+        let plaintext = self.cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        
+        fs::write(output_path, plaintext)?;
+        Ok(())
+    }
+}
+
+pub fn process_encryption() -> io::Result<()> {
+    let mut input = String::new();
+    
+    print!("Enter operation (encrypt/decrypt): ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut input)?;
+    let operation = input.trim();
+    
+    input.clear();
+    print!("Enter password: ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut input)?;
+    let password = input.trim();
+    
+    let encryptor = FileEncryptor::new_from_password(password)?;
+    
+    input.clear();
+    print!("Enter input file path: ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut input)?;
+    let input_path = input.trim();
+    
+    input.clear();
+    print!("Enter output file path: ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut input)?;
+    let output_path = input.trim();
+    
+    match operation {
+        "encrypt" => encryptor.encrypt_file(input_path, output_path),
+        "decrypt" => encryptor.decrypt_file(input_path, output_path),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid operation"
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_encryption_roundtrip() {
+        let test_data = b"Test encryption data for verification";
+        let password = "secure_password_123";
+        
+        let input_file = NamedTempFile::new().unwrap();
+        let encrypted_file = NamedTempFile::new().unwrap();
+        let decrypted_file = NamedTempFile::new().unwrap();
+        
+        fs::write(input_file.path(), test_data).unwrap();
+        
+        let encryptor = FileEncryptor::new_from_password(password).unwrap();
+        
+        encryptor.encrypt_file(
+            input_file.path().to_str().unwrap(),
+            encrypted_file.path().to_str().unwrap()
+        ).unwrap();
+        
+        encryptor.decrypt_file(
+            encrypted_file.path().to_str().unwrap(),
+            decrypted_file.path().to_str().unwrap()
+        ).unwrap();
+        
+        let decrypted_data = fs::read(decrypted_file.path()).unwrap();
+        assert_eq!(test_data.to_vec(), decrypted_data);
+    }
+}
