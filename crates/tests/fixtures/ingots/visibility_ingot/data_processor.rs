@@ -1,127 +1,177 @@
 
-use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fmt;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct DataRecord {
     pub id: u32,
     pub value: f64,
+    pub category: String,
     pub timestamp: i64,
 }
 
-#[derive(Debug)]
-pub enum ProcessingError {
-    InvalidValue,
-    InvalidTimestamp,
-    ValidationFailed(String),
-}
-
-impl fmt::Display for ProcessingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProcessingError::InvalidValue => write!(f, "Invalid data value"),
-            ProcessingError::InvalidTimestamp => write!(f, "Invalid timestamp"),
-            ProcessingError::ValidationFailed(msg) => write!(f, "Validation failed: {}", msg),
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String, timestamp: i64) -> Self {
+        DataRecord {
+            id,
+            value,
+            category,
+            timestamp,
         }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.id > 0 && self.value.is_finite() && !self.category.is_empty()
     }
 }
 
-impl Error for ProcessingError {}
-
 pub struct DataProcessor {
-    threshold: f64,
+    records: Vec<DataRecord>,
 }
 
 impl DataProcessor {
-    pub fn new(threshold: f64) -> Self {
-        DataProcessor { threshold }
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
     }
 
-    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
-        if record.value.is_nan() || record.value.is_infinite() {
-            return Err(ProcessingError::InvalidValue);
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if line_num == 0 {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 4 {
+                continue;
+            }
+
+            let id = parts[0].parse::<u32>().unwrap_or(0);
+            let value = parts[1].parse::<f64>().unwrap_or(0.0);
+            let category = parts[2].to_string();
+            let timestamp = parts[3].parse::<i64>().unwrap_or(0);
+
+            let record = DataRecord::new(id, value, category, timestamp);
+            if record.is_valid() {
+                self.records.push(record);
+                count += 1;
+            }
         }
 
-        if record.timestamp < 0 {
-            return Err(ProcessingError::InvalidTimestamp);
-        }
-
-        if record.value > self.threshold {
-            return Err(ProcessingError::ValidationFailed(
-                format!("Value {} exceeds threshold {}", record.value, self.threshold)
-            ));
-        }
-
-        Ok(())
+        Ok(count)
     }
 
-    pub fn transform_records(&self, records: Vec<DataRecord>) -> Vec<DataRecord> {
-        records
-            .into_iter()
-            .filter_map(|mut record| {
-                if self.validate_record(&record).is_ok() {
-                    record.value = record.value * 2.0;
-                    Some(record)
-                } else {
-                    None
-                }
-            })
+    pub fn filter_by_category(&self, category: &str) -> Vec<&DataRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.category == category)
             .collect()
     }
 
-    pub fn process_batch(&self, records: Vec<DataRecord>) -> Result<Vec<DataRecord>, ProcessingError> {
-        let mut valid_records = Vec::new();
-        
-        for record in records {
-            self.validate_record(&record)?;
-            valid_records.push(record);
+    pub fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
         }
 
-        let transformed = self.transform_records(valid_records);
-        Ok(transformed)
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    pub fn get_statistics(&self) -> (f64, f64, f64) {
+        if self.records.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+
+        let values: Vec<f64> = self.records.iter().map(|r| r.value).collect();
+        let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let avg = self.calculate_average().unwrap_or(0.0);
+
+        (min, max, avg)
+    }
+
+    pub fn count_records(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
-    fn test_valid_record() {
-        let processor = DataProcessor::new(100.0);
-        let record = DataRecord {
-            id: 1,
-            value: 50.0,
-            timestamp: 1625097600,
-        };
-        
-        assert!(processor.validate_record(&record).is_ok());
+    fn test_data_record_validation() {
+        let valid_record = DataRecord::new(1, 42.5, "test".to_string(), 1234567890);
+        assert!(valid_record.is_valid());
+
+        let invalid_id = DataRecord::new(0, 42.5, "test".to_string(), 1234567890);
+        assert!(!invalid_id.is_valid());
+
+        let invalid_category = DataRecord::new(1, 42.5, "".to_string(), 1234567890);
+        assert!(!invalid_category.is_valid());
     }
 
     #[test]
-    fn test_invalid_value() {
-        let processor = DataProcessor::new(100.0);
-        let record = DataRecord {
-            id: 1,
-            value: f64::NAN,
-            timestamp: 1625097600,
-        };
+    fn test_load_from_csv() {
+        let mut csv_content = "id,value,category,timestamp\n".to_string();
+        csv_content.push_str("1,10.5,type_a,1000\n");
+        csv_content.push_str("2,20.3,type_b,2000\n");
+        csv_content.push_str("3,15.7,type_a,3000\n");
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "{}", csv_content).unwrap();
+
+        let mut processor = DataProcessor::new();
+        let result = processor.load_from_csv(temp_file.path());
         
-        assert!(processor.validate_record(&record).is_err());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 3);
+        assert_eq!(processor.count_records(), 3);
     }
 
     #[test]
-    fn test_transform_records() {
-        let processor = DataProcessor::new(100.0);
-        let records = vec![
-            DataRecord { id: 1, value: 10.0, timestamp: 1625097600 },
-            DataRecord { id: 2, value: 20.0, timestamp: 1625097601 },
-        ];
+    fn test_filter_and_statistics() {
+        let mut processor = DataProcessor::new();
         
-        let transformed = processor.transform_records(records);
-        assert_eq!(transformed.len(), 2);
-        assert_eq!(transformed[0].value, 20.0);
-        assert_eq!(transformed[1].value, 40.0);
+        processor.records.push(DataRecord::new(1, 10.0, "A".to_string(), 1000));
+        processor.records.push(DataRecord::new(2, 20.0, "B".to_string(), 2000));
+        processor.records.push(DataRecord::new(3, 30.0, "A".to_string(), 3000));
+        processor.records.push(DataRecord::new(4, 40.0, "B".to_string(), 4000));
+
+        let filtered = processor.filter_by_category("A");
+        assert_eq!(filtered.len(), 2);
+
+        let stats = processor.get_statistics();
+        assert_eq!(stats.0, 10.0);
+        assert_eq!(stats.1, 40.0);
+        assert_eq!(stats.2, 25.0);
+
+        let avg = processor.calculate_average();
+        assert_eq!(avg, Some(25.0));
+    }
+
+    #[test]
+    fn test_empty_processor() {
+        let processor = DataProcessor::new();
+        assert_eq!(processor.count_records(), 0);
+        assert_eq!(processor.calculate_average(), None);
+        
+        let stats = processor.get_statistics();
+        assert_eq!(stats, (0.0, 0.0, 0.0));
     }
 }
