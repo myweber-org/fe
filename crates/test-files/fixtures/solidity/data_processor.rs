@@ -1,111 +1,73 @@
-
-use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
 #[derive(Debug, Clone)]
-pub struct DataRecord {
-    id: u32,
-    name: String,
-    value: f64,
-    tags: Vec<String>,
+pub struct ValidationError {
+    message: String,
 }
 
-#[derive(Debug)]
-pub enum DataError {
-    InvalidId,
-    InvalidName,
-    InvalidValue,
-    EmptyTags,
-}
-
-impl fmt::Display for DataError {
+impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DataError::InvalidId => write!(f, "ID must be greater than 0"),
-            DataError::InvalidName => write!(f, "Name cannot be empty"),
-            DataError::InvalidValue => write!(f, "Value must be between 0.0 and 1000.0"),
-            DataError::EmptyTags => write!(f, "Record must have at least one tag"),
-        }
+        write!(f, "Validation error: {}", self.message)
     }
 }
 
-impl Error for DataError {}
+impl Error for ValidationError {}
 
-impl DataRecord {
-    pub fn new(id: u32, name: String, value: f64, tags: Vec<String>) -> Result<Self, DataError> {
-        if id == 0 {
-            return Err(DataError::InvalidId);
-        }
-        if name.trim().is_empty() {
-            return Err(DataError::InvalidName);
-        }
-        if value < 0.0 || value > 1000.0 {
-            return Err(DataError::InvalidValue);
-        }
-        if tags.is_empty() {
-            return Err(DataError::EmptyTags);
-        }
-
-        Ok(Self {
-            id,
-            name,
-            value,
-            tags,
-        })
-    }
-
-    pub fn transform(&self) -> HashMap<String, String> {
-        let mut result = HashMap::new();
-        result.insert("identifier".to_string(), format!("REC-{:04}", self.id));
-        result.insert("processed_name".to_string(), self.name.to_uppercase());
-        result.insert("normalized_value".to_string(), format!("{:.2}", self.value / 100.0));
-        result.insert("tag_count".to_string(), self.tags.len().to_string());
-        result.insert("tag_summary".to_string(), self.tags.join("|"));
-        result
-    }
-
-    pub fn validate_consistency(&self) -> bool {
-        self.id > 0
-            && !self.name.is_empty()
-            && self.value >= 0.0
-            && self.value <= 1000.0
-            && !self.tags.is_empty()
-    }
+pub struct DataProcessor {
+    threshold: f64,
 }
 
-pub fn process_records(records: Vec<DataRecord>) -> Vec<HashMap<String, String>> {
-    records
-        .into_iter()
-        .filter(|r| r.validate_consistency())
-        .map(|r| r.transform())
-        .collect()
-}
-
-pub fn calculate_statistics(records: &[DataRecord]) -> HashMap<String, f64> {
-    let mut stats = HashMap::new();
-    
-    if records.is_empty() {
-        return stats;
+impl DataProcessor {
+    pub fn new(threshold: f64) -> Result<Self, ValidationError> {
+        if threshold < 0.0 || threshold > 1.0 {
+            return Err(ValidationError {
+                message: format!("Threshold {} must be between 0.0 and 1.0", threshold),
+            });
+        }
+        Ok(Self { threshold })
     }
 
-    let count = records.len() as f64;
-    let sum: f64 = records.iter().map(|r| r.value).sum();
-    let avg = sum / count;
-    
-    let variance: f64 = records
-        .iter()
-        .map(|r| (r.value - avg).powi(2))
-        .sum::<f64>() / count;
-    
-    stats.insert("record_count".to_string(), count);
-    stats.insert("value_sum".to_string(), sum);
-    stats.insert("value_average".to_string(), avg);
-    stats.insert("value_variance".to_string(), variance);
-    stats.insert("value_min".to_string(), records.iter().map(|r| r.value).fold(f64::INFINITY, f64::min));
-    stats.insert("value_max".to_string(), records.iter().map(|r| r.value).fold(f64::NEG_INFINITY, f64::max));
+    pub fn process_data(&self, input: &[f64]) -> Result<Vec<f64>, ValidationError> {
+        if input.is_empty() {
+            return Err(ValidationError {
+                message: "Input data cannot be empty".to_string(),
+            });
+        }
 
-    stats
+        let mean = input.iter().sum::<f64>() / input.len() as f64;
+        let filtered: Vec<f64> = input
+            .iter()
+            .filter(|&&value| value >= mean * self.threshold)
+            .cloned()
+            .collect();
+
+        if filtered.is_empty() {
+            return Err(ValidationError {
+                message: "No data points passed the threshold filter".to_string(),
+            });
+        }
+
+        Ok(filtered)
+    }
+
+    pub fn normalize_data(&self, data: &[f64]) -> Vec<f64> {
+        if data.is_empty() {
+            return vec![];
+        }
+
+        let max_value = data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let min_value = data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let range = max_value - min_value;
+
+        if range == 0.0 {
+            return vec![0.5; data.len()];
+        }
+
+        data.iter()
+            .map(|&value| (value - min_value) / range)
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -113,54 +75,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_valid_record_creation() {
-        let record = DataRecord::new(
-            1,
-            "Test Record".to_string(),
-            250.5,
-            vec!["tag1".to_string(), "tag2".to_string()],
-        );
-        assert!(record.is_ok());
-    }
-
-    #[test]
-    fn test_invalid_id() {
-        let record = DataRecord::new(
-            0,
-            "Test".to_string(),
-            100.0,
-            vec!["tag".to_string()],
-        );
-        assert!(matches!(record, Err(DataError::InvalidId)));
-    }
-
-    #[test]
-    fn test_transform_output() {
-        let record = DataRecord::new(
-            42,
-            "sample".to_string(),
-            123.456,
-            vec!["alpha".to_string(), "beta".to_string()],
-        ).unwrap();
+    fn test_processor_creation() {
+        let processor = DataProcessor::new(0.5);
+        assert!(processor.is_ok());
         
-        let transformed = record.transform();
-        assert_eq!(transformed.get("identifier").unwrap(), "REC-0042");
-        assert_eq!(transformed.get("processed_name").unwrap(), "SAMPLE");
-        assert_eq!(transformed.get("normalized_value").unwrap(), "1.23");
-        assert_eq!(transformed.get("tag_count").unwrap(), "2");
+        let invalid = DataProcessor::new(1.5);
+        assert!(invalid.is_err());
     }
 
     #[test]
-    fn test_statistics_calculation() {
-        let records = vec![
-            DataRecord::new(1, "A".to_string(), 100.0, vec!["t1".to_string()]).unwrap(),
-            DataRecord::new(2, "B".to_string(), 200.0, vec!["t2".to_string()]).unwrap(),
-            DataRecord::new(3, "C".to_string(), 300.0, vec!["t3".to_string()]).unwrap(),
-        ];
+    fn test_data_processing() {
+        let processor = DataProcessor::new(0.8).unwrap();
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let result = processor.process_data(&data);
+        assert!(result.is_ok());
         
-        let stats = calculate_statistics(&records);
-        assert_eq!(stats.get("record_count").unwrap(), &3.0);
-        assert_eq!(stats.get("value_sum").unwrap(), &600.0);
-        assert_eq!(stats.get("value_average").unwrap(), &200.0);
+        let empty_result = processor.process_data(&[]);
+        assert!(empty_result.is_err());
+    }
+
+    #[test]
+    fn test_normalization() {
+        let processor = DataProcessor::new(0.5).unwrap();
+        let data = vec![10.0, 20.0, 30.0, 40.0];
+        let normalized = processor.normalize_data(&data);
+        
+        assert_eq!(normalized.len(), 4);
+        assert!((normalized[0] - 0.0).abs() < 0.001);
+        assert!((normalized[3] - 1.0).abs() < 0.001);
     }
 }
