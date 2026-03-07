@@ -133,3 +133,113 @@ mod tests {
         assert!(parser.parse_line(info_log).is_err());
     }
 }
+use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, Deserialize)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub service: String,
+    pub message: String,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug)]
+pub enum ParseError {
+    Io(std::io::Error),
+    Json(serde_json::Error),
+    MalformedLine(String),
+}
+
+impl From<std::io::Error> for ParseError {
+    fn from(err: std::io::Error) -> Self {
+        ParseError::Io(err)
+    }
+}
+
+impl From<serde_json::Error> for ParseError {
+    fn from(err: serde_json::Error) -> Self {
+        ParseError::Json(err)
+    }
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::Io(e) => write!(f, "IO error: {}", e),
+            ParseError::Json(e) => write!(f, "JSON parsing error: {}", e),
+            ParseError::MalformedLine(line) => write!(f, "Malformed log line: {}", line),
+        }
+    }
+}
+
+impl Error for ParseError {}
+
+pub struct LogParser {
+    reader: BufReader<File>,
+    line_buffer: String,
+}
+
+impl LogParser {
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, ParseError> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        Ok(LogParser {
+            reader,
+            line_buffer: String::new(),
+        })
+    }
+
+    pub fn parse_next(&mut self) -> Result<Option<LogEntry>, ParseError> {
+        self.line_buffer.clear();
+        
+        match self.reader.read_line(&mut self.line_buffer) {
+            Ok(0) => Ok(None),
+            Ok(_) => {
+                let trimmed = self.line_buffer.trim();
+                if trimmed.is_empty() {
+                    self.parse_next()
+                } else {
+                    match serde_json::from_str(trimmed) {
+                        Ok(entry) => Ok(Some(entry)),
+                        Err(e) => Err(ParseError::MalformedLine(trimmed.to_string())),
+                    }
+                }
+            }
+            Err(e) => Err(ParseError::Io(e)),
+        }
+    }
+
+    pub fn collect_errors(&mut self) -> (Vec<LogEntry>, Vec<ParseError>) {
+        let mut entries = Vec::new();
+        let mut errors = Vec::new();
+
+        while let Some(result) = self.parse_next().transpose() {
+            match result {
+                Ok(entry) => entries.push(entry),
+                Err(err) => errors.push(err),
+            }
+        }
+
+        (entries, errors)
+    }
+}
+
+pub fn filter_by_level(entries: &[LogEntry], level: &str) -> Vec<&LogEntry> {
+    entries
+        .iter()
+        .filter(|entry| entry.level.eq_ignore_ascii_case(level))
+        .collect()
+}
+
+pub fn extract_service_names(entries: &[LogEntry]) -> Vec<&str> {
+    let mut services: Vec<&str> = entries.iter().map(|e| e.service.as_str()).collect();
+    services.sort_unstable();
+    services.dedup();
+    services
+}
