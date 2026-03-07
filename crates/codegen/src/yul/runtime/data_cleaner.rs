@@ -53,3 +53,82 @@ mod tests {
         fs::remove_file(test_output).unwrap();
     }
 }
+use std::collections::HashSet;
+
+pub struct DataCleaner {
+    pub records: Vec<String>,
+    pub deduplicated: HashSet<String>,
+}
+
+impl DataCleaner {
+    pub fn new() -> Self {
+        DataCleaner {
+            records: Vec::new(),
+            deduplicated: HashSet::new(),
+        }
+    }
+
+    pub fn add_record(&mut self, record: &str) {
+        self.records.push(record.to_string());
+    }
+
+    pub fn deduplicate(&mut self) -> Vec<String> {
+        self.deduplicated.clear();
+        let mut unique_records = Vec::new();
+
+        for record in &self.records {
+            if self.deduplicated.insert(record.clone()) {
+                unique_records.push(record.clone());
+            }
+        }
+
+        unique_records
+    }
+
+    pub fn validate_records(&self) -> Vec<bool> {
+        self.records
+            .iter()
+            .map(|record| {
+                !record.trim().is_empty()
+                    && record.len() <= 1000
+                    && !record.contains("NULL")
+                    && !record.contains("undefined")
+            })
+            .collect()
+    }
+
+    pub fn clean_all(&mut self) -> (Vec<String>, Vec<bool>) {
+        let deduplicated = self.deduplicate();
+        let validation_results = self.validate_records();
+        (deduplicated, validation_results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deduplication() {
+        let mut cleaner = DataCleaner::new();
+        cleaner.add_record("record1");
+        cleaner.add_record("record2");
+        cleaner.add_record("record1");
+        
+        let result = cleaner.deduplicate();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&"record1".to_string()));
+        assert!(result.contains(&"record2".to_string()));
+    }
+
+    #[test]
+    fn test_validation() {
+        let mut cleaner = DataCleaner::new();
+        cleaner.add_record("valid record");
+        cleaner.add_record("");
+        cleaner.add_record("record with NULL value");
+        
+        let results = cleaner.validate_records();
+        assert_eq!(results, vec![true, false, false]);
+    }
+}
