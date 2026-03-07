@@ -196,4 +196,72 @@ fn main() -> io::Result<()> {
     
     println!("File processed successfully with XOR key 0x{:02X}", DEFAULT_KEY);
     Ok(())
+}use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use hex::{decode, encode};
+use rand::RngCore;
+use std::error::Error;
+
+type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+
+pub fn encrypt_data(plaintext: &[u8], key: &[u8]) -> Result<String, Box<dyn Error>> {
+    if key.len() != 32 {
+        return Err("Key must be 32 bytes for AES-256".into());
+    }
+
+    let mut iv = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut iv);
+
+    let ciphertext = Aes256CbcEnc::new(key.into(), &iv.into())
+        .encrypt_padded_vec_mut::<Pkcs7>(plaintext);
+
+    let mut result = Vec::with_capacity(iv.len() + ciphertext.len());
+    result.extend_from_slice(&iv);
+    result.extend_from_slice(&ciphertext);
+
+    Ok(encode(result))
+}
+
+pub fn decrypt_data(ciphertext_hex: &str, key: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    if key.len() != 32 {
+        return Err("Key must be 32 bytes for AES-256".into());
+    }
+
+    let data = decode(ciphertext_hex)?;
+    if data.len() < 16 {
+        return Err("Ciphertext too short".into());
+    }
+
+    let iv = &data[0..16];
+    let ciphertext = &data[16..];
+
+    let plaintext = Aes256CbcDec::new(key.into(), iv.into())
+        .decrypt_padded_vec_mut::<Pkcs7>(ciphertext)?;
+
+    Ok(plaintext)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encryption_roundtrip() {
+        let key = [0x42u8; 32];
+        let plaintext = b"Secret message for encryption test";
+
+        let encrypted = encrypt_data(plaintext, &key).unwrap();
+        let decrypted = decrypt_data(&encrypted, &key).unwrap();
+
+        assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn test_invalid_key_length() {
+        let short_key = [0x42u8; 16];
+        let plaintext = b"Test";
+
+        let result = encrypt_data(plaintext, &short_key);
+        assert!(result.is_err());
+    }
 }
