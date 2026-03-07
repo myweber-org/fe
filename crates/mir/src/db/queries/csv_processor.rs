@@ -342,4 +342,133 @@ mod tests {
         
         assert_eq!(result, vec!["JOHN", "ALICE"]);
     }
+}use std::error::Error;
+use std::fmt;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug)]
+enum CsvError {
+    IoError(std::io::Error),
+    ParseError(String, usize),
+    InvalidHeader(String),
+}
+
+impl fmt::Display for CsvError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CsvError::IoError(e) => write!(f, "IO error: {}", e),
+            CsvError::ParseError(msg, line) => write!(f, "Parse error at line {}: {}", line, msg),
+            CsvError::InvalidHeader(msg) => write!(f, "Invalid header: {}", msg),
+        }
+    }
+}
+
+impl Error for CsvError {}
+
+impl From<std::io::Error> for CsvError {
+    fn from(error: std::io::Error) -> Self {
+        CsvError::IoError(error)
+    }
+}
+
+struct CsvProcessor {
+    delimiter: char,
+    has_header: bool,
+}
+
+impl CsvProcessor {
+    fn new(delimiter: char, has_header: bool) -> Self {
+        CsvProcessor {
+            delimiter,
+            has_header,
+        }
+    }
+
+    fn process_file<P: AsRef<Path>>(&self, path: P) -> Result<Vec<Vec<String>>, CsvError> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut records = Vec::new();
+        let mut line_number = 0;
+
+        for line in reader.lines() {
+            line_number += 1;
+            let line_content = line?;
+            
+            if line_content.trim().is_empty() {
+                continue;
+            }
+
+            let fields: Vec<String> = line_content
+                .split(self.delimiter)
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            if self.has_header && line_number == 1 {
+                if fields.iter().any(|f| f.is_empty()) {
+                    return Err(CsvError::InvalidHeader(
+                        "Header contains empty fields".to_string()
+                    ));
+                }
+            }
+
+            if fields.len() != 3 {
+                return Err(CsvError::ParseError(
+                    format!("Expected 3 fields, found {}", fields.len()),
+                    line_number
+                ));
+            }
+
+            records.push(fields);
+        }
+
+        if records.is_empty() {
+            return Err(CsvError::ParseError(
+                "File contains no valid data".to_string(),
+                0
+            ));
+        }
+
+        Ok(records)
+    }
+
+    fn validate_numeric_field(&self, records: &[Vec<String>], field_index: usize) -> Result<(), CsvError> {
+        let start_index = if self.has_header { 1 } else { 0 };
+        
+        for (i, record) in records.iter().enumerate().skip(start_index) {
+            if let Some(field) = record.get(field_index) {
+                if field.parse::<f64>().is_err() {
+                    return Err(CsvError::ParseError(
+                        format!("Field {} is not numeric: '{}'", field_index, field),
+                        i + 1
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let processor = CsvProcessor::new(',', true);
+    
+    match processor.process_file("data.csv") {
+        Ok(records) => {
+            println!("Successfully processed {} records", records.len());
+            
+            if let Err(e) = processor.validate_numeric_field(&records, 2) {
+                eprintln!("Validation error: {}", e);
+            }
+            
+            for record in records.iter().take(5) {
+                println!("{:?}", record);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Processing failed: {}", e);
+            Err(Box::new(e))
+        }
+    }
 }
