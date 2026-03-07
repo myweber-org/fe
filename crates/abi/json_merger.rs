@@ -1,69 +1,75 @@
-
 use serde_json::{Map, Value};
-use std::collections::HashSet;
-use std::fs::File;
-use std::io::{BufReader, Write};
+use std::fs;
 use std::path::Path;
 
-pub fn merge_json_files<P: AsRef<Path>>(paths: &[P], output_path: P) -> Result<(), String> {
-    if paths.is_empty() {
-        return Err("No input files provided".to_string());
-    }
+pub fn merge_json_files(file_paths: &[&str]) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut merged_map = Map::new();
 
-    let mut merged = Map::new();
-    let mut key_sources = Map::new();
+    for path_str in file_paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            return Err(format!("File not found: {}", path_str).into());
+        }
 
-    for (idx, path) in paths.iter().enumerate() {
-        let file = File::open(path).map_err(|e| format!("Failed to open {}: {}", path.as_ref().display(), e))?;
-        let reader = BufReader::new(file);
-        let json: Map<String, Value> = serde_json::from_reader(reader)
-            .map_err(|e| format!("Failed to parse {}: {}", path.as_ref().display(), e))?;
+        let content = fs::read_to_string(path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
 
-        for (key, value) in json {
-            if let Some(existing) = merged.get(&key) {
-                if existing != &value {
-                    let source_info = key_sources.entry(key.clone()).or_insert_with(Vec::new);
-                    source_info.push(format!("File {}: {:?}", idx + 1, existing));
-                    source_info.push(format!("File {}: {:?}", idx + 1, value));
-                    merged.insert(format!("{}_conflict", key), Value::Array(source_info.clone().into_iter().map(Value::String).collect()));
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                if merged_map.contains_key(&key) {
+                    eprintln!("Warning: Key '{}' already exists, overwriting.", key);
                 }
-            } else {
-                merged.insert(key.clone(), value);
-                key_sources.insert(key, vec![format!("File {}", idx + 1)]);
+                merged_map.insert(key, value);
             }
+        } else {
+            return Err("Top-level JSON value is not an object".into());
         }
     }
 
-    let output_file = File::create(&output_path)
-        .map_err(|e| format!("Failed to create output file: {}", e))?;
-    serde_json::to_writer_pretty(output_file, &Value::Object(merged))
-        .map_err(|e| format!("Failed to write merged JSON: {}", e))?;
-
-    Ok(())
+    Ok(Value::Object(merged_map))
 }
 
-pub fn find_unique_keys<P: AsRef<Path>>(paths: &[P]) -> Result<Vec<String>, String> {
-    let mut all_keys = HashSet::new();
-    let mut common_keys = HashSet::new();
-    let mut first = true;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
-    for path in paths {
-        let file = File::open(path).map_err(|e| format!("Failed to open {}: {}", path.as_ref().display(), e))?;
-        let reader = BufReader::new(file);
-        let json: Map<String, Value> = serde_json::from_reader(reader)
-            .map_err(|e| format!("Failed to parse {}: {}", path.as_ref().display(), e))?;
+    #[test]
+    fn test_merge_json_files() {
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
 
-        let current_keys: HashSet<_> = json.keys().cloned().collect();
-        all_keys.extend(current_keys.iter().cloned());
+        writeln!(file1, r#"{"name": "Alice", "age": 30}"#).unwrap();
+        writeln!(file2, r#"{"city": "Berlin", "active": true}"#).unwrap();
 
-        if first {
-            common_keys = current_keys;
-            first = false;
-        } else {
-            common_keys = common_keys.intersection(&current_keys).cloned().collect();
-        }
+        let result = merge_json_files(&[
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ]).unwrap();
+
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("name").unwrap().as_str().unwrap(), "Alice");
+        assert_eq!(obj.get("age").unwrap().as_i64().unwrap(), 30);
+        assert_eq!(obj.get("city").unwrap().as_str().unwrap(), "Berlin");
+        assert!(obj.get("active").unwrap().as_bool().unwrap());
     }
 
-    let unique_keys: Vec<String> = all_keys.difference(&common_keys).cloned().collect();
-    Ok(unique_keys)
+    #[test]
+    fn test_overwrite_keys() {
+        let mut file1 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
+
+        writeln!(file1, r#"{"id": 100, "tag": "old"}"#).unwrap();
+        writeln!(file2, r#"{"id": 200, "tag": "new"}"#).unwrap();
+
+        let result = merge_json_files(&[
+            file1.path().to_str().unwrap(),
+            file2.path().to_str().unwrap(),
+        ]).unwrap();
+
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("id").unwrap().as_i64().unwrap(), 200);
+        assert_eq!(obj.get("tag").unwrap().as_str().unwrap(), "new");
+    }
 }
