@@ -276,4 +276,62 @@ mod tests {
         assert_eq!(parsed["user"]["settings"]["theme"], "dark");
         assert_eq!(parsed["user"]["settings"]["language"], "en");
     }
+}use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
+use std::path::Path;
+
+type JsonValue = serde_json::Value;
+
+pub fn merge_json_files(file_paths: &[impl AsRef<Path>]) -> Result<JsonValue, Box<dyn std::error::Error>> {
+    let mut merged_array = Vec::new();
+
+    for path in file_paths {
+        let file = File::open(path.as_ref())?;
+        let mut reader = BufReader::new(file);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents)?;
+
+        let parsed: JsonValue = serde_json::from_str(&contents)?;
+        
+        if let JsonValue::Array(arr) = parsed {
+            merged_array.extend(arr);
+        } else {
+            merged_array.push(parsed);
+        }
+    }
+
+    Ok(JsonValue::Array(merged_array))
+}
+
+pub fn deduplicate_json_array(array: JsonValue, key: &str) -> JsonValue {
+    if let JsonValue::Array(arr) = array {
+        let mut seen = HashMap::new();
+        let mut deduped = Vec::new();
+
+        for item in arr {
+            if let Some(obj) = item.as_object() {
+                if let Some(value) = obj.get(key) {
+                    let key_str = value.to_string();
+                    if !seen.contains_key(&key_str) {
+                        seen.insert(key_str.clone(), true);
+                        deduped.push(item);
+                    }
+                } else {
+                    deduped.push(item);
+                }
+            } else {
+                deduped.push(item);
+            }
+        }
+
+        JsonValue::Array(deduped)
+    } else {
+        array
+    }
+}
+
+pub fn write_merged_json(output_path: impl AsRef<Path>, data: &JsonValue) -> std::io::Result<()> {
+    let json_string = serde_json::to_string_pretty(data)?;
+    fs::write(output_path, json_string)
 }
