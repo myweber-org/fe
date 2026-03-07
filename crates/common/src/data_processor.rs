@@ -859,4 +859,97 @@ mod tests {
         let filtered = processor.filter_by_threshold(15.0);
         assert_eq!(filtered.len(), 2);
     }
+}use csv::Reader;
+use serde::Deserialize;
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize)]
+struct Record {
+    id: u32,
+    value: f64,
+    category: String,
+}
+
+pub struct DataProcessor {
+    records: Vec<Record>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor { records: Vec::new() }
+    }
+
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let mut rdr = Reader::from_reader(file);
+        
+        for result in rdr.deserialize() {
+            let record: Record = result?;
+            self.records.push(record);
+        }
+        
+        Ok(())
+    }
+
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+        
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<&Record> {
+        self.records
+            .iter()
+            .filter(|r| r.category == category)
+            .collect()
+    }
+
+    pub fn find_max_value(&self) -> Option<&Record> {
+        self.records.iter().max_by(|a, b| {
+            a.value.partial_cmp(&b.value).unwrap()
+        })
+    }
+
+    pub fn count_records(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn get_summary(&self) -> String {
+        let mean = self.calculate_mean().unwrap_or(0.0);
+        let count = self.count_records();
+        let max_value = self.find_max_value()
+            .map(|r| r.value)
+            .unwrap_or(0.0);
+        
+        format!("Records: {}, Mean: {:.2}, Max: {:.2}", count, mean, max_value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processing() {
+        let csv_data = "id,value,category\n1,10.5,A\n2,20.3,B\n3,15.7,A\n";
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, "{}", csv_data).unwrap();
+        
+        let mut processor = DataProcessor::new();
+        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
+        
+        assert!(result.is_ok());
+        assert_eq!(processor.count_records(), 3);
+        assert_eq!(processor.filter_by_category("A").len(), 2);
+        
+        let mean = processor.calculate_mean().unwrap();
+        assert!((mean - 15.5).abs() < 0.01);
+    }
 }
