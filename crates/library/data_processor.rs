@@ -358,3 +358,119 @@ mod tests {
         assert!(processor.find_max_value_record().is_none());
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub timestamp: i64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, timestamp: i64, values: Vec<f64>) -> Self {
+        Self {
+            id,
+            timestamp,
+            values,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+
+    pub fn validate(&self) -> Result<(), Box<dyn Error>> {
+        if self.id == 0 {
+            return Err("Invalid record ID".into());
+        }
+        
+        if self.timestamp < 0 {
+            return Err("Invalid timestamp".into());
+        }
+        
+        if self.values.is_empty() {
+            return Err("Empty values array".into());
+        }
+        
+        for value in &self.values {
+            if !value.is_finite() {
+                return Err("Non-finite value detected".into());
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord]) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let mut processed = Vec::new();
+    
+    for record in records {
+        record.validate()?;
+        
+        let mut transformed = record.clone();
+        
+        if !transformed.values.is_empty() {
+            let sum: f64 = transformed.values.iter().sum();
+            let avg = sum / transformed.values.len() as f64;
+            transformed.add_metadata("average".to_string(), avg.to_string());
+        }
+        
+        transformed.add_metadata("processed_timestamp".to_string(), chrono::Utc::now().timestamp().to_string());
+        processed.push(transformed);
+    }
+    
+    Ok(processed)
+}
+
+pub fn filter_records(records: &[DataRecord], min_value: f64) -> Vec<DataRecord> {
+    records
+        .iter()
+        .filter(|record| {
+            record.values.iter().any(|&v| v >= min_value)
+        })
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_validation() {
+        let valid_record = DataRecord::new(1, 1625097600, vec![1.0, 2.0, 3.0]);
+        assert!(valid_record.validate().is_ok());
+
+        let invalid_record = DataRecord::new(0, 1625097600, vec![1.0, 2.0]);
+        assert!(invalid_record.validate().is_err());
+    }
+
+    #[test]
+    fn test_process_records() {
+        let mut records = vec![
+            DataRecord::new(1, 1625097600, vec![1.0, 2.0, 3.0]),
+            DataRecord::new(2, 1625097601, vec![4.0, 5.0]),
+        ];
+        
+        let processed = process_records(&mut records).unwrap();
+        assert_eq!(processed.len(), 2);
+        assert!(processed[0].metadata.contains_key("average"));
+    }
+
+    #[test]
+    fn test_filter_records() {
+        let records = vec![
+            DataRecord::new(1, 1625097600, vec![1.0, 2.0]),
+            DataRecord::new(2, 1625097601, vec![5.0, 6.0]),
+        ];
+        
+        let filtered = filter_records(&records, 4.0);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, 2);
+    }
+}
