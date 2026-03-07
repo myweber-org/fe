@@ -1,124 +1,115 @@
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
-use csv::{ReaderBuilder, WriterBuilder};
+use std::io::{BufRead, BufReader};
 
-pub struct CsvProcessor {
-    input_path: String,
-    output_path: String,
+#[derive(Debug)]
+pub struct Record {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub active: bool,
 }
 
-impl CsvProcessor {
-    pub fn new(input_path: &str, output_path: &str) -> Self {
-        CsvProcessor {
-            input_path: input_path.to_string(),
-            output_path: output_path.to_string(),
+pub fn parse_csv(file_path: &str) -> Result<Vec<Record>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+
+    for (index, line) in reader.lines().enumerate() {
+        let line = line?;
+        
+        if index == 0 {
+            continue;
         }
+
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 4 {
+            return Err(format!("Invalid CSV format at line {}", index + 1).into());
+        }
+
+        let id = parts[0].parse::<u32>()?;
+        let name = parts[1].to_string();
+        let value = parts[2].parse::<f64>()?;
+        let active = parts[3].parse::<bool>()?;
+
+        records.push(Record {
+            id,
+            name,
+            value,
+            active,
+        });
     }
 
-    pub fn filter_by_column_value(&self, column_name: &str, target_value: &str) -> Result<(), Box<dyn Error>> {
-        let input_file = File::open(&self.input_path)?;
-        let reader = BufReader::new(input_file);
-        let mut csv_reader = ReaderBuilder::new().has_headers(true).from_reader(reader);
-        
-        let output_file = File::create(&self.output_path)?;
-        let writer = BufWriter::new(output_file);
-        let mut csv_writer = WriterBuilder::new().from_writer(writer);
-        
-        let headers = csv_reader.headers()?.clone();
-        csv_writer.write_record(&headers)?;
-        
-        let column_index = headers.iter()
-            .position(|h| h == column_name)
-            .ok_or_else(|| format!("Column '{}' not found", column_name))?;
-        
-        for result in csv_reader.records() {
-            let record = result?;
-            if record.get(column_index).map(|v| v == target_value).unwrap_or(false) {
-                csv_writer.write_record(&record)?;
-            }
-        }
-        
-        csv_writer.flush()?;
-        Ok(())
-    }
+    Ok(records)
+}
 
-    pub fn transform_column(&self, column_name: &str, transform_fn: fn(&str) -> String) -> Result<(), Box<dyn Error>> {
-        let input_file = File::open(&self.input_path)?;
-        let reader = BufReader::new(input_file);
-        let mut csv_reader = ReaderBuilder::new().has_headers(true).from_reader(reader);
-        
-        let output_file = File::create(&self.output_path)?;
-        let writer = BufWriter::new(output_file);
-        let mut csv_writer = WriterBuilder::new().from_writer(writer);
-        
-        let headers = csv_reader.headers()?.clone();
-        csv_writer.write_record(&headers)?;
-        
-        let column_index = headers.iter()
-            .position(|h| h == column_name)
-            .ok_or_else(|| format!("Column '{}' not found", column_name))?;
-        
-        for result in csv_reader.records() {
-            let mut record = result?.clone();
-            if let Some(value) = record.get(column_index) {
-                let transformed = transform_fn(value);
-                record[column_index] = transformed.into();
-            }
-            csv_writer.write_record(&record)?;
+pub fn validate_records(records: &[Record]) -> Result<(), Box<dyn Error>> {
+    for record in records {
+        if record.name.is_empty() {
+            return Err("Record name cannot be empty".into());
         }
-        
-        csv_writer.flush()?;
-        Ok(())
+        if record.value < 0.0 {
+            return Err("Record value cannot be negative".into());
+        }
     }
+    Ok(())
+}
+
+pub fn calculate_total_value(records: &[Record]) -> f64 {
+    records.iter()
+        .filter(|r| r.active)
+        .map(|r| r.value)
+        .sum()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_filter_by_column_value() {
-        let input_data = "name,age,city\nAlice,30,London\nBob,25,Paris\nCharlie,35,London";
-        let input_file = NamedTempFile::new().unwrap();
-        fs::write(input_file.path(), input_data).unwrap();
-        
-        let output_file = NamedTempFile::new().unwrap();
-        let processor = CsvProcessor::new(
-            input_file.path().to_str().unwrap(),
-            output_file.path().to_str().unwrap()
-        );
-        
-        processor.filter_by_column_value("city", "London").unwrap();
-        
-        let output = fs::read_to_string(output_file.path()).unwrap();
-        assert!(output.contains("Alice,30,London"));
-        assert!(output.contains("Charlie,35,London"));
-        assert!(!output.contains("Bob,25,Paris"));
+    fn test_parse_csv() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,name,value,active").unwrap();
+        writeln!(temp_file, "1,ItemA,10.5,true").unwrap();
+        writeln!(temp_file, "2,ItemB,20.0,false").unwrap();
+
+        let records = parse_csv(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].name, "ItemA");
+        assert_eq!(records[1].value, 20.0);
     }
 
     #[test]
-    fn test_transform_column() {
-        let input_data = "name,score\nAlice,85\nBob,92";
-        let input_file = NamedTempFile::new().unwrap();
-        fs::write(input_file.path(), input_data).unwrap();
+    fn test_validate_records() {
+        let valid_record = Record {
+            id: 1,
+            name: "Test".to_string(),
+            value: 15.0,
+            active: true,
+        };
         
-        let output_file = NamedTempFile::new().unwrap();
-        let processor = CsvProcessor::new(
-            input_file.path().to_str().unwrap(),
-            output_file.path().to_str().unwrap()
-        );
+        let invalid_record = Record {
+            id: 2,
+            name: "".to_string(),
+            value: -5.0,
+            active: false,
+        };
+
+        assert!(validate_records(&[valid_record]).is_ok());
+        assert!(validate_records(&[invalid_record]).is_err());
+    }
+
+    #[test]
+    fn test_calculate_total_value() {
+        let records = vec![
+            Record { id: 1, name: "A".to_string(), value: 10.0, active: true },
+            Record { id: 2, name: "B".to_string(), value: 20.0, active: false },
+            Record { id: 3, name: "C".to_string(), value: 30.0, active: true },
+        ];
         
-        fn add_percentage(value: &str) -> String {
-            format!("{}%", value)
-        }
-        
-        processor.transform_column("score", add_percentage).unwrap();
-        
-        let output = fs::read_to_string(output_file.path()).unwrap();
-        assert!(output.contains("Alice,85%"));
-        assert!(output.contains("Bob,92%"));
+        let total = calculate_total_value(&records);
+        assert_eq!(total, 40.0);
     }
 }
