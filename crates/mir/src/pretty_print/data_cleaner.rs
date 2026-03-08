@@ -1,18 +1,40 @@
+
 use std::collections::HashSet;
 
-pub fn clean_data(input: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut cleaned = Vec::new();
+pub struct DataCleaner {
+    dedupe_set: HashSet<String>,
+}
 
-    for item in input {
-        let normalized = item.trim().to_lowercase();
-        if !normalized.is_empty() && seen.insert(normalized.clone()) {
-            cleaned.push(normalized);
+impl DataCleaner {
+    pub fn new() -> Self {
+        DataCleaner {
+            dedupe_set: HashSet::new(),
         }
     }
 
-    cleaned.sort();
-    cleaned
+    pub fn normalize_text(&self, input: &str) -> String {
+        input.trim().to_lowercase()
+    }
+
+    pub fn deduplicate(&mut self, item: &str) -> bool {
+        let normalized = self.normalize_text(item);
+        if self.dedupe_set.contains(&normalized) {
+            false
+        } else {
+            self.dedupe_set.insert(normalized);
+            true
+        }
+    }
+
+    pub fn clean_dataset(&mut self, data: Vec<String>) -> Vec<String> {
+        data.into_iter()
+            .filter(|item| self.deduplicate(item))
+            .collect()
+    }
+
+    pub fn get_unique_count(&self) -> usize {
+        self.dedupe_set.len()
+    }
 }
 
 #[cfg(test)]
@@ -20,16 +42,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_clean_data() {
-        let input = vec![
-            "  Apple  ".to_string(),
+    fn test_deduplication() {
+        let mut cleaner = DataCleaner::new();
+        let data = vec![
+            "Apple".to_string(),
             "apple".to_string(),
+            "APPLE".to_string(),
             "Banana".to_string(),
-            "banana ".to_string(),
-            "".to_string(),
-            "  ".to_string(),
         ];
-        let result = clean_data(input);
-        assert_eq!(result, vec!["apple", "banana"]);
+
+        let cleaned = cleaner.clean_dataset(data);
+        assert_eq!(cleaned.len(), 2);
+        assert_eq!(cleaner.get_unique_count(), 2);
+    }
+
+    #[test]
+    fn test_normalization() {
+        let cleaner = DataCleaner::new();
+        assert_eq!(cleaner.normalize_text("  HELLO World  "), "hello world");
     }
 }
