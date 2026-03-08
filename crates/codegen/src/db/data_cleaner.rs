@@ -106,4 +106,79 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     
     Ok(())
+}use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    category: String,
+}
+
+fn clean_numeric_field(value: f64, default: f64) -> f64 {
+    if value.is_finite() && value >= 0.0 {
+        value
+    } else {
+        default
+    }
+}
+
+fn clean_string_field(s: &str) -> String {
+    s.trim().to_string()
+}
+
+fn process_record(mut record: Record) -> Record {
+    record.name = clean_string_field(&record.name);
+    record.value = clean_numeric_field(record.value, 0.0);
+    record.category = clean_string_field(&record.category);
+    record
+}
+
+pub fn clean_csv_data(input_path: &str, output_path: &str) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let mut reader = Reader::from_reader(input_file);
+    
+    let output_file = File::create(output_path)?;
+    let mut writer = Writer::from_writer(output_file);
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        let cleaned_record = process_record(record);
+        writer.serialize(cleaned_record)?;
+    }
+
+    writer.flush()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_clean_csv_data() {
+        let input_data = "id,name,value,category\n1,  Alice  ,42.5,  Science  \n2,Bob,-1.0,Math\n3,Charlie,infinity,Physics";
+        
+        let mut input_file = NamedTempFile::new().unwrap();
+        write!(input_file, "{}", input_data).unwrap();
+        
+        let output_file = NamedTempFile::new().unwrap();
+        
+        clean_csv_data(input_file.path().to_str().unwrap(), output_file.path().to_str().unwrap()).unwrap();
+        
+        let mut reader = Reader::from_path(output_file.path()).unwrap();
+        let records: Vec<Record> = reader.deserialize().map(|r| r.unwrap()).collect();
+        
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].name, "Alice");
+        assert_eq!(records[0].value, 42.5);
+        assert_eq!(records[1].value, 0.0);
+        assert_eq!(records[2].value, 0.0);
+    }
 }
