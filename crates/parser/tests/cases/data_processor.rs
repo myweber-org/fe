@@ -152,3 +152,86 @@ mod tests {
         assert_eq!(stats.2, 20.0);
     }
 }
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    validators: HashMap<String, Box<dyn Fn(&str) -> bool>>,
+    transformers: HashMap<String, Box<dyn Fn(String) -> String>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            validators: HashMap::new(),
+            transformers: HashMap::new(),
+        }
+    }
+
+    pub fn add_validator(&mut self, name: &str, validator: Box<dyn Fn(&str) -> bool>) {
+        self.validators.insert(name.to_string(), validator);
+    }
+
+    pub fn add_transformer(&mut self, name: &str, transformer: Box<dyn Fn(String) -> String>) {
+        self.transformers.insert(name.to_string(), transformer);
+    }
+
+    pub fn process_data(&self, data: &str, validator_name: &str, transformer_name: &str) -> Option<String> {
+        let validator = self.validators.get(validator_name)?;
+        
+        if !validator(data) {
+            return None;
+        }
+
+        let transformer = self.transformers.get(transformer_name)?;
+        Some(transformer(data.to_string()))
+    }
+
+    pub fn validate_email(&self, email: &str) -> bool {
+        email.contains('@') && email.contains('.')
+    }
+
+    pub fn uppercase_transform(&self, input: String) -> String {
+        input.to_uppercase()
+    }
+}
+
+pub fn initialize_default_processor() -> DataProcessor {
+    let mut processor = DataProcessor::new();
+    
+    processor.add_validator("email", Box::new(|s| s.contains('@') && s.contains('.')));
+    processor.add_validator("numeric", Box::new(|s| s.chars().all(|c| c.is_numeric())));
+    
+    processor.add_transformer("uppercase", Box::new(|s| s.to_uppercase()));
+    processor.add_transformer("reverse", Box::new(|s| s.chars().rev().collect()));
+    
+    processor
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_email_validation() {
+        let processor = DataProcessor::new();
+        assert!(processor.validate_email("test@example.com"));
+        assert!(!processor.validate_email("invalid-email"));
+    }
+
+    #[test]
+    fn test_uppercase_transform() {
+        let processor = DataProcessor::new();
+        assert_eq!(processor.uppercase_transform("hello".to_string()), "HELLO");
+    }
+
+    #[test]
+    fn test_process_data_flow() {
+        let processor = initialize_default_processor();
+        
+        let result = processor.process_data("test@example.com", "email", "uppercase");
+        assert_eq!(result, Some("TEST@EXAMPLE.COM".to_string()));
+        
+        let invalid_result = processor.process_data("invalid", "email", "uppercase");
+        assert_eq!(invalid_result, None);
+    }
+}
