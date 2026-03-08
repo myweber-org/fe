@@ -264,3 +264,117 @@ mod tests {
         assert!(std_dev > 0.0);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    id: u32,
+    name: String,
+    category: String,
+    value: f64,
+    timestamp: String,
+}
+
+pub struct DataProcessor {
+    records: Vec<DataRecord>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
+        let file = File::open(path)?;
+        let mut rdr = csv::Reader::from_reader(file);
+
+        for result in rdr.deserialize() {
+            let record: DataRecord = result?;
+            self.records.push(record);
+        }
+
+        Ok(())
+    }
+
+    pub fn filter_by_category(&self, category: &str) -> Vec<DataRecord> {
+        self.records
+            .iter()
+            .filter(|r| r.category == category)
+            .cloned()
+            .collect()
+    }
+
+    pub fn calculate_average(&self) -> f64 {
+        if self.records.is_empty() {
+            return 0.0;
+        }
+
+        let sum: f64 = self.records.iter().map(|r| r.value).sum();
+        sum / self.records.len() as f64
+    }
+
+    pub fn find_max_value(&self) -> Option<&DataRecord> {
+        self.records.iter().max_by(|a, b| {
+            a.value
+                .partial_cmp(&b.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    }
+
+    pub fn group_by_category(&self) -> std::collections::HashMap<String, Vec<&DataRecord>> {
+        let mut groups = std::collections::HashMap::new();
+
+        for record in &self.records {
+            groups
+                .entry(record.category.clone())
+                .or_insert_with(Vec::new)
+                .push(record);
+        }
+
+        groups
+    }
+
+    pub fn export_to_json<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn Error>> {
+        let file = File::create(path)?;
+        serde_json::to_writer_pretty(file, &self.records)?;
+        Ok(())
+    }
+
+    pub fn get_statistics(&self) -> Statistics {
+        let count = self.records.len();
+        let average = self.calculate_average();
+        let max_record = self.find_max_value();
+
+        Statistics {
+            total_records: count,
+            average_value: average,
+            max_value: max_record.map(|r| r.value),
+            categories_count: self.group_by_category().len(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Statistics {
+    total_records: usize,
+    average_value: f64,
+    max_value: Option<f64>,
+    categories_count: usize,
+}
+
+impl std::fmt::Display for Statistics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Records: {}, Average: {:.2}, Max: {}, Categories: {}",
+            self.total_records,
+            self.average_value,
+            self.max_value.unwrap_or(0.0),
+            self.categories_count
+        )
+    }
+}
