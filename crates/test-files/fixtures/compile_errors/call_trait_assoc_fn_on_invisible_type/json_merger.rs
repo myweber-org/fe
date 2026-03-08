@@ -1,34 +1,30 @@
-use serde_json::{Value, from_reader, to_writer_pretty};
-use std::fs::{File, read_dir};
-use std::io::{self, BufReader};
+use serde_json::{Map, Value};
+use std::fs;
+use std::io;
 use std::path::Path;
 
-pub fn merge_json_files<P: AsRef<Path>>(dir_path: P) -> io::Result<Value> {
-    let mut merged_array = Vec::new();
-    let entries = read_dir(dir_path)?;
+pub fn merge_json_files<P: AsRef<Path>>(input_paths: &[P], output_path: P) -> io::Result<()> {
+    let mut merged_map = Map::new();
 
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
+    for input_path in input_paths {
+        let content = fs::read_to_string(input_path)?;
+        let json_value: Value = serde_json::from_str(&content)?;
 
-        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
-            let file = File::open(&path)?;
-            let reader = BufReader::new(file);
-            let json_value: Value = from_reader(reader)?;
-
-            if let Value::Array(arr) = json_value {
-                merged_array.extend(arr);
-            } else {
-                merged_array.push(json_value);
+        if let Value::Object(map) = json_value {
+            for (key, value) in map {
+                merged_map.insert(key, value);
             }
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Input file does not contain a JSON object",
+            ));
         }
     }
 
-    Ok(Value::Array(merged_array))
-}
+    let merged_value = Value::Object(merged_map);
+    let serialized = serde_json::to_string_pretty(&merged_value)?;
+    fs::write(output_path, serialized)?;
 
-pub fn write_merged_json<P: AsRef<Path>>(output_path: P, json_value: &Value) -> io::Result<()> {
-    let output_file = File::create(output_path)?;
-    to_writer_pretty(output_file, json_value)?;
     Ok(())
 }
