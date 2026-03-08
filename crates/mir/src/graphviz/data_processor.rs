@@ -1415,3 +1415,100 @@ mod tests {
         assert_eq!(count, 3);
     }
 }
+use std::collections::HashMap;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+impl DataRecord {
+    pub fn new(id: u32, values: Vec<f64>) -> Self {
+        Self {
+            id,
+            values,
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.id == 0 {
+            return Err("Invalid record ID".to_string());
+        }
+
+        if self.values.is_empty() {
+            return Err("Empty values vector".to_string());
+        }
+
+        for &value in &self.values {
+            if !value.is_finite() {
+                return Err("Non-finite value detected".to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn normalize(&mut self) {
+        if let Some(&max) = self.values.iter().max_by(|a, b| a.partial_cmp(b).unwrap()) {
+            if max != 0.0 {
+                for value in &mut self.values {
+                    *value /= max;
+                }
+            }
+        }
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord]) -> Vec<Result<DataRecord, String>> {
+    let mut results = Vec::new();
+
+    for record in records {
+        match record.validate() {
+            Ok(_) => {
+                let mut processed = record.clone();
+                processed.normalize();
+                results.push(Ok(processed));
+            }
+            Err(e) => {
+                results.push(Err(format!("Record {} failed validation: {}", record.id, e)));
+            }
+        }
+    }
+
+    results
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> HashMap<String, f64> {
+    let mut stats = HashMap::new();
+
+    if records.is_empty() {
+        return stats;
+    }
+
+    let value_count = records[0].values.len();
+    let mut sums = vec![0.0; value_count];
+    let mut counts = vec![0; value_count];
+
+    for record in records {
+        for (i, &value) in record.values.iter().enumerate() {
+            sums[i] += value;
+            counts[i] += 1;
+        }
+    }
+
+    for i in 0..value_count {
+        if counts[i] > 0 {
+            let avg = sums[i] / counts[i] as f64;
+            stats.insert(format!("avg_value_{}", i), avg);
+        }
+    }
+
+    stats
+}
