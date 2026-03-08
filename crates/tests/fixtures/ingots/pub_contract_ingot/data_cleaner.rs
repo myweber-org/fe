@@ -184,3 +184,47 @@ mod tests {
         assert_eq!(cleaner.normalize_text("  HELLO World  "), "hello world");
     }
 }
+use std::collections::HashSet;
+use std::io::{self, BufRead, Write};
+
+pub fn clean_data(input: &str) -> String {
+    let lines: Vec<&str> = input.lines().collect();
+    let unique_lines: HashSet<&str> = lines.iter().cloned().collect();
+    
+    let mut sorted_lines: Vec<&str> = unique_lines.into_iter().collect();
+    sorted_lines.sort();
+    
+    sorted_lines.join("\n")
+}
+
+pub fn process_from_stdin() -> io::Result<()> {
+    let stdin = io::stdin();
+    let mut buffer = String::new();
+    
+    for line in stdin.lock().lines() {
+        buffer.push_str(&line?);
+        buffer.push('\n');
+    }
+    
+    let cleaned = clean_data(&buffer);
+    io::stdout().write_all(cleaned.as_bytes())?;
+    
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_data() {
+        let input = "banana\napple\ncherry\napple\nbanana\n";
+        let expected = "apple\nbanana\ncherry\n";
+        assert_eq!(clean_data(input), expected);
+    }
+
+    #[test]
+    fn test_empty_input() {
+        assert_eq!(clean_data(""), "");
+    }
+}
