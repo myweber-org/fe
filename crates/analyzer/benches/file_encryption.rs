@@ -185,4 +185,75 @@ fn main() -> io::Result<()> {
     
     println!("File processed successfully with XOR key 0x{:02X}", DEFAULT_KEY);
     Ok(())
+}use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
+const BUFFER_SIZE: usize = 8192;
+
+pub fn encrypt_file(source_path: &str, key: &[u8]) -> io::Result<()> {
+    process_file(source_path, key, "encrypted_")
+}
+
+pub fn decrypt_file(source_path: &str, key: &[u8]) -> io::Result<()> {
+    process_file(source_path, key, "decrypted_")
+}
+
+fn process_file(source_path: &str, key: &[u8], prefix: &str) -> io::Result<()> {
+    let path = Path::new(source_path);
+    let file_name = path.file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid file path"))?
+        .to_string_lossy();
+    
+    let output_path = format!("{}{}", prefix, file_name);
+    
+    let mut source_file = fs::File::open(source_path)?;
+    let mut target_file = fs::File::create(&output_path)?;
+    
+    let mut buffer = [0u8; BUFFER_SIZE];
+    let key_len = key.len();
+    let mut key_index = 0;
+    
+    loop {
+        let bytes_read = source_file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        
+        for i in 0..bytes_read {
+            buffer[i] ^= key[key_index];
+            key_index = (key_index + 1) % key_len;
+        }
+        
+        target_file.write_all(&buffer[..bytes_read])?;
+    }
+    
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_encryption_decryption() {
+        let key = b"secret_key";
+        let test_content = b"Hello, this is a test message for encryption!";
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(test_content).unwrap();
+        
+        let source_path = temp_file.path().to_str().unwrap();
+        
+        encrypt_file(source_path, key).unwrap();
+        decrypt_file("encrypted_test", key).unwrap();
+        
+        let decrypted_content = fs::read("decrypted_test").unwrap();
+        assert_eq!(test_content.to_vec(), decrypted_content);
+        
+        fs::remove_file("encrypted_test").unwrap();
+        fs::remove_file("decrypted_test").unwrap();
+    }
 }
