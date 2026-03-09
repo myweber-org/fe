@@ -854,3 +854,112 @@ mod tests {
         assert!(!record.is_valid());
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+pub struct DataRecord {
+    pub id: u32,
+    pub value: f64,
+    pub category: String,
+    pub valid: bool,
+}
+
+pub fn load_csv_data(file_path: &str) -> Result<Vec<DataRecord>, Box<dyn Error>> {
+    let path = Path::new(file_path);
+    let file = File::open(path)?;
+    let mut rdr = csv::Reader::from_reader(file);
+    
+    let mut records = Vec::new();
+    
+    for result in rdr.deserialize() {
+        let raw_record: RawRecord = result?;
+        let record = DataRecord {
+            id: raw_record.id,
+            value: raw_record.value,
+            category: raw_record.category,
+            valid: validate_record(&raw_record),
+        };
+        records.push(record);
+    }
+    
+    Ok(records)
+}
+
+fn validate_record(record: &RawRecord) -> bool {
+    record.id > 0 && record.value >= 0.0 && !record.category.is_empty()
+}
+
+pub fn filter_valid_records(records: Vec<DataRecord>) -> Vec<DataRecord> {
+    records.into_iter().filter(|r| r.valid).collect()
+}
+
+pub fn calculate_average(records: &[DataRecord]) -> Option<f64> {
+    if records.is_empty() {
+        return None;
+    }
+    
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    Some(sum / records.len() as f64)
+}
+
+#[derive(Deserialize)]
+struct RawRecord {
+    id: u32,
+    value: f64,
+    category: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_load_csv_data() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,value,category").unwrap();
+        writeln!(temp_file, "1,10.5,TypeA").unwrap();
+        writeln!(temp_file, "2,15.3,TypeB").unwrap();
+        
+        let records = load_csv_data(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].id, 1);
+        assert_eq!(records[0].value, 10.5);
+        assert_eq!(records[0].category, "TypeA");
+    }
+    
+    #[test]
+    fn test_validate_record() {
+        let valid_record = RawRecord {
+            id: 1,
+            value: 10.0,
+            category: "Test".to_string(),
+        };
+        
+        let invalid_record = RawRecord {
+            id: 0,
+            value: -5.0,
+            category: "".to_string(),
+        };
+        
+        assert!(validate_record(&valid_record));
+        assert!(!validate_record(&invalid_record));
+    }
+    
+    #[test]
+    fn test_calculate_average() {
+        let records = vec![
+            DataRecord { id: 1, value: 10.0, category: "A".to_string(), valid: true },
+            DataRecord { id: 2, value: 20.0, category: "B".to_string(), valid: true },
+            DataRecord { id: 3, value: 30.0, category: "C".to_string(), valid: true },
+        ];
+        
+        let avg = calculate_average(&records).unwrap();
+        assert_eq!(avg, 20.0);
+        
+        let empty_records: Vec<DataRecord> = vec![];
+        assert!(calculate_average(&empty_records).is_none());
+    }
+}
