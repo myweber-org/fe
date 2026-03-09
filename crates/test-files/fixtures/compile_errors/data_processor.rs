@@ -96,3 +96,115 @@ mod tests {
         assert_eq!(transformed.value, 123.46);
     }
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum DataError {
+    #[error("Invalid input data")]
+    InvalidInput,
+    #[error("Processing timeout")]
+    Timeout,
+    #[error("Serialization failed")]
+    SerializationFailed,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DataRecord {
+    pub id: u64,
+    pub timestamp: i64,
+    pub values: Vec<f64>,
+    pub metadata: HashMap<String, String>,
+}
+
+impl DataRecord {
+    pub fn new(id: u64, timestamp: i64) -> Self {
+        Self {
+            id,
+            timestamp,
+            values: Vec::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn add_value(&mut self, value: f64) {
+        self.values.push(value);
+    }
+
+    pub fn add_metadata(&mut self, key: String, value: String) {
+        self.metadata.insert(key, value);
+    }
+
+    pub fn validate(&self) -> Result<(), DataError> {
+        if self.id == 0 {
+            return Err(DataError::InvalidInput);
+        }
+        if self.timestamp < 0 {
+            return Err(DataError::InvalidInput);
+        }
+        if self.values.is_empty() {
+            return Err(DataError::InvalidInput);
+        }
+        Ok(())
+    }
+}
+
+pub fn process_records(records: Vec<DataRecord>) -> Result<Vec<DataRecord>, DataError> {
+    let mut processed = Vec::with_capacity(records.len());
+    
+    for mut record in records {
+        record.validate()?;
+        
+        let sum: f64 = record.values.iter().sum();
+        let avg = sum / record.values.len() as f64;
+        
+        record.add_metadata("processed".to_string(), "true".to_string());
+        record.add_metadata("average".to_string(), avg.to_string());
+        
+        processed.push(record);
+    }
+    
+    Ok(processed)
+}
+
+pub fn filter_records(records: Vec<DataRecord>, min_value: f64) -> Vec<DataRecord> {
+    records
+        .into_iter()
+        .filter(|record| {
+            record.values.iter().any(|&v| v >= min_value)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_validation() {
+        let mut record = DataRecord::new(1, 1000);
+        record.add_value(42.0);
+        
+        assert!(record.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_record() {
+        let record = DataRecord::new(0, 1000);
+        assert!(record.validate().is_err());
+    }
+
+    #[test]
+    fn test_process_records() {
+        let mut record = DataRecord::new(1, 1000);
+        record.add_value(10.0);
+        record.add_value(20.0);
+        
+        let result = process_records(vec![record.clone()]);
+        assert!(result.is_ok());
+        
+        let processed = result.unwrap();
+        assert_eq!(processed[0].metadata.get("processed").unwrap(), "true");
+    }
+}
