@@ -206,4 +206,171 @@ impl AppConfig {
             self.database.database_name
         )
     }
+}use std::fs;
+use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub struct AppConfig {
+    pub server_address: String,
+    pub port: u16,
+    pub max_connections: usize,
+    pub enable_logging: bool,
+    pub log_level: String,
+}
+
+#[derive(Debug)]
+pub enum ConfigError {
+    FileNotFound(String),
+    ParseError(String),
+    ValidationError(String),
+}
+
+impl AppConfig {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
+        let content = fs::read_to_string(&path)
+            .map_err(|_| ConfigError::FileNotFound(path.as_ref().to_string_lossy().to_string()))?;
+
+        Self::from_str(&content)
+    }
+
+    pub fn from_str(content: &str) -> Result<Self, ConfigError> {
+        let mut server_address = None;
+        let mut port = None;
+        let mut max_connections = None;
+        let mut enable_logging = None;
+        let mut log_level = None;
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
+            if parts.len() != 2 {
+                return Err(ConfigError::ParseError(format!("Invalid line: {}", trimmed)));
+            }
+
+            let key = parts[0].trim();
+            let value = parts[1].trim();
+
+            match key {
+                "server_address" => server_address = Some(value.to_string()),
+                "port" => {
+                    port = Some(value.parse::<u16>().map_err(|e| {
+                        ConfigError::ParseError(format!("Invalid port value: {}", e))
+                    })?);
+                }
+                "max_connections" => {
+                    max_connections = Some(value.parse::<usize>().map_err(|e| {
+                        ConfigError::ParseError(format!("Invalid max_connections value: {}", e))
+                    })?);
+                }
+                "enable_logging" => {
+                    enable_logging = Some(value.parse::<bool>().map_err(|e| {
+                        ConfigError::ParseError(format!("Invalid enable_logging value: {}", e))
+                    })?);
+                }
+                "log_level" => log_level = Some(value.to_string()),
+                _ => return Err(ConfigError::ParseError(format!("Unknown key: {}", key))),
+            }
+        }
+
+        let config = AppConfig {
+            server_address: server_address
+                .ok_or_else(|| ConfigError::ValidationError("server_address is required".to_string()))?,
+            port: port.ok_or_else(|| ConfigError::ValidationError("port is required".to_string()))?,
+            max_connections: max_connections
+                .ok_or_else(|| ConfigError::ValidationError("max_connections is required".to_string()))?,
+            enable_logging: enable_logging
+                .ok_or_else(|| ConfigError::ValidationError("enable_logging is required".to_string()))?,
+            log_level: log_level
+                .ok_or_else(|| ConfigError::ValidationError("log_level is required".to_string()))?,
+        };
+
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.port == 0 {
+            return Err(ConfigError::ValidationError("Port cannot be 0".to_string()));
+        }
+
+        if self.max_connections == 0 {
+            return Err(ConfigError::ValidationError(
+                "max_connections must be greater than 0".to_string(),
+            ));
+        }
+
+        let valid_log_levels = ["error", "warn", "info", "debug", "trace"];
+        if !valid_log_levels.contains(&self.log_level.as_str()) {
+            return Err(ConfigError::ValidationError(format!(
+                "Invalid log level: {}. Must be one of: {:?}",
+                self.log_level, valid_log_levels
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub fn default() -> Self {
+        Self {
+            server_address: "127.0.0.1".to_string(),
+            port: 8080,
+            max_connections: 100,
+            enable_logging: true,
+            log_level: "info".to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_config() {
+        let config_str = r#"
+            server_address = 192.168.1.100
+            port = 3000
+            max_connections = 500
+            enable_logging = true
+            log_level = debug
+        "#;
+
+        let config = AppConfig::from_str(config_str).unwrap();
+        assert_eq!(config.server_address, "192.168.1.100");
+        assert_eq!(config.port, 3000);
+        assert_eq!(config.max_connections, 500);
+        assert_eq!(config.enable_logging, true);
+        assert_eq!(config.log_level, "debug");
+    }
+
+    #[test]
+    fn test_missing_field() {
+        let config_str = r#"
+            server_address = 192.168.1.100
+            port = 3000
+            max_connections = 500
+            enable_logging = true
+        "#;
+
+        let result = AppConfig::from_str(config_str);
+        assert!(matches!(result, Err(ConfigError::ValidationError(_))));
+    }
+
+    #[test]
+    fn test_invalid_port() {
+        let config_str = r#"
+            server_address = 192.168.1.100
+            port = 0
+            max_connections = 500
+            enable_logging = true
+            log_level = info
+        "#;
+
+        let result = AppConfig::from_str(config_str);
+        assert!(matches!(result, Err(ConfigError::ValidationError(_))));
+    }
 }
