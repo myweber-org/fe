@@ -121,3 +121,73 @@ mod tests {
         assert_eq!(ages, vec!["30", "25"]);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug)]
+pub struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+impl Record {
+    pub fn new(id: u32, name: String, value: f64, active: bool) -> Self {
+        Record {
+            id,
+            name,
+            value,
+            active,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.is_empty() {
+            return Err("Name cannot be empty".to_string());
+        }
+        if self.value < 0.0 {
+            return Err("Value must be non-negative".to_string());
+        }
+        Ok(())
+    }
+}
+
+pub fn parse_csv(file_path: &Path) -> Result<Vec<Record>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut records = Vec::new();
+
+    for (line_num, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line_num == 0 {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() != 4 {
+            return Err(format!("Invalid number of columns at line {}", line_num + 1).into());
+        }
+
+        let id: u32 = parts[0].parse()?;
+        let name = parts[1].to_string();
+        let value: f64 = parts[2].parse()?;
+        let active: bool = parts[3].parse()?;
+
+        let record = Record::new(id, name, value, active);
+        record.validate()?;
+        records.push(record);
+    }
+
+    Ok(records)
+}
+
+pub fn calculate_total(records: &[Record]) -> f64 {
+    records.iter().map(|r| r.value).sum()
+}
+
+pub fn filter_active(records: &[Record]) -> Vec<&Record> {
+    records.iter().filter(|r| r.active).collect()
+}
