@@ -202,3 +202,62 @@ mod tests {
         assert_eq!(original_content.to_vec(), decrypted_content);
     }
 }
+use std::fs;
+use std::io::{self, Read, Write};
+
+const DEFAULT_KEY: u8 = 0x55;
+
+pub fn encrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
+    let key = key.unwrap_or(DEFAULT_KEY);
+    let mut input_file = fs::File::open(input_path)?;
+    let mut output_file = fs::File::create(output_path)?;
+    
+    let mut buffer = [0u8; 4096];
+    
+    loop {
+        let bytes_read = input_file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        
+        for byte in buffer.iter_mut().take(bytes_read) {
+            *byte ^= key;
+        }
+        
+        output_file.write_all(&buffer[..bytes_read])?;
+    }
+    
+    Ok(())
+}
+
+pub fn decrypt_file(input_path: &str, output_path: &str, key: Option<u8>) -> io::Result<()> {
+    encrypt_file(input_path, output_path, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_encryption_decryption() {
+        let original_content = b"Hello, World! This is a test file.";
+        let mut temp_input = NamedTempFile::new().unwrap();
+        temp_input.write_all(original_content).unwrap();
+        
+        let temp_encrypted = NamedTempFile::new().unwrap();
+        let temp_decrypted = NamedTempFile::new().unwrap();
+        
+        encrypt_file(temp_input.path().to_str().unwrap(), 
+                    temp_encrypted.path().to_str().unwrap(), 
+                    Some(0x42)).unwrap();
+        
+        decrypt_file(temp_encrypted.path().to_str().unwrap(),
+                    temp_decrypted.path().to_str().unwrap(),
+                    Some(0x42)).unwrap();
+        
+        let decrypted_content = fs::read(temp_decrypted.path()).unwrap();
+        assert_eq!(original_content, decrypted_content.as_slice());
+    }
+}
