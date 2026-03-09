@@ -73,4 +73,122 @@ mod tests {
         assert_eq!(LogSeverity::from_str("debug"), Some(LogSeverity::Debug));
         assert_eq!(LogSeverity::from_str("unknown"), None);
     }
+}use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+pub enum LogLevel {
+    INFO,
+    WARN,
+    ERROR,
+    DEBUG,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct LogEntry {
+    pub timestamp: DateTime<Utc>,
+    pub level: LogLevel,
+    pub message: String,
+    pub component: String,
+}
+
+pub struct LogParser {
+    file_path: String,
+}
+
+impl LogParser {
+    pub fn new(file_path: &str) -> Self {
+        LogParser {
+            file_path: file_path.to_string(),
+        }
+    }
+
+    pub fn parse_logs(&self) -> Result<Vec<LogEntry>, Box<dyn std::error::Error>> {
+        let path = Path::new(&self.file_path);
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut logs = Vec::new();
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            match serde_json::from_str::<LogEntry>(&line) {
+                Ok(log_entry) => logs.push(log_entry),
+                Err(e) => eprintln!("Failed to parse line: {}. Error: {}", line, e),
+            }
+        }
+
+        Ok(logs)
+    }
+
+    pub fn filter_by_level(&self, level: LogLevel) -> Result<Vec<LogEntry>, Box<dyn std::error::Error>> {
+        let logs = self.parse_logs()?;
+        let filtered: Vec<LogEntry> = logs
+            .into_iter()
+            .filter(|log| log.level == level)
+            .collect();
+        Ok(filtered)
+    }
+
+    pub fn filter_by_time_range(
+        &self,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+    ) -> Result<Vec<LogEntry>, Box<dyn std::error::Error>> {
+        let logs = self.parse_logs()?;
+        let filtered: Vec<LogEntry> = logs
+            .into_iter()
+            .filter(|log| log.timestamp >= start_time && log.timestamp <= end_time)
+            .collect();
+        Ok(filtered)
+    }
+
+    pub fn count_logs_by_component(&self) -> Result<std::collections::HashMap<String, usize>, Box<dyn std::error::Error>> {
+        let logs = self.parse_logs()?;
+        let mut counts = std::collections::HashMap::new();
+
+        for log in logs {
+            *counts.entry(log.component.clone()).or_insert(0) += 1;
+        }
+
+        Ok(counts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn create_test_log_entry() -> LogEntry {
+        LogEntry {
+            timestamp: Utc.with_ymd_and_hms(2024, 1, 15, 10, 30, 0).unwrap(),
+            level: LogLevel::INFO,
+            message: "Test message".to_string(),
+            component: "api".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_log_entry_serialization() {
+        let log = create_test_log_entry();
+        let json = serde_json::to_string(&log).unwrap();
+        let parsed: LogEntry = serde_json::from_str(&json).unwrap();
+        
+        assert_eq!(log.level, parsed.level);
+        assert_eq!(log.message, parsed.message);
+        assert_eq!(log.component, parsed.component);
+    }
+
+    #[test]
+    fn test_log_level_equality() {
+        assert_eq!(LogLevel::INFO, LogLevel::INFO);
+        assert_ne!(LogLevel::INFO, LogLevel::ERROR);
+    }
 }
