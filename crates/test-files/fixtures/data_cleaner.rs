@@ -149,3 +149,30 @@ mod tests {
         assert_eq!(stats["std_dev"], (2.0_f64).sqrt());
     }
 }
+use std::collections::HashMap;
+
+pub fn clean_dataset<T: Clone>(data: Vec<T>, is_valid: fn(&T) -> bool) -> Vec<T> {
+    data.into_iter()
+        .filter(|entry| is_valid(entry))
+        .collect()
+}
+
+pub fn count_valid_entries<T>(data: &[T], is_valid: fn(&T) -> bool) -> usize {
+    data.iter()
+        .filter(|entry| is_valid(entry))
+        .count()
+}
+
+pub fn remove_duplicates<T: Eq + std::hash::Hash + Clone>(data: Vec<T>) -> Vec<T> {
+    let mut seen = HashMap::new();
+    let mut result = Vec::new();
+    
+    for item in data {
+        if !seen.contains_key(&item) {
+            seen.insert(item.clone(), true);
+            result.push(item);
+        }
+    }
+    
+    result
+}
