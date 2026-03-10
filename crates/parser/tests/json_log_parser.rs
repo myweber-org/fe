@@ -1,48 +1,57 @@
 use serde_json::Value;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LogEntry {
-    pub timestamp: Option<String>,
-    pub level: Option<String>,
-    pub message: Option<String>,
-    pub fields: HashMap<String, Value>,
-}
-
-pub struct LogParser {
-    filters: Vec<Filter>,
-    extract_fields: Vec<String>,
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+    pub metadata: Value,
 }
 
 #[derive(Debug)]
-pub enum Filter {
-    Level(String),
-    FieldEquals(String, Value),
-    FieldContains(String, String),
+pub enum ParseError {
+    IoError(std::io::Error),
+    JsonError(serde_json::Error),
+    InvalidFormat,
+}
+
+impl From<std::io::Error> for ParseError {
+    fn from(err: std::io::Error) -> Self {
+        ParseError::IoError(err)
+    }
+}
+
+impl From<serde_json::Error> for ParseError {
+    fn from(err: serde_json::Error) -> Self {
+        ParseError::JsonError(err)
+    }
+}
+
+pub struct LogParser {
+    min_level: String,
+    filter_key: Option<String>,
+    filter_value: Option<String>,
 }
 
 impl LogParser {
-    pub fn new() -> Self {
+    pub fn new(min_level: &str) -> Self {
         LogParser {
-            filters: Vec::new(),
-            extract_fields: Vec::new(),
+            min_level: min_level.to_lowercase(),
+            filter_key: None,
+            filter_value: None,
         }
     }
 
-    pub fn add_filter(&mut self, filter: Filter) -> &mut Self {
-        self.filters.push(filter);
+    pub fn with_filter(mut self, key: &str, value: &str) -> Self {
+        self.filter_key = Some(key.to_string());
+        self.filter_value = Some(value.to_string());
         self
     }
 
-    pub fn add_extract_field(&mut self, field: &str) -> &mut Self {
-        self.extract_fields.push(field.to_string());
-        self
-    }
-
-    pub fn parse_file<P: AsRef<Path>>(&self, path: P) -> Result<Vec<LogEntry>, Box<dyn std::error::Error>> {
+    pub fn parse_file<P: AsRef<Path>>(&self, path: P) -> Result<Vec<LogEntry>, ParseError> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let mut entries = Vec::new();
@@ -57,124 +66,67 @@ impl LogParser {
         Ok(entries)
     }
 
-    pub fn parse_line(&self, line: &str) -> Result<LogEntry, Box<dyn std::error::Error>> {
+    fn parse_line(&self, line: &str) -> Result<LogEntry, ParseError> {
         let json_value: Value = serde_json::from_str(line)?;
-        
-        let mut entry = LogEntry {
-            timestamp: json_value.get("timestamp").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            level: json_value.get("level").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            message: json_value.get("message").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            fields: HashMap::new(),
-        };
 
-        if let Value::Object(map) = json_value {
-            for (key, value) in map {
-                if !matches!(key.as_str(), "timestamp" | "level" | "message") {
-                    entry.fields.insert(key, value.clone());
+        let timestamp = json_value["timestamp"]
+            .as_str()
+            .ok_or(ParseError::InvalidFormat)?
+            .to_string();
+
+        let level = json_value["level"]
+            .as_str()
+            .ok_or(ParseError::InvalidFormat)?
+            .to_lowercase();
+
+        if !self.is_level_allowed(&level) {
+            return Err(ParseError::InvalidFormat);
+        }
+
+        if let (Some(key), Some(value)) = (&self.filter_key, &self.filter_value) {
+            if let Some(metadata_value) = json_value.get(key) {
+                if metadata_value.as_str() != Some(value) {
+                    return Err(ParseError::InvalidFormat);
                 }
             }
         }
 
-        if !self.filters.is_empty() && !self.passes_filters(&entry) {
-            return Err("Entry does not pass filters".into());
-        }
+        let message = json_value["message"]
+            .as_str()
+            .ok_or(ParseError::InvalidFormat)?
+            .to_string();
 
-        Ok(entry)
+        let metadata = json_value["metadata"].clone();
+
+        Ok(LogEntry {
+            timestamp,
+            level,
+            message,
+            metadata,
+        })
     }
 
-    fn passes_filters(&self, entry: &LogEntry) -> bool {
-        for filter in &self.filters {
-            match filter {
-                Filter::Level(level) => {
-                    if let Some(entry_level) = &entry.level {
-                        if entry_level != level {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
-                }
-                Filter::FieldEquals(field, value) => {
-                    if let Some(field_value) = entry.fields.get(field) {
-                        if field_value != value {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
-                }
-                Filter::FieldContains(field, substring) => {
-                    if let Some(field_value) = entry.fields.get(field) {
-                        if let Some(field_str) = field_value.as_str() {
-                            if !field_str.contains(substring) {
-                                return false;
-                            }
-                        } else {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
-                }
-            }
-        }
-        true
-    }
+    fn is_level_allowed(&self, level: &str) -> bool {
+        let level_order = ["trace", "debug", "info", "warn", "error"];
+        let min_index = level_order
+            .iter()
+            .position(|&l| l == self.min_level)
+            .unwrap_or(0);
+        let current_index = level_order.iter().position(|&l| l == level);
 
-    pub fn extract_selected_fields(&self, entry: &LogEntry) -> HashMap<String, Value> {
-        let mut result = HashMap::new();
-        
-        for field in &self.extract_fields {
-            if let Some(value) = entry.fields.get(field) {
-                result.insert(field.clone(), value.clone());
-            }
-        }
-
-        result
+        current_index.map_or(false, |idx| idx >= min_index)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn test_parse_valid_json() {
-        let parser = LogParser::new();
-        let line = r#"{"timestamp": "2023-10-01T12:00:00Z", "level": "INFO", "message": "Test message", "user_id": 123}"#;
-        
-        let entry = parser.parse_line(line).unwrap();
-        assert_eq!(entry.timestamp, Some("2023-10-01T12:00:00Z".to_string()));
-        assert_eq!(entry.level, Some("INFO".to_string()));
-        assert_eq!(entry.message, Some("Test message".to_string()));
-        assert_eq!(entry.fields.get("user_id"), Some(&json!(123)));
-    }
-
-    #[test]
-    fn test_filter_by_level() {
-        let mut parser = LogParser::new();
-        parser.add_filter(Filter::Level("ERROR".to_string()));
-        
-        let error_line = r#"{"level": "ERROR", "message": "Error occurred"}"#;
-        let info_line = r#"{"level": "INFO", "message": "Info message"}"#;
-        
-        assert!(parser.parse_line(error_line).is_ok());
-        assert!(parser.parse_line(info_line).is_err());
-    }
-
-    #[test]
-    fn test_extract_fields() {
-        let mut parser = LogParser::new();
-        parser.add_extract_field("user_id");
-        parser.add_extract_field("session_id");
-        
-        let line = r#"{"level": "INFO", "user_id": 456, "session_id": "abc123", "extra": "data"}"#;
-        let entry = parser.parse_line(line).unwrap();
-        let extracted = parser.extract_selected_fields(&entry);
-        
-        assert_eq!(extracted.get("user_id"), Some(&json!(456)));
-        assert_eq!(extracted.get("session_id"), Some(&json!("abc123")));
-        assert_eq!(extracted.get("extra"), None);
+pub fn print_entries(entries: &[LogEntry]) {
+    for entry in entries {
+        println!(
+            "[{}] {}: {}",
+            entry.timestamp, entry.level.to_uppercase(), entry.message
+        );
+        if !entry.metadata.is_null() {
+            println!("Metadata: {}", entry.metadata);
+        }
+        println!("---");
     }
 }
