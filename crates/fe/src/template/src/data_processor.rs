@@ -1,160 +1,168 @@
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use thiserror::Error;
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct DataRecord {
-    pub id: u64,
-    pub timestamp: i64,
-    pub values: Vec<f64>,
-    pub metadata: HashMap<String, String>,
+    id: u32,
+    value: f64,
+    category: String,
+    valid: bool,
 }
 
-#[derive(Debug, Error)]
-pub enum ProcessingError {
-    #[error("Invalid data format")]
-    InvalidFormat,
-    #[error("Data validation failed: {0}")]
-    ValidationFailed(String),
-    #[error("Transformation error: {0}")]
-    TransformationError(String),
+impl DataRecord {
+    pub fn new(id: u32, value: f64, category: String) -> Self {
+        let valid = value >= 0.0 && value <= 1000.0;
+        DataRecord {
+            id,
+            value,
+            category,
+            valid,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.valid
+    }
+
+    pub fn get_value(&self) -> f64 {
+        self.value
+    }
 }
 
 pub struct DataProcessor {
-    config: ProcessingConfig,
-}
-
-#[derive(Debug, Clone)]
-pub struct ProcessingConfig {
-    pub max_values: usize,
-    pub require_timestamp: bool,
-    pub allowed_metadata_keys: Vec<String>,
+    records: Vec<DataRecord>,
+    total_value: f64,
+    valid_count: usize,
 }
 
 impl DataProcessor {
-    pub fn new(config: ProcessingConfig) -> Self {
-        DataProcessor { config }
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+            total_value: 0.0,
+            valid_count: 0,
+        }
     }
 
-    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
-        if record.values.len() > self.config.max_values {
-            return Err(ProcessingError::ValidationFailed(
-                format!("Too many values: {} > {}", record.values.len(), self.config.max_values)
-            ));
-        }
+    pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
 
-        if self.config.require_timestamp && record.timestamp <= 0 {
-            return Err(ProcessingError::ValidationFailed(
-                "Invalid timestamp".to_string()
-            ));
-        }
-
-        for key in record.metadata.keys() {
-            if !self.config.allowed_metadata_keys.contains(key) {
-                return Err(ProcessingError::ValidationFailed(
-                    format!("Disallowed metadata key: {}", key)
-                ));
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() || line.starts_with('#') {
+                continue;
             }
+
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 3 {
+                eprintln!("Warning: Invalid format at line {}", line_num + 1);
+                continue;
+            }
+
+            let id = match parts[0].parse::<u32>() {
+                Ok(id) => id,
+                Err(_) => {
+                    eprintln!("Warning: Invalid ID at line {}", line_num + 1);
+                    continue;
+                }
+            };
+
+            let value = match parts[1].parse::<f64>() {
+                Ok(value) => value,
+                Err(_) => {
+                    eprintln!("Warning: Invalid value at line {}", line_num + 1);
+                    continue;
+                }
+            };
+
+            let category = parts[2].trim().to_string();
+
+            let record = DataRecord::new(id, value, category);
+            self.add_record(record);
         }
 
         Ok(())
     }
 
-    pub fn transform_record(&self, record: DataRecord) -> Result<DataRecord, ProcessingError> {
-        self.validate_record(&record)?;
-
-        let mut transformed = record.clone();
-        
-        transformed.values = transformed.values
-            .into_iter()
-            .map(|v| v * 2.0)
-            .collect();
-
-        transformed.metadata.insert(
-            "processed_timestamp".to_string(),
-            chrono::Utc::now().timestamp().to_string()
-        );
-
-        Ok(transformed)
+    pub fn add_record(&mut self, record: DataRecord) {
+        if record.is_valid() {
+            self.total_value += record.get_value();
+            self.valid_count += 1;
+        }
+        self.records.push(record);
     }
 
-    pub fn batch_process(
-        &self,
-        records: Vec<DataRecord>
-    ) -> Result<Vec<DataRecord>, Vec<ProcessingError>> {
-        let mut results = Vec::new();
-        let mut errors = Vec::new();
-
-        for record in records {
-            match self.transform_record(record) {
-                Ok(transformed) => results.push(transformed),
-                Err(e) => errors.push(e),
-            }
-        }
-
-        if !errors.is_empty() {
-            Err(errors)
+    pub fn get_average_value(&self) -> Option<f64> {
+        if self.valid_count > 0 {
+            Some(self.total_value / self.valid_count as f64)
         } else {
-            Ok(results)
+            None
         }
+    }
+
+    pub fn get_valid_records(&self) -> Vec<&DataRecord> {
+        self.records.iter().filter(|r| r.is_valid()).collect()
+    }
+
+    pub fn get_invalid_records(&self) -> Vec<&DataRecord> {
+        self.records.iter().filter(|r| !r.is_valid()).collect()
+    }
+
+    pub fn count_records(&self) -> usize {
+        self.records.len()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
-    fn create_test_config() -> ProcessingConfig {
-        ProcessingConfig {
-            max_values: 10,
-            require_timestamp: true,
-            allowed_metadata_keys: vec!["source".to_string(), "version".to_string()],
-        }
+    #[test]
+    fn test_data_record_creation() {
+        let record = DataRecord::new(1, 100.5, "test".to_string());
+        assert!(record.is_valid());
+        assert_eq!(record.get_value(), 100.5);
     }
 
     #[test]
-    fn test_valid_record_validation() {
-        let processor = DataProcessor::new(create_test_config());
-        let record = DataRecord {
-            id: 1,
-            timestamp: 1234567890,
-            values: vec![1.0, 2.0, 3.0],
-            metadata: {
-                let mut map = HashMap::new();
-                map.insert("source".to_string(), "test".to_string());
-                map
-            },
-        };
-
-        assert!(processor.validate_record(&record).is_ok());
+    fn test_invalid_record() {
+        let record = DataRecord::new(2, -10.0, "test".to_string());
+        assert!(!record.is_valid());
     }
 
     #[test]
-    fn test_invalid_record_validation() {
-        let processor = DataProcessor::new(create_test_config());
-        let record = DataRecord {
-            id: 1,
-            timestamp: 0,
-            values: vec![1.0; 20],
-            metadata: HashMap::new(),
-        };
+    fn test_data_processor() {
+        let mut processor = DataProcessor::new();
+        processor.add_record(DataRecord::new(1, 50.0, "A".to_string()));
+        processor.add_record(DataRecord::new(2, 150.0, "B".to_string()));
+        processor.add_record(DataRecord::new(3, -10.0, "C".to_string()));
 
-        assert!(processor.validate_record(&record).is_err());
+        assert_eq!(processor.count_records(), 3);
+        assert_eq!(processor.get_valid_records().len(), 2);
+        assert_eq!(processor.get_invalid_records().len(), 1);
+        
+        let avg = processor.get_average_value().unwrap();
+        assert!((avg - 100.0).abs() < 0.001);
     }
 
     #[test]
-    fn test_record_transformation() {
-        let processor = DataProcessor::new(create_test_config());
-        let record = DataRecord {
-            id: 42,
-            timestamp: 1000,
-            values: vec![1.5, 2.5],
-            metadata: HashMap::new(),
-        };
+    fn test_file_loading() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "1,100.5,category_a").unwrap();
+        writeln!(temp_file, "2,200.3,category_b").unwrap();
+        writeln!(temp_file, "# This is a comment").unwrap();
+        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file, "3,50.7,category_c").unwrap();
 
-        let result = processor.transform_record(record).unwrap();
-        assert_eq!(result.values, vec![3.0, 5.0]);
-        assert!(result.metadata.contains_key("processed_timestamp"));
+        let mut processor = DataProcessor::new();
+        let result = processor.load_from_file(temp_file.path());
+        assert!(result.is_ok());
+        assert_eq!(processor.count_records(), 3);
     }
 }
