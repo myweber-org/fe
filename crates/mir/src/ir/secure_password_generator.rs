@@ -235,4 +235,53 @@ mod tests {
         
         assert!(generator.generate().is_err());
     }
+}use rand::{thread_rng, Rng};
+use rand::distributions::Alphanumeric;
+
+pub fn generate_password(length: usize) -> String {
+    let mut rng = thread_rng();
+    (0..length)
+        .map(|_| rng.sample(Alphanumeric) as char)
+        .collect()
+}
+
+pub fn generate_secure_password(length: usize) -> String {
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+    
+    let mut rng = OsRng;
+    let mut buffer = vec![0u8; length];
+    rng.fill_bytes(&mut buffer);
+    
+    buffer
+        .iter()
+        .map(|byte| {
+            let charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()";
+            let idx = (*byte as usize) % charset.len();
+            charset.chars().nth(idx).unwrap()
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_password_length() {
+        let password = generate_password(12);
+        assert_eq!(password.len(), 12);
+    }
+
+    #[test]
+    fn test_secure_password_length() {
+        let password = generate_secure_password(16);
+        assert_eq!(password.len(), 16);
+    }
+
+    #[test]
+    fn test_password_charset() {
+        let password = generate_password(20);
+        assert!(password.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
 }
