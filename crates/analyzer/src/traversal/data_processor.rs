@@ -300,3 +300,141 @@ impl ValidationRule {
         }
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    id: u32,
+    name: String,
+    value: f64,
+    tags: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum ValidationError {
+    InvalidId,
+    EmptyName,
+    NegativeValue,
+    DuplicateTag,
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValidationError::InvalidId => write!(f, "ID must be greater than zero"),
+            ValidationError::EmptyName => write!(f, "Name cannot be empty"),
+            ValidationError::NegativeValue => write!(f, "Value must be non-negative"),
+            ValidationError::DuplicateTag => write!(f, "Tags must be unique"),
+        }
+    }
+}
+
+impl Error for ValidationError {}
+
+impl DataRecord {
+    pub fn new(id: u32, name: String, value: f64, tags: Vec<String>) -> Result<Self, ValidationError> {
+        if id == 0 {
+            return Err(ValidationError::InvalidId);
+        }
+        if name.trim().is_empty() {
+            return Err(ValidationError::EmptyName);
+        }
+        if value < 0.0 {
+            return Err(ValidationError::NegativeValue);
+        }
+        
+        let mut seen_tags = HashMap::new();
+        for tag in &tags {
+            if seen_tags.contains_key(tag) {
+                return Err(ValidationError::DuplicateTag);
+            }
+            seen_tags.insert(tag.clone(), true);
+        }
+        
+        Ok(Self { id, name, value, tags })
+    }
+    
+    pub fn transform(&mut self, multiplier: f64) {
+        self.value *= multiplier;
+        self.name = self.name.to_uppercase();
+    }
+    
+    pub fn add_tag(&mut self, tag: String) -> Result<(), ValidationError> {
+        if self.tags.contains(&tag) {
+            return Err(ValidationError::DuplicateTag);
+        }
+        self.tags.push(tag);
+        Ok(())
+    }
+    
+    pub fn calculate_score(&self) -> f64 {
+        let tag_bonus = self.tags.len() as f64 * 0.5;
+        self.value * (1.0 + tag_bonus)
+    }
+}
+
+pub fn process_records(records: &mut [DataRecord]) -> Vec<f64> {
+    records.iter_mut().for_each(|record| {
+        record.transform(1.1);
+    });
+    
+    records.iter()
+        .map(|record| record.calculate_score())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_valid_record_creation() {
+        let record = DataRecord::new(
+            1,
+            "Test Record".to_string(),
+            100.0,
+            vec!["tag1".to_string(), "tag2".to_string()]
+        );
+        assert!(record.is_ok());
+    }
+    
+    #[test]
+    fn test_invalid_id() {
+        let record = DataRecord::new(
+            0,
+            "Test".to_string(),
+            100.0,
+            vec![]
+        );
+        assert!(matches!(record, Err(ValidationError::InvalidId)));
+    }
+    
+    #[test]
+    fn test_transform_record() {
+        let mut record = DataRecord::new(
+            1,
+            "test".to_string(),
+            50.0,
+            vec!["important".to_string()]
+        ).unwrap();
+        
+        record.transform(2.0);
+        assert_eq!(record.value, 100.0);
+        assert_eq!(record.name, "TEST");
+    }
+    
+    #[test]
+    fn test_calculate_score() {
+        let record = DataRecord::new(
+            1,
+            "Sample".to_string(),
+            200.0,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        ).unwrap();
+        
+        let score = record.calculate_score();
+        assert_eq!(score, 200.0 * (1.0 + 3.0 * 0.5));
+    }
+}
