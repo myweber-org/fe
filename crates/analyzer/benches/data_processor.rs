@@ -441,3 +441,136 @@ mod tests {
         assert_eq!(freq.get("B"), Some(&1));
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub enum DataError {
+    InvalidId,
+    InvalidValue,
+    MissingField(String),
+    ProcessingError(String),
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataError::InvalidId => write!(f, "Invalid record ID"),
+            DataError::InvalidValue => write!(f, "Invalid numeric value"),
+            DataError::MissingField(field) => write!(f, "Missing required field: {}", field),
+            DataError::ProcessingError(msg) => write!(f, "Processing error: {}", msg),
+        }
+    }
+}
+
+impl Error for DataError {}
+
+pub fn validate_record(record: &DataRecord) -> Result<(), DataError> {
+    if record.id == 0 {
+        return Err(DataError::InvalidId);
+    }
+    
+    if record.value.is_nan() || record.value.is_infinite() {
+        return Err(DataError::InvalidValue);
+    }
+    
+    if record.name.trim().is_empty() {
+        return Err(DataError::MissingField("name".to_string()));
+    }
+    
+    Ok(())
+}
+
+pub fn transform_record(record: &DataRecord, multiplier: f64) -> Result<DataRecord, DataError> {
+    validate_record(record)?;
+    
+    let mut transformed = record.clone();
+    transformed.value *= multiplier;
+    
+    transformed.metadata.insert(
+        "processed_timestamp".to_string(),
+        chrono::Utc::now().to_rfc3339(),
+    );
+    
+    transformed.metadata.insert(
+        "transformation_factor".to_string(),
+        multiplier.to_string(),
+    );
+    
+    Ok(transformed)
+}
+
+pub fn process_records(
+    records: Vec<DataRecord>,
+    multiplier: f64,
+) -> Result<Vec<DataRecord>, DataError> {
+    let mut processed = Vec::with_capacity(records.len());
+    
+    for record in records {
+        match transform_record(&record, multiplier) {
+            Ok(transformed) => processed.push(transformed),
+            Err(e) => return Err(DataError::ProcessingError(format!("Failed to process record {}: {}", record.id, e))),
+        }
+    }
+    
+    Ok(processed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_validate_valid_record() {
+        let record = DataRecord {
+            id: 1,
+            name: "Test".to_string(),
+            value: 42.0,
+            metadata: HashMap::new(),
+        };
+        
+        assert!(validate_record(&record).is_ok());
+    }
+    
+    #[test]
+    fn test_validate_invalid_id() {
+        let record = DataRecord {
+            id: 0,
+            name: "Test".to_string(),
+            value: 42.0,
+            metadata: HashMap::new(),
+        };
+        
+        assert!(matches!(validate_record(&record), Err(DataError::InvalidId)));
+    }
+    
+    #[test]
+    fn test_transform_record() {
+        let mut metadata = HashMap::new();
+        metadata.insert("source".to_string(), "test".to_string());
+        
+        let record = DataRecord {
+            id: 100,
+            name: "Sample".to_string(),
+            value: 10.0,
+            metadata,
+        };
+        
+        let result = transform_record(&record, 2.5);
+        assert!(result.is_ok());
+        
+        let transformed = result.unwrap();
+        assert_eq!(transformed.value, 25.0);
+        assert!(transformed.metadata.contains_key("processed_timestamp"));
+        assert!(transformed.metadata.contains_key("transformation_factor"));
+    }
+}
