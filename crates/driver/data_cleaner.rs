@@ -142,3 +142,109 @@ mod tests {
         std::fs::remove_file(test_output).unwrap();
     }
 }
+use std::collections::HashSet;
+
+pub struct DataCleaner {
+    records: Vec<String>,
+    duplicates: HashSet<String>,
+}
+
+impl DataCleaner {
+    pub fn new() -> Self {
+        DataCleaner {
+            records: Vec::new(),
+            duplicates: HashSet::new(),
+        }
+    }
+
+    pub fn add_record(&mut self, record: &str) -> bool {
+        let trimmed = record.trim().to_string();
+        
+        if trimmed.is_empty() {
+            return false;
+        }
+
+        if self.duplicates.contains(&trimmed) {
+            return false;
+        }
+
+        self.duplicates.insert(trimmed.clone());
+        self.records.push(trimmed);
+        true
+    }
+
+    pub fn validate_records(&self) -> Vec<bool> {
+        self.records
+            .iter()
+            .map(|record| {
+                !record.is_empty()
+                    && record.len() <= 255
+                    && record.chars().all(|c| c.is_ascii() || c.is_alphanumeric())
+            })
+            .collect()
+    }
+
+    pub fn get_unique_records(&self) -> &Vec<String> {
+        &self.records
+    }
+
+    pub fn remove_duplicates(&mut self) -> usize {
+        let unique_records: Vec<String> = self.records.drain(..).collect();
+        let mut seen = HashSet::new();
+        let mut removed_count = 0;
+
+        for record in unique_records {
+            if seen.insert(record.clone()) {
+                self.records.push(record);
+            } else {
+                removed_count += 1;
+            }
+        }
+
+        self.duplicates = seen;
+        removed_count
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
+        self.duplicates.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_record() {
+        let mut cleaner = DataCleaner::new();
+        assert!(cleaner.add_record("test"));
+        assert!(!cleaner.add_record("test"));
+        assert!(!cleaner.add_record(""));
+        assert!(!cleaner.add_record("   "));
+    }
+
+    #[test]
+    fn test_validate_records() {
+        let mut cleaner = DataCleaner::new();
+        cleaner.add_record("valid123");
+        cleaner.add_record("another");
+        
+        let validation = cleaner.validate_records();
+        assert_eq!(validation.len(), 2);
+        assert!(validation[0]);
+        assert!(validation[1]);
+    }
+
+    #[test]
+    fn test_remove_duplicates() {
+        let mut cleaner = DataCleaner::new();
+        cleaner.add_record("duplicate");
+        cleaner.add_record("duplicate");
+        cleaner.add_record("unique");
+        
+        let removed = cleaner.remove_duplicates();
+        assert_eq!(removed, 1);
+        assert_eq!(cleaner.get_unique_records().len(), 2);
+    }
+}
