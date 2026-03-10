@@ -130,4 +130,80 @@ mod tests {
 
         Ok(())
     }
+}use std::error::Error;
+use std::fs::File;
+use csv::ReaderBuilder;
+
+pub struct CsvProcessor {
+    file_path: String,
+}
+
+impl CsvProcessor {
+    pub fn new(file_path: &str) -> Self {
+        CsvProcessor {
+            file_path: file_path.to_string(),
+        }
+    }
+
+    pub fn filter_records(&self, column_name: &str, filter_value: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+        let file = File::open(&self.file_path)?;
+        let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+        
+        let headers = rdr.headers()?.clone();
+        let column_index = headers.iter()
+            .position(|h| h == column_name)
+            .ok_or_else(|| format!("Column '{}' not found", column_name))?;
+        
+        let mut filtered_records = Vec::new();
+        for result in rdr.records() {
+            let record = result?;
+            if record.get(column_index) == Some(filter_value) {
+                filtered_records.push(record.iter().map(|s| s.to_string()).collect());
+            }
+        }
+        
+        Ok(filtered_records)
+    }
+
+    pub fn count_records(&self) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(&self.file_path)?;
+        let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+        Ok(rdr.records().count())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_filter_records() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age,city").unwrap();
+        writeln!(temp_file, "Alice,30,New York").unwrap();
+        writeln!(temp_file, "Bob,25,London").unwrap();
+        writeln!(temp_file, "Charlie,35,New York").unwrap();
+        
+        let processor = CsvProcessor::new(temp_file.path().to_str().unwrap());
+        let result = processor.filter_records("city", "New York").unwrap();
+        
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], vec!["Alice", "30", "New York"]);
+        assert_eq!(result[1], vec!["Charlie", "35", "New York"]);
+    }
+
+    #[test]
+    fn test_count_records() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "name,age").unwrap();
+        writeln!(temp_file, "Alice,30").unwrap();
+        writeln!(temp_file, "Bob,25").unwrap();
+        
+        let processor = CsvProcessor::new(temp_file.path().to_str().unwrap());
+        let count = processor.count_records().unwrap();
+        
+        assert_eq!(count, 2);
+    }
 }
