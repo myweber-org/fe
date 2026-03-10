@@ -12,12 +12,12 @@ impl Config {
         let mut values = HashMap::new();
 
         for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
                 continue;
             }
 
-            if let Some((key, value)) = trimmed.split_once('=') {
+            if let Some((key, value)) = line.split_once('=') {
                 let key = key.trim().to_string();
                 let processed_value = Self::process_value(value.trim());
                 values.insert(key, processed_value);
@@ -66,12 +66,12 @@ mod tests {
 
     #[test]
     fn test_env_substitution() {
-        env::set_var("API_KEY", "secret123");
+        env::set_var("API_SECRET", "super_secret_key");
         
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "KEY=$API_KEY").unwrap();
+        writeln!(file, "SECRET_KEY=$API_SECRET").unwrap();
         
         let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("KEY").unwrap(), "secret123");
+        assert_eq!(config.get("SECRET_KEY").unwrap(), "super_secret_key");
     }
 }
