@@ -249,3 +249,43 @@ mod tests {
         assert_eq!(cleaner.get_records()[0], "multiple spaces");
     }
 }
+use std::collections::HashSet;
+
+pub fn clean_dataset<T: Eq + std::hash::Hash + Clone>(
+    data: &[T],
+    invalid_items: &HashSet<T>,
+) -> Vec<T> {
+    data.iter()
+        .filter(|item| !invalid_items.contains(item))
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_dataset() {
+        let data = vec![1, 2, 3, 4, 5];
+        let invalid: HashSet<i32> = [2, 4].iter().cloned().collect();
+        let cleaned = clean_dataset(&data, &invalid);
+        assert_eq!(cleaned, vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn test_clean_dataset_empty_invalid() {
+        let data = vec!["apple", "banana", "cherry"];
+        let invalid: HashSet<&str> = HashSet::new();
+        let cleaned = clean_dataset(&data, &invalid);
+        assert_eq!(cleaned, data);
+    }
+
+    #[test]
+    fn test_clean_dataset_all_invalid() {
+        let data = vec![10.5, 20.3, 30.7];
+        let invalid: HashSet<f64> = [10.5, 20.3, 30.7].iter().cloned().collect();
+        let cleaned = clean_dataset(&data, &invalid);
+        assert!(cleaned.is_empty());
+    }
+}
