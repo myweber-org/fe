@@ -540,3 +540,154 @@ mod tests {
         assert_eq!(max.unwrap().id, 3);
     }
 }
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    records: Vec<Vec<String>>,
+    headers: Vec<String>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            records: Vec::new(),
+            headers: Vec::new(),
+        }
+    }
+
+    pub fn load_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
+
+        if let Some(header_line) = lines.next() {
+            self.headers = header_line?
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+        }
+
+        for line in lines {
+            let record: Vec<String> = line?
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            if record.len() == self.headers.len() {
+                self.records.push(record);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn calculate_column_stats(&self, column_index: usize) -> Option<(f64, f64, f64)> {
+        if column_index >= self.headers.len() {
+            return None;
+        }
+
+        let mut values = Vec::new();
+        for record in &self.records {
+            if let Some(value_str) = record.get(column_index) {
+                if let Ok(value) = value_str.parse::<f64>() {
+                    values.push(value);
+                }
+            }
+        }
+
+        if values.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = values.iter().sum();
+        let count = values.len() as f64;
+        let mean = sum / count;
+
+        let variance: f64 = values.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / count;
+
+        let std_dev = variance.sqrt();
+
+        Some((mean, variance, std_dev))
+    }
+
+    pub fn get_unique_values(&self, column_index: usize) -> Option<Vec<String>> {
+        if column_index >= self.headers.len() {
+            return None;
+        }
+
+        let mut unique_values = HashMap::new();
+        for record in &self.records {
+            if let Some(value) = record.get(column_index) {
+                unique_values.insert(value.clone(), ());
+            }
+        }
+
+        let mut result: Vec<String> = unique_values.keys().cloned().collect();
+        result.sort();
+        Some(result)
+    }
+
+    pub fn filter_records<F>(&self, predicate: F) -> Vec<Vec<String>>
+    where
+        F: Fn(&[String]) -> bool,
+    {
+        self.records
+            .iter()
+            .filter(|record| predicate(record))
+            .cloned()
+            .collect()
+    }
+
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn header_count(&self) -> usize {
+        self.headers.len()
+    }
+
+    pub fn get_headers(&self) -> &[String] {
+        &self.headers
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processor() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "id,name,age,score").unwrap();
+        writeln!(temp_file, "1,Alice,25,85.5").unwrap();
+        writeln!(temp_file, "2,Bob,30,92.0").unwrap();
+        writeln!(temp_file, "3,Charlie,25,78.5").unwrap();
+        writeln!(temp_file, "4,Diana,35,95.5").unwrap();
+
+        let file_path = temp_file.path().to_str().unwrap();
+
+        let mut processor = DataProcessor::new();
+        let result = processor.load_csv(file_path);
+        assert!(result.is_ok());
+
+        assert_eq!(processor.record_count(), 4);
+        assert_eq!(processor.header_count(), 4);
+
+        let stats = processor.calculate_column_stats(3).unwrap();
+        assert!((stats.0 - 87.875).abs() < 0.001);
+
+        let unique_ages = processor.get_unique_values(2).unwrap();
+        assert_eq!(unique_ages.len(), 3);
+
+        let filtered = processor.filter_records(|record| {
+            record[2].parse::<i32>().unwrap_or(0) > 25
+        });
+        assert_eq!(filtered.len(), 2);
+    }
+}
