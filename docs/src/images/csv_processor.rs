@@ -154,4 +154,101 @@ mod tests {
         
         assert!(result.is_err());
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+
+pub fn filter_csv_rows(
+    input_path: &str,
+    output_path: &str,
+    predicate: impl Fn(&[String]) -> bool,
+) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let reader = BufReader::new(input_file);
+    let mut output_file = File::create(output_path)?;
+
+    for line in reader.lines() {
+        let line = line?;
+        let fields: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
+
+        if predicate(&fields) {
+            writeln!(output_file, "{}", line)?;
+        }
+    }
+
+    Ok(())
+}
+
+pub fn transform_csv_column(
+    input_path: &str,
+    output_path: &str,
+    column_index: usize,
+    transformer: impl Fn(&str) -> String,
+) -> Result<(), Box<dyn Error>> {
+    let input_file = File::open(input_path)?;
+    let reader = BufReader::new(input_file);
+    let mut output_file = File::create(output_path)?;
+
+    for line in reader.lines() {
+        let line = line?;
+        let mut fields: Vec<String> = line.split(',').map(|s| s.to_string()).collect();
+
+        if column_index < fields.len() {
+            fields[column_index] = transformer(&fields[column_index]);
+        }
+
+        writeln!(output_file, "{}", fields.join(","))?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn test_filter_csv_rows() {
+        let input = "data/test_input.csv";
+        let output = "data/test_filter_output.csv";
+        let test_data = "name,age,city\nAlice,30,NYC\nBob,25,LA\nCharlie,35,Chicago";
+
+        std::fs::create_dir_all("data").unwrap();
+        std::fs::write(input, test_data).unwrap();
+
+        let predicate = |fields: &[String]| fields[1].parse::<i32>().unwrap_or(0) > 30;
+        filter_csv_rows(input, output, predicate).unwrap();
+
+        let mut content = String::new();
+        File::open(output).unwrap().read_to_string(&mut content).unwrap();
+        assert_eq!(content.trim(), "Charlie,35,Chicago");
+
+        std::fs::remove_file(input).unwrap();
+        std::fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn test_transform_csv_column() {
+        let input = "data/test_transform_input.csv";
+        let output = "data/test_transform_output.csv";
+        let test_data = "product,price\napple,1.99\nbanana,0.79";
+
+        std::fs::create_dir_all("data").unwrap();
+        std::fs::write(input, test_data).unwrap();
+
+        let transformer = |price: &str| {
+            let value: f64 = price.parse().unwrap_or(0.0);
+            format!("${:.2}", value * 1.1)
+        };
+        transform_csv_column(input, output, 1, transformer).unwrap();
+
+        let mut content = String::new();
+        File::open(output).unwrap().read_to_string(&mut content).unwrap();
+        assert!(content.contains("$2.19"));
+        assert!(content.contains("$0.87"));
+
+        std::fs::remove_file(input).unwrap();
+        std::fs::remove_file(output).unwrap();
+    }
 }
