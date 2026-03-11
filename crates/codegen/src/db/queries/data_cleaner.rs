@@ -79,4 +79,44 @@ mod tests {
         let cleaned = clean_string_data(data);
         assert_eq!(cleaned, vec!["hello", "world", "test"]);
     }
+}use regex::Regex;
+
+pub fn sanitize_input(input: &str) -> String {
+    let trimmed = input.trim();
+    
+    let re_multispace = Regex::new(r"\s+").unwrap();
+    let normalized_spaces = re_multispace.replace_all(trimmed, " ");
+    
+    let re_special = Regex::new(r"[^\w\s\-.,!?]").unwrap();
+    let cleaned = re_special.replace_all(&normalized_spaces, "");
+    
+    cleaned.to_string()
+}
+
+pub fn normalize_whitespace(text: &str) -> String {
+    let lines: Vec<&str> = text.lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect();
+    
+    lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_input() {
+        let input = "  Hello   World!!  @#$  ";
+        let expected = "Hello World!!";
+        assert_eq!(sanitize_input(input), expected);
+    }
+
+    #[test]
+    fn test_normalize_whitespace() {
+        let input = "  Line 1  \n\n  Line 2  \n  \n  Line 3  ";
+        let expected = "Line 1\nLine 2\nLine 3";
+        assert_eq!(normalize_whitespace(input), expected);
+    }
 }
