@@ -85,3 +85,60 @@ mod tests {
         assert_eq!(result[2], "data");
     }
 }
+use regex::Regex;
+use std::collections::HashSet;
+
+pub fn clean_and_normalize(input: &str) -> String {
+    let trimmed = input.trim();
+    
+    let re_multispace = Regex::new(r"\s+").unwrap();
+    let normalized_spaces = re_multispace.replace_all(trimmed, " ");
+    
+    let re_special = Regex::new(r"[^\w\s\-\.]").unwrap();
+    let cleaned = re_special.replace_all(&normalized_spaces, "");
+    
+    cleaned.to_lowercase()
+}
+
+pub fn deduplicate_words(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    
+    for word in words {
+        if seen.insert(word) {
+            result.push(word);
+        }
+    }
+    
+    result.join(" ")
+}
+
+pub fn validate_email(email: &str) -> bool {
+    let re = Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$").unwrap();
+    re.is_match(email)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_and_normalize() {
+        assert_eq!(clean_and_normalize("  Hello   WORLD!!  "), "hello world");
+        assert_eq!(clean_and_normalize("Data@Process#2024"), "dataprocess2024");
+    }
+
+    #[test]
+    fn test_deduplicate_words() {
+        assert_eq!(deduplicate_words("hello world hello again"), "hello world again");
+        assert_eq!(deduplicate_words("a b c a b"), "a b c");
+    }
+
+    #[test]
+    fn test_validate_email() {
+        assert!(validate_email("test@example.com"));
+        assert!(!validate_email("invalid-email"));
+        assert!(!validate_email("user@.com"));
+    }
+}
