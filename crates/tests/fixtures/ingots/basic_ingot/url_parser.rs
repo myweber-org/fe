@@ -1,137 +1,85 @@
-
 use std::collections::HashMap;
-use std::str::FromStr;
 
-#[derive(Debug, PartialEq)]
-pub struct ParsedUrl {
-    pub protocol: String,
-    pub domain: String,
-    pub path: String,
-    pub query_params: HashMap<String, String>,
-    pub fragment: Option<String>,
-}
+pub struct UrlParser;
 
-impl ParsedUrl {
-    pub fn new(url: &str) -> Result<Self, String> {
-        let mut protocol = String::new();
-        let mut rest = url;
+impl UrlParser {
+    pub fn parse_query_string(query: &str) -> HashMap<String, String> {
+        let mut params = HashMap::new();
         
-        if let Some(sep) = url.find("://") {
-            protocol = url[..sep].to_string();
-            rest = &url[sep + 3..];
+        if query.is_empty() {
+            return params;
         }
-        
-        let mut domain_end = rest.len();
-        let mut path_start = rest.len();
-        let mut query_start = rest.len();
-        let mut fragment_start = rest.len();
-        
-        if let Some(pos) = rest.find('/') {
-            domain_end = pos;
-            path_start = pos;
-        }
-        
-        if let Some(pos) = rest.find('?') {
-            if pos < query_start {
-                query_start = pos;
-                if path_start > query_start {
-                    path_start = query_start;
-                }
+
+        for pair in query.split('&') {
+            let mut parts = pair.splitn(2, '=');
+            if let Some(key) = parts.next() {
+                let value = parts.next().unwrap_or("");
+                params.insert(key.to_string(), value.to_string());
             }
         }
         
-        if let Some(pos) = rest.find('#') {
-            fragment_start = pos;
+        params
+    }
+
+    pub fn extract_domain(url: &str) -> Option<String> {
+        let url_lower = url.to_lowercase();
+        let prefixes = ["http://", "https://", "www."];
+        
+        let mut domain_start = 0;
+        for prefix in &prefixes {
+            if url_lower.starts_with(prefix) {
+                domain_start = prefix.len();
+                break;
+            }
         }
+
+        let remaining = &url[domain_start..];
+        let domain_end = remaining.find('/').unwrap_or(remaining.len());
         
-        let domain = rest[..domain_end].to_string();
-        let path = if path_start < fragment_start.min(query_start) {
-            rest[path_start..fragment_start.min(query_start)].to_string()
-        } else {
-            String::new()
-        };
-        
-        let query_params = if query_start < fragment_start {
-            let query_str = &rest[query_start + 1..fragment_start];
-            parse_query_string(query_str)
-        } else {
-            HashMap::new()
-        };
-        
-        let fragment = if fragment_start < rest.len() {
-            Some(rest[fragment_start + 1..].to_string())
+        if domain_end > 0 {
+            Some(remaining[..domain_end].to_string())
         } else {
             None
-        };
-        
-        Ok(ParsedUrl {
-            protocol,
-            domain,
-            path,
-            query_params,
-            fragment,
-        })
-    }
-    
-    pub fn get_query_param(&self, key: &str) -> Option<&String> {
-        self.query_params.get(key)
-    }
-    
-    pub fn has_fragment(&self) -> bool {
-        self.fragment.is_some()
-    }
-}
-
-fn parse_query_string(query: &str) -> HashMap<String, String> {
-    let mut params = HashMap::new();
-    
-    for pair in query.split('&') {
-        if let Some(sep) = pair.find('=') {
-            let key = &pair[..sep];
-            let value = &pair[sep + 1..];
-            params.insert(key.to_string(), value.to_string());
         }
     }
-    
-    params
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
-    fn test_parse_full_url() {
-        let url = "https://example.com/path/to/resource?param1=value1&param2=value2#section";
-        let parsed = ParsedUrl::new(url).unwrap();
+    fn test_parse_query_string() {
+        let query = "name=john&age=30&city=new+york";
+        let params = UrlParser::parse_query_string(query);
         
-        assert_eq!(parsed.protocol, "https");
-        assert_eq!(parsed.domain, "example.com");
-        assert_eq!(parsed.path, "/path/to/resource");
-        assert_eq!(parsed.get_query_param("param1"), Some(&"value1".to_string()));
-        assert_eq!(parsed.get_query_param("param2"), Some(&"value2".to_string()));
-        assert_eq!(parsed.fragment, Some("section".to_string()));
+        assert_eq!(params.get("name"), Some(&"john".to_string()));
+        assert_eq!(params.get("age"), Some(&"30".to_string()));
+        assert_eq!(params.get("city"), Some(&"new+york".to_string()));
+        assert_eq!(params.len(), 3);
     }
-    
+
     #[test]
-    fn test_parse_url_without_protocol() {
-        let url = "example.com/path";
-        let parsed = ParsedUrl::new(url).unwrap();
-        
-        assert_eq!(parsed.protocol, "");
-        assert_eq!(parsed.domain, "example.com");
-        assert_eq!(parsed.path, "/path");
+    fn test_empty_query_string() {
+        let params = UrlParser::parse_query_string("");
+        assert!(params.is_empty());
     }
-    
+
     #[test]
-    fn test_parse_url_with_only_domain() {
-        let url = "https://example.com";
-        let parsed = ParsedUrl::new(url).unwrap();
+    fn test_extract_domain() {
+        assert_eq!(
+            UrlParser::extract_domain("https://www.example.com/path"),
+            Some("example.com".to_string())
+        );
         
-        assert_eq!(parsed.protocol, "https");
-        assert_eq!(parsed.domain, "example.com");
-        assert_eq!(parsed.path, "");
-        assert!(parsed.query_params.is_empty());
-        assert_eq!(parsed.fragment, None);
+        assert_eq!(
+            UrlParser::extract_domain("http://subdomain.example.org"),
+            Some("subdomain.example.org".to_string())
+        );
+        
+        assert_eq!(
+            UrlParser::extract_domain("example.net"),
+            Some("example.net".to_string())
+        );
     }
 }
