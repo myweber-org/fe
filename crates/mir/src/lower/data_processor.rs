@@ -374,3 +374,225 @@ fn main() {
         eprintln!("Error processing data: {}", e);
     }
 }
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidData(String),
+    TransformationFailed(String),
+    ValidationError(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidData(msg) => write!(f, "Invalid data: {}", msg),
+            ProcessingError::TransformationFailed(msg) => write!(f, "Transformation failed: {}", msg),
+            ProcessingError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    config: HashMap<String, String>,
+}
+
+impl DataProcessor {
+    pub fn new(config: HashMap<String, String>) -> Self {
+        DataProcessor { config }
+    }
+
+    pub fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.name.is_empty() {
+            return Err(ProcessingError::ValidationError("Name cannot be empty".to_string()));
+        }
+        
+        if record.value < 0.0 {
+            return Err(ProcessingError::ValidationError("Value must be non-negative".to_string()));
+        }
+        
+        if let Some(max_tags) = self.config.get("max_tags") {
+            if let Ok(max) = max_tags.parse::<usize>() {
+                if record.tags.len() > max {
+                    return Err(ProcessingError::ValidationError(
+                        format!("Exceeded maximum tags limit of {}", max)
+                    ));
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    pub fn transform_record(&self, record: &DataRecord) -> Result<DataRecord, ProcessingError> {
+        let mut transformed = record.clone();
+        
+        if let Some(prefix) = self.config.get("name_prefix") {
+            transformed.name = format!("{}{}", prefix, transformed.name);
+        }
+        
+        if let Some(factor_str) = self.config.get("value_multiplier") {
+            if let Ok(factor) = factor_str.parse::<f64>() {
+                transformed.value *= factor;
+                
+                if transformed.value.is_infinite() || transformed.value.is_nan() {
+                    return Err(ProcessingError::TransformationFailed(
+                        "Value transformation produced invalid result".to_string()
+                    ));
+                }
+            }
+        }
+        
+        if let Some(default_tag) = self.config.get("default_tag") {
+            if transformed.tags.is_empty() {
+                transformed.tags.push(default_tag.clone());
+            }
+        }
+        
+        self.validate_record(&transformed)?;
+        
+        Ok(transformed)
+    }
+
+    pub fn process_batch(&self, records: Vec<DataRecord>) -> Result<Vec<DataRecord>, ProcessingError> {
+        let mut results = Vec::with_capacity(records.len());
+        
+        for (index, record) in records.into_iter().enumerate() {
+            match self.transform_record(&record) {
+                Ok(transformed) => results.push(transformed),
+                Err(e) => return Err(ProcessingError::InvalidData(
+                    format!("Failed to process record at index {}: {}", index, e)
+                )),
+            }
+        }
+        
+        Ok(results)
+    }
+}
+
+pub fn calculate_statistics(records: &[DataRecord]) -> HashMap<String, f64> {
+    let mut stats = HashMap::new();
+    
+    if records.is_empty() {
+        return stats;
+    }
+    
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let count = records.len() as f64;
+    let avg = sum / count;
+    
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - avg).powi(2))
+        .sum::<f64>() / count;
+    
+    let max_value = records.iter()
+        .map(|r| r.value)
+        .fold(f64::NEG_INFINITY, f64::max);
+    
+    let min_value = records.iter()
+        .map(|r| r.value)
+        .fold(f64::INFINITY, f64::min);
+    
+    stats.insert("total_records".to_string(), count);
+    stats.insert("sum".to_string(), sum);
+    stats.insert("average".to_string(), avg);
+    stats.insert("variance".to_string(), variance);
+    stats.insert("max".to_string(), max_value);
+    stats.insert("min".to_string(), min_value);
+    
+    stats
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_validation_success() {
+        let config = HashMap::new();
+        let processor = DataProcessor::new(config);
+        let record = DataRecord {
+            id: 1,
+            name: "Test".to_string(),
+            value: 100.0,
+            tags: vec!["tag1".to_string(), "tag2".to_string()],
+        };
+        
+        assert!(processor.validate_record(&record).is_ok());
+    }
+    
+    #[test]
+    fn test_validation_empty_name() {
+        let config = HashMap::new();
+        let processor = DataProcessor::new(config);
+        let record = DataRecord {
+            id: 1,
+            name: "".to_string(),
+            value: 100.0,
+            tags: vec![],
+        };
+        
+        assert!(processor.validate_record(&record).is_err());
+    }
+    
+    #[test]
+    fn test_transform_with_prefix() {
+        let mut config = HashMap::new();
+        config.insert("name_prefix".to_string(), "PREFIX_".to_string());
+        
+        let processor = DataProcessor::new(config);
+        let record = DataRecord {
+            id: 1,
+            name: "original".to_string(),
+            value: 10.0,
+            tags: vec![],
+        };
+        
+        let transformed = processor.transform_record(&record).unwrap();
+        assert_eq!(transformed.name, "PREFIX_original");
+    }
+    
+    #[test]
+    fn test_calculate_statistics() {
+        let records = vec![
+            DataRecord {
+                id: 1,
+                name: "A".to_string(),
+                value: 10.0,
+                tags: vec![],
+            },
+            DataRecord {
+                id: 2,
+                name: "B".to_string(),
+                value: 20.0,
+                tags: vec![],
+            },
+            DataRecord {
+                id: 3,
+                name: "C".to_string(),
+                value: 30.0,
+                tags: vec![],
+            },
+        ];
+        
+        let stats = calculate_statistics(&records);
+        
+        assert_eq!(stats.get("total_records"), Some(&3.0));
+        assert_eq!(stats.get("sum"), Some(&60.0));
+        assert_eq!(stats.get("average"), Some(&20.0));
+        assert_eq!(stats.get("min"), Some(&10.0));
+        assert_eq!(stats.get("max"), Some(&30.0));
+    }
+}
