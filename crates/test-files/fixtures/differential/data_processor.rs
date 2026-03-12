@@ -97,4 +97,114 @@ mod tests {
         assert!((stats.1 - 6.666).abs() < 0.001);
         assert!((stats.2 - 2.581).abs() < 0.001);
     }
+}use std::collections::HashMap;
+
+pub struct DataProcessor {
+    cache: HashMap<String, Vec<f64>>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            cache: HashMap::new(),
+        }
+    }
+
+    pub fn process_dataset(&mut self, key: &str, data: &[f64]) -> Result<Vec<f64>, String> {
+        if data.is_empty() {
+            return Err("Empty dataset provided".to_string());
+        }
+
+        if let Some(cached) = self.cache.get(key) {
+            return Ok(cached.clone());
+        }
+
+        let validated = self.validate_data(data)?;
+        let normalized = self.normalize_data(&validated);
+        let transformed = self.apply_transformations(&normalized);
+
+        self.cache.insert(key.to_string(), transformed.clone());
+        Ok(transformed)
+    }
+
+    fn validate_data(&self, data: &[f64]) -> Result<Vec<f64>, String> {
+        let mut result = Vec::with_capacity(data.len());
+        
+        for &value in data {
+            if !value.is_finite() {
+                return Err("Invalid numeric value detected".to_string());
+            }
+            result.push(value);
+        }
+        
+        Ok(result)
+    }
+
+    fn normalize_data(&self, data: &[f64]) -> Vec<f64> {
+        if data.len() < 2 {
+            return data.to_vec();
+        }
+
+        let mean: f64 = data.iter().sum::<f64>() / data.len() as f64;
+        let variance: f64 = data.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / data.len() as f64;
+        
+        if variance.abs() < 1e-10 {
+            return vec![0.0; data.len()];
+        }
+
+        data.iter()
+            .map(|&x| (x - mean) / variance.sqrt())
+            .collect()
+    }
+
+    fn apply_transformations(&self, data: &[f64]) -> Vec<f64> {
+        data.iter()
+            .map(|&x| x.powi(2).ln().abs())
+            .collect()
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn cache_stats(&self) -> (usize, usize) {
+        let total_keys = self.cache.len();
+        let total_values: usize = self.cache.values().map(|v| v.len()).sum();
+        (total_keys, total_values)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_dataset() {
+        let mut processor = DataProcessor::new();
+        let result = processor.process_dataset("test", &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_valid_processing() {
+        let mut processor = DataProcessor::new();
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let result = processor.process_dataset("valid", &data);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 5);
+    }
+
+    #[test]
+    fn test_cache_functionality() {
+        let mut processor = DataProcessor::new();
+        let data = vec![10.0, 20.0];
+        
+        let first_result = processor.process_dataset("cached", &data).unwrap();
+        let second_result = processor.process_dataset("cached", &data).unwrap();
+        
+        assert_eq!(first_result, second_result);
+        assert_eq!(processor.cache_stats().0, 1);
+    }
 }
