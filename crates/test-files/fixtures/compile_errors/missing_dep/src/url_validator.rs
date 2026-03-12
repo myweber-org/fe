@@ -92,4 +92,50 @@ mod tests {
         assert_eq!(validator.extract_domain("http://127.0.0.1:3000"), Some("127.0.0.1".to_string()));
         assert_eq!(validator.extract_domain("invalid-url"), None);
     }
+}use regex::Regex;
+
+pub struct UrlValidator {
+    pattern: Regex,
+}
+
+impl UrlValidator {
+    pub fn new() -> Self {
+        let pattern = Regex::new(r"^https?://(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*)$")
+            .expect("Invalid regex pattern");
+        
+        UrlValidator { pattern }
+    }
+
+    pub fn is_valid(&self, url: &str) -> bool {
+        self.pattern.is_match(url)
+    }
+}
+
+impl Default for UrlValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_urls() {
+        let validator = UrlValidator::new();
+        
+        assert!(validator.is_valid("https://example.com"));
+        assert!(validator.is_valid("http://subdomain.example.org/path"));
+        assert!(validator.is_valid("https://www.google.com/search?q=rust"));
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        let validator = UrlValidator::new();
+        
+        assert!(!validator.is_valid("not-a-url"));
+        assert!(!validator.is_valid("ftp://example.com"));
+        assert!(!validator.is_valid("https://"));
+    }
 }
