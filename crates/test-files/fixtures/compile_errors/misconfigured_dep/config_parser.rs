@@ -1,82 +1,95 @@
 use std::collections::HashMap;
 use std::env;
-use std::fs;
+use regex::Regex;
 
-pub struct Config {
+pub struct ConfigParser {
     values: HashMap<String, String>,
 }
 
-impl Config {
-    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = fs::read_to_string(path)?;
-        let mut values = HashMap::new();
+impl ConfigParser {
+    pub fn new() -> Self {
+        ConfigParser {
+            values: HashMap::new(),
+        }
+    }
 
+    pub fn load_from_str(&mut self, content: &str) -> Result<(), String> {
+        let env_var_pattern = Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}").unwrap();
+        
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
-
-            if let Some((key, value)) = trimmed.split_once('=') {
-                let key = key.trim().to_string();
-                let processed_value = Self::process_value(value.trim());
-                values.insert(key, processed_value);
+            
+            if let Some(equal_pos) = trimmed.find('=') {
+                let key = trimmed[..equal_pos].trim().to_string();
+                let mut value = trimmed[equal_pos + 1..].trim().to_string();
+                
+                value = env_var_pattern.replace_all(&value, |caps: &regex::Captures| {
+                    let var_name = &caps[1];
+                    env::var(var_name).unwrap_or_else(|_| String::new())
+                }).to_string();
+                
+                self.values.insert(key, value);
             }
         }
-
-        Ok(Config { values })
-    }
-
-    fn process_value(value: &str) -> String {
-        if value.starts_with('$') {
-            let var_name = &value[1..];
-            env::var(var_name).unwrap_or_else(|_| value.to_string())
-        } else {
-            value.to_string()
-        }
+        
+        Ok(())
     }
 
     pub fn get(&self, key: &str) -> Option<&String> {
         self.values.get(key)
     }
 
+    pub fn get_or_default(&self, key: &str, default: &str) -> String {
+        self.values.get(key).map(|s| s.as_str()).unwrap_or(default).to_string()
+    }
+
     pub fn contains_key(&self, key: &str) -> bool {
         self.values.contains_key(key)
+    }
+
+    pub fn all_keys(&self) -> Vec<&String> {
+        self.values.keys().collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     #[test]
     fn test_basic_parsing() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "HOST=localhost").unwrap();
-        writeln!(file, "PORT=8080").unwrap();
-        writeln!(file, "# This is a comment").unwrap();
-        writeln!(file, "").unwrap();
-        writeln!(file, "TIMEOUT=30").unwrap();
-
-        let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("HOST"), Some(&"localhost".to_string()));
-        assert_eq!(config.get("PORT"), Some(&"8080".to_string()));
-        assert_eq!(config.get("TIMEOUT"), Some(&"30".to_string()));
-        assert_eq!(config.get("MISSING"), None);
+        let mut parser = ConfigParser::new();
+        let config = r#"
+            server_host=localhost
+            server_port=8080
+            # This is a comment
+            debug_mode=true
+        "#;
+        
+        parser.load_from_str(config).unwrap();
+        
+        assert_eq!(parser.get("server_host"), Some(&"localhost".to_string()));
+        assert_eq!(parser.get("server_port"), Some(&"8080".to_string()));
+        assert_eq!(parser.get("debug_mode"), Some(&"true".to_string()));
+        assert_eq!(parser.get("nonexistent"), None);
     }
 
     #[test]
-    fn test_env_substitution() {
-        env::set_var("DB_PASSWORD", "secret123");
+    fn test_env_variable_substitution() {
+        env::set_var("APP_DB_HOST", "postgres-server");
         
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "PASSWORD=$DB_PASSWORD").unwrap();
-        writeln!(file, "NORMAL=value").unwrap();
-
-        let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.get("PASSWORD"), Some(&"secret123".to_string()));
-        assert_eq!(config.get("NORMAL"), Some(&"value".to_string()));
+        let mut parser = ConfigParser::new();
+        let config = r#"
+            database_host=${APP_DB_HOST}
+            database_port=${UNDEFINED_VAR:-5432}
+        "#;
+        
+        parser.load_from_str(config).unwrap();
+        
+        assert_eq!(parser.get("database_host"), Some(&"postgres-server".to_string()));
+        assert_eq!(parser.get("database_port"), Some(&"".to_string()));
     }
 }
