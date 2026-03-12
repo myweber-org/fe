@@ -832,4 +832,132 @@ mod tests {
             assert_eq!(data[2], 1.0);
         }
     }
+}use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::collections::HashMap;
+
+pub struct DataProcessor {
+    data: Vec<f64>,
+    frequency_map: HashMap<String, u32>,
+}
+
+impl DataProcessor {
+    pub fn new() -> Self {
+        DataProcessor {
+            data: Vec::new(),
+            frequency_map: HashMap::new(),
+        }
+    }
+
+    pub fn load_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        
+        for line in reader.lines() {
+            let line = line?;
+            let parts: Vec<&str> = line.split(',').collect();
+            
+            if let Some(first) = parts.first() {
+                if let Ok(value) = first.parse::<f64>() {
+                    self.data.push(value);
+                }
+                
+                let key = first.to_string();
+                *self.frequency_map.entry(key).or_insert(0) += 1;
+            }
+        }
+        
+        Ok(())
+    }
+
+    pub fn calculate_mean(&self) -> Option<f64> {
+        if self.data.is_empty() {
+            return None;
+        }
+        
+        let sum: f64 = self.data.iter().sum();
+        Some(sum / self.data.len() as f64)
+    }
+
+    pub fn calculate_median(&mut self) -> Option<f64> {
+        if self.data.is_empty() {
+            return None;
+        }
+        
+        self.data.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mid = self.data.len() / 2;
+        
+        if self.data.len() % 2 == 0 {
+            Some((self.data[mid - 1] + self.data[mid]) / 2.0)
+        } else {
+            Some(self.data[mid])
+        }
+    }
+
+    pub fn calculate_standard_deviation(&self) -> Option<f64> {
+        if self.data.len() < 2 {
+            return None;
+        }
+        
+        let mean = self.calculate_mean()?;
+        let variance: f64 = self.data.iter()
+            .map(|&value| {
+                let diff = value - mean;
+                diff * diff
+            })
+            .sum::<f64>() / (self.data.len() - 1) as f64;
+        
+        Some(variance.sqrt())
+    }
+
+    pub fn get_top_frequencies(&self, count: usize) -> Vec<(&String, &u32)> {
+        let mut entries: Vec<_> = self.frequency_map.iter().collect();
+        entries.sort_by(|a, b| b.1.cmp(a.1));
+        entries.into_iter().take(count).collect()
+    }
+
+    pub fn data_summary(&self) -> String {
+        let mean = self.calculate_mean().unwrap_or(0.0);
+        let std_dev = self.calculate_standard_deviation().unwrap_or(0.0);
+        let min = self.data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let max = self.data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        
+        format!(
+            "Records: {}, Mean: {:.2}, Std Dev: {:.2}, Range: [{:.2}, {:.2}]",
+            self.data.len(),
+            mean,
+            std_dev,
+            min,
+            max
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_data_processing() {
+        let mut processor = DataProcessor::new();
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "10.5").unwrap();
+        writeln!(temp_file, "20.3").unwrap();
+        writeln!(temp_file, "15.7").unwrap();
+        writeln!(temp_file, "10.5").unwrap();
+        
+        processor.load_csv(temp_file.path().to_str().unwrap()).unwrap();
+        
+        assert_eq!(processor.calculate_mean(), Some(14.25));
+        assert_eq!(processor.calculate_median(), Some(13.1));
+        assert!(processor.calculate_standard_deviation().unwrap() > 4.0);
+        
+        let top_freq = processor.get_top_frequencies(1);
+        assert_eq!(top_freq[0].0, "10.5");
+        assert_eq!(*top_freq[0].1, 2);
+    }
 }
