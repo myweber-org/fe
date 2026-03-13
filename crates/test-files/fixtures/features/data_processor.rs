@@ -1,18 +1,19 @@
 
-use csv::Reader;
-use serde::Deserialize;
 use std::error::Error;
 use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
-#[derive(Debug, Deserialize)]
-struct Record {
-    id: u32,
-    value: f64,
-    category: String,
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub id: u32,
+    pub name: String,
+    pub value: f64,
+    pub timestamp: String,
 }
 
 pub struct DataProcessor {
-    records: Vec<Record>,
+    records: Vec<DataRecord>,
 }
 
 impl DataProcessor {
@@ -22,42 +23,69 @@ impl DataProcessor {
         }
     }
 
-    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn Error>> {
-        let file = File::open(file_path)?;
-        let mut rdr = Reader::from_reader(file);
-        
-        for result in rdr.deserialize() {
-            let record: Record = result?;
+    pub fn load_from_csv<P: AsRef<Path>>(&mut self, path: P) -> Result<usize, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
+
+        for (index, line) in reader.lines().enumerate() {
+            let line = line?;
+            
+            if index == 0 {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() != 4 {
+                continue;
+            }
+
+            let id = parts[0].parse::<u32>()?;
+            let name = parts[1].to_string();
+            let value = parts[2].parse::<f64>()?;
+            let timestamp = parts[3].to_string();
+
+            let record = DataRecord {
+                id,
+                name,
+                value,
+                timestamp,
+            };
+
             self.records.push(record);
+            count += 1;
         }
-        
-        Ok(())
+
+        Ok(count)
     }
 
-    pub fn calculate_mean(&self) -> Option<f64> {
-        if self.records.is_empty() {
-            return None;
-        }
-        
-        let sum: f64 = self.records.iter().map(|r| r.value).sum();
-        Some(sum / self.records.len() as f64)
-    }
-
-    pub fn filter_by_category(&self, category: &str) -> Vec<&Record> {
+    pub fn filter_by_value(&self, threshold: f64) -> Vec<DataRecord> {
         self.records
             .iter()
-            .filter(|r| r.category == category)
+            .filter(|record| record.value >= threshold)
+            .cloned()
             .collect()
     }
 
-    pub fn find_max_value(&self) -> Option<&Record> {
-        self.records.iter().max_by(|a, b| {
-            a.value.partial_cmp(&b.value).unwrap()
-        })
+    pub fn calculate_average(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+
+        let sum: f64 = self.records.iter().map(|record| record.value).sum();
+        Some(sum / self.records.len() as f64)
+    }
+
+    pub fn find_by_id(&self, target_id: u32) -> Option<&DataRecord> {
+        self.records.iter().find(|record| record.id == target_id)
     }
 
     pub fn record_count(&self) -> usize {
         self.records.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
     }
 }
 
@@ -68,28 +96,30 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_data_processing() {
+    fn test_data_processor() {
         let mut processor = DataProcessor::new();
         
         let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "id,value,category").unwrap();
-        writeln!(temp_file, "1,10.5,category_a").unwrap();
-        writeln!(temp_file, "2,20.3,category_b").unwrap();
-        writeln!(temp_file, "3,15.7,category_a").unwrap();
-        
-        let result = processor.load_from_csv(temp_file.path().to_str().unwrap());
-        assert!(result.is_ok());
+        writeln!(temp_file, "id,name,value,timestamp").unwrap();
+        writeln!(temp_file, "1,test1,10.5,2023-01-01").unwrap();
+        writeln!(temp_file, "2,test2,20.3,2023-01-02").unwrap();
+        writeln!(temp_file, "3,test3,5.7,2023-01-03").unwrap();
+
+        let count = processor.load_from_csv(temp_file.path()).unwrap();
+        assert_eq!(count, 3);
         assert_eq!(processor.record_count(), 3);
-        
-        let mean = processor.calculate_mean();
-        assert!(mean.is_some());
-        assert!((mean.unwrap() - 15.5).abs() < 0.1);
-        
-        let category_a_records = processor.filter_by_category("category_a");
-        assert_eq!(category_a_records.len(), 2);
-        
-        let max_record = processor.find_max_value();
-        assert!(max_record.is_some());
-        assert_eq!(max_record.unwrap().id, 2);
+
+        let filtered = processor.filter_by_value(15.0);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, 2);
+
+        let average = processor.calculate_average().unwrap();
+        assert!((average - 12.166666).abs() < 0.0001);
+
+        let found = processor.find_by_id(1).unwrap();
+        assert_eq!(found.name, "test1");
+
+        processor.clear();
+        assert_eq!(processor.record_count(), 0);
     }
 }
