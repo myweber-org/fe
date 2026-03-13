@@ -158,3 +158,109 @@ mod tests {
         assert!(result.is_err());
     }
 }
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+
+pub struct Config {
+    values: HashMap<String, String>,
+}
+
+impl Config {
+    pub fn from_file(path: &str) -> Result<Self, String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+        
+        let mut values = HashMap::new();
+        
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            
+            if let Some((key, value)) = trimmed.split_once('=') {
+                let key = key.trim().to_string();
+                let mut value = value.trim().to_string();
+                
+                // Replace environment variables in format ${VAR_NAME}
+                value = Self::expand_env_vars(&value);
+                
+                values.insert(key, value);
+            }
+        }
+        
+        Ok(Config { values })
+    }
+    
+    fn expand_env_vars(input: &str) -> String {
+        let mut result = input.to_string();
+        let mut start = 0;
+        
+        while let Some(begin) = result[start..].find("${") {
+            let begin = start + begin;
+            if let Some(end) = result[begin..].find('}') {
+                let end = begin + end;
+                let var_name = &result[begin + 2..end];
+                
+                if let Ok(var_value) = env::var(var_name) {
+                    result.replace_range(begin..=end, &var_value);
+                    start = begin + var_value.len();
+                } else {
+                    start = end + 1;
+                }
+            } else {
+                break;
+            }
+        }
+        
+        result
+    }
+    
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.values.get(key)
+    }
+    
+    pub fn get_or_default(&self, key: &str, default: &str) -> String {
+        self.values.get(key)
+            .map(|s| s.as_str())
+            .unwrap_or(default)
+            .to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    
+    #[test]
+    fn test_basic_parsing() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "DATABASE_URL=postgres://localhost/mydb").unwrap();
+        writeln!(file, "# This is a comment").unwrap();
+        writeln!(file, "PORT=8080").unwrap();
+        
+        let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.get("DATABASE_URL").unwrap(), "postgres://localhost/mydb");
+        assert_eq!(config.get("PORT").unwrap(), "8080");
+        assert!(config.get("NONEXISTENT").is_none());
+    }
+    
+    #[test]
+    fn test_env_var_expansion() {
+        env::set_var("APP_PORT", "3000");
+        env::set_var("DB_HOST", "localhost");
+        
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "PORT=${APP_PORT}").unwrap();
+        writeln!(file, "HOST=${DB_HOST}").unwrap();
+        writeln!(file, "NESTED=server-${DB_HOST}-${APP_PORT}").unwrap();
+        
+        let config = Config::from_file(file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.get("PORT").unwrap(), "3000");
+        assert_eq!(config.get("HOST").unwrap(), "localhost");
+        assert_eq!(config.get("NESTED").unwrap(), "server-localhost-3000");
+    }
+}
