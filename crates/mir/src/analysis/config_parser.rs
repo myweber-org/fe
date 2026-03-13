@@ -282,4 +282,171 @@ mod tests {
         assert_eq!(config.get("SECRET_KEY").unwrap(), "mysecret123");
         assert_eq!(config.get("HOST").unwrap(), "localhost:3000");
     }
+}use std::collections::HashMap;
+use std::fs;
+
+#[derive(Debug, PartialEq)]
+pub struct Config {
+    pub server: ServerConfig,
+    pub database: DatabaseConfig,
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub enable_ssl: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct DatabaseConfig {
+    pub url: String,
+    pub max_connections: u32,
+    pub timeout_seconds: u32,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct LoggingConfig {
+    pub level: String,
+    pub file_path: String,
+    pub max_file_size_mb: u32,
+}
+
+#[derive(Debug)]
+pub enum ConfigError {
+    FileNotFound(String),
+    ParseError(String),
+    ValidationError(String),
+}
+
+impl Config {
+    pub fn from_file(path: &str) -> Result<Self, ConfigError> {
+        let content = fs::read_to_string(path)
+            .map_err(|_| ConfigError::FileNotFound(path.to_string()))?;
+
+        let parsed: HashMap<String, toml::Value> = toml::from_str(&content)
+            .map_err(|e| ConfigError::ParseError(e.to_string()))?;
+
+        Self::validate_and_build(parsed)
+    }
+
+    fn validate_and_build(data: HashMap<String, toml::Value>) -> Result<Self, ConfigError> {
+        let server_table = data.get("server")
+            .and_then(|v| v.as_table())
+            .ok_or_else(|| ConfigError::ValidationError("Missing 'server' section".to_string()))?;
+
+        let database_table = data.get("database")
+            .and_then(|v| v.as_table())
+            .ok_or_else(|| ConfigError::ValidationError("Missing 'database' section".to_string()))?;
+
+        let logging_table = data.get("logging")
+            .and_then(|v| v.as_table())
+            .ok_or_else(|| ConfigError::ValidationError("Missing 'logging' section".to_string()))?;
+
+        let server = ServerConfig {
+            host: server_table.get("host")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| ConfigError::ValidationError("Invalid server.host".to_string()))?,
+            port: server_table.get("port")
+                .and_then(|v| v.as_integer())
+                .map(|p| p as u16)
+                .ok_or_else(|| ConfigError::ValidationError("Invalid server.port".to_string()))?,
+            enable_ssl: server_table.get("enable_ssl")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        };
+
+        let database = DatabaseConfig {
+            url: database_table.get("url")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| ConfigError::ValidationError("Invalid database.url".to_string()))?,
+            max_connections: database_table.get("max_connections")
+                .and_then(|v| v.as_integer())
+                .map(|c| c as u32)
+                .ok_or_else(|| ConfigError::ValidationError("Invalid database.max_connections".to_string()))?,
+            timeout_seconds: database_table.get("timeout_seconds")
+                .and_then(|v| v.as_integer())
+                .map(|t| t as u32)
+                .unwrap_or(30),
+        };
+
+        let logging = LoggingConfig {
+            level: logging_table.get("level")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "info".to_string()),
+            file_path: logging_table.get("file_path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "app.log".to_string()),
+            max_file_size_mb: logging_table.get("max_file_size_mb")
+                .and_then(|v| v.as_integer())
+                .map(|m| m as u32)
+                .unwrap_or(100),
+        };
+
+        Ok(Config { server, database, logging })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_config() {
+        let toml_content = r#"
+            [server]
+            host = "localhost"
+            port = 8080
+            enable_ssl = true
+
+            [database]
+            url = "postgresql://localhost/mydb"
+            max_connections = 20
+            timeout_seconds = 10
+
+            [logging]
+            level = "debug"
+            file_path = "/var/log/app.log"
+            max_file_size_mb = 200
+        "#;
+
+        let temp_file = "test_config.toml";
+        fs::write(temp_file, toml_content).unwrap();
+
+        let config = Config::from_file(temp_file).unwrap();
+        
+        assert_eq!(config.server.host, "localhost");
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.server.enable_ssl, true);
+        assert_eq!(config.database.url, "postgresql://localhost/mydb");
+        assert_eq!(config.database.max_connections, 20);
+        assert_eq!(config.database.timeout_seconds, 10);
+        assert_eq!(config.logging.level, "debug");
+        assert_eq!(config.logging.file_path, "/var/log/app.log");
+        assert_eq!(config.logging.max_file_size_mb, 200);
+
+        fs::remove_file(temp_file).unwrap();
+    }
+
+    #[test]
+    fn test_missing_section() {
+        let toml_content = r#"
+            [server]
+            host = "localhost"
+            port = 8080
+        "#;
+
+        let temp_file = "test_missing.toml";
+        fs::write(temp_file, toml_content).unwrap();
+
+        let result = Config::from_file(temp_file);
+        assert!(matches!(result, Err(ConfigError::ValidationError(_))));
+
+        fs::remove_file(temp_file).unwrap();
+    }
 }
