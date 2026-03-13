@@ -523,4 +523,100 @@ mod tests {
         assert!((stats.0 - 20.0).abs() < 0.001);
         assert!((stats.2 - 8.164965).abs() < 0.001);
     }
+}use csv::{Reader, Writer};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    value: f64,
+    active: bool,
+}
+
+fn process_data(input_path: &str, output_path: &str, min_value: f64) -> Result<(), Box<dyn Error>> {
+    let mut reader = Reader::from_path(input_path)?;
+    let mut writer = Writer::from_path(output_path)?;
+
+    for result in reader.deserialize() {
+        let record: Record = result?;
+        
+        if record.value >= min_value && record.active {
+            writer.serialize(&record)?;
+        }
+    }
+
+    writer.flush()?;
+    Ok(())
+}
+
+fn calculate_statistics(records: &[Record]) -> (f64, f64, f64) {
+    let count = records.len() as f64;
+    let sum: f64 = records.iter().map(|r| r.value).sum();
+    let mean = sum / count;
+    
+    let variance: f64 = records.iter()
+        .map(|r| (r.value - mean).powi(2))
+        .sum::<f64>() / count;
+    
+    let std_dev = variance.sqrt();
+    
+    (mean, variance, std_dev)
+}
+
+fn validate_record(record: &Record) -> bool {
+    !record.name.is_empty() && record.id > 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_process_data() {
+        let input_data = "id,name,value,active\n1,test1,10.5,true\n2,test2,5.0,false\n";
+        let input_file = NamedTempFile::new().unwrap();
+        std::fs::write(input_file.path(), input_data).unwrap();
+        
+        let output_file = NamedTempFile::new().unwrap();
+        
+        let result = process_data(
+            input_file.path().to_str().unwrap(),
+            output_file.path().to_str().unwrap(),
+            8.0
+        );
+        
+        assert!(result.is_ok());
+        
+        let output = std::fs::read_to_string(output_file.path()).unwrap();
+        assert!(output.contains("test1"));
+        assert!(!output.contains("test2"));
+    }
+
+    #[test]
+    fn test_calculate_statistics() {
+        let records = vec![
+            Record { id: 1, name: "a".to_string(), value: 10.0, active: true },
+            Record { id: 2, name: "b".to_string(), value: 20.0, active: true },
+            Record { id: 3, name: "c".to_string(), value: 30.0, active: true },
+        ];
+        
+        let (mean, variance, std_dev) = calculate_statistics(&records);
+        
+        assert_eq!(mean, 20.0);
+        assert_eq!(variance, 66.66666666666667);
+        assert_eq!(std_dev, 8.16496580927726);
+    }
+
+    #[test]
+    fn test_validate_record() {
+        let valid_record = Record { id: 1, name: "test".to_string(), value: 10.0, active: true };
+        let invalid_record = Record { id: 0, name: "".to_string(), value: 10.0, active: true };
+        
+        assert!(validate_record(&valid_record));
+        assert!(!validate_record(&invalid_record));
+    }
 }
