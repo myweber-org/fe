@@ -1,74 +1,64 @@
+
 use rand::Rng;
-use std::io;
+use std::collections::HashSet;
 
-const DEFAULT_LENGTH: usize = 16;
-const UPPERCASE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const LOWERCASE: &str = "abcdefghijklmnopqrstuvwxyz";
-const NUMBERS: &str = "0123456789";
-const SYMBOLS: &str = "!@#$%^&*()_+-=[]{}|;:,.<>?";
-
-struct PasswordGenerator {
+pub struct PasswordGenerator {
     length: usize,
     use_uppercase: bool,
     use_lowercase: bool,
-    use_numbers: bool,
-    use_symbols: bool,
+    use_digits: bool,
+    use_special: bool,
 }
 
 impl PasswordGenerator {
-    fn new() -> Self {
-        PasswordGenerator {
-            length: DEFAULT_LENGTH,
+    pub fn new(length: usize) -> Self {
+        Self {
+            length,
             use_uppercase: true,
             use_lowercase: true,
-            use_numbers: true,
-            use_symbols: true,
+            use_digits: true,
+            use_special: true,
         }
     }
 
-    fn with_length(mut self, length: usize) -> Self {
-        self.length = length;
-        self
-    }
-
-    fn with_uppercase(mut self, enable: bool) -> Self {
+    pub fn uppercase(mut self, enable: bool) -> Self {
         self.use_uppercase = enable;
         self
     }
 
-    fn with_lowercase(mut self, enable: bool) -> Self {
+    pub fn lowercase(mut self, enable: bool) -> Self {
         self.use_lowercase = enable;
         self
     }
 
-    fn with_numbers(mut self, enable: bool) -> Self {
-        self.use_numbers = enable;
+    pub fn digits(mut self, enable: bool) -> Self {
+        self.use_digits = enable;
         self
     }
 
-    fn with_symbols(mut self, enable: bool) -> Self {
-        self.use_symbols = enable;
+    pub fn special(mut self, enable: bool) -> Self {
+        self.use_special = enable;
         self
     }
 
-    fn generate(&self) -> Result<String, &'static str> {
+    pub fn generate(&self) -> Result<String, &'static str> {
         if self.length == 0 {
             return Err("Password length must be greater than 0");
         }
 
-        let mut character_pool = String::new();
+        let mut character_pool = Vec::new();
         
         if self.use_uppercase {
-            character_pool.push_str(UPPERCASE);
+            character_pool.extend(b'A'..=b'Z');
         }
         if self.use_lowercase {
-            character_pool.push_str(LOWERCASE);
+            character_pool.extend(b'a'..=b'z');
         }
-        if self.use_numbers {
-            character_pool.push_str(NUMBERS);
+        if self.use_digits {
+            character_pool.extend(b'0'..=b'9');
         }
-        if self.use_symbols {
-            character_pool.push_str(SYMBOLS);
+        if self.use_special {
+            character_pool.extend(b"!@#$%^&*()_+-=[]{}|;:,.<>?");
         }
 
         if character_pool.is_empty() {
@@ -76,67 +66,84 @@ impl PasswordGenerator {
         }
 
         let mut rng = rand::thread_rng();
-        let password: String = (0..self.length)
-            .map(|_| {
-                let idx = rng.gen_range(0..character_pool.len());
-                character_pool.chars().nth(idx).unwrap()
-            })
-            .collect();
+        let mut password = String::with_capacity(self.length);
+        let mut used_chars = HashSet::new();
+
+        while password.len() < self.length {
+            let idx = rng.gen_range(0..character_pool.len());
+            let ch = character_pool[idx] as char;
+            
+            if used_chars.insert(ch) || password.len() >= character_pool.len() {
+                password.push(ch);
+            }
+        }
 
         Ok(password)
     }
 }
 
-fn get_user_input(prompt: &str) -> String {
-    println!("{}", prompt);
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).expect("Failed to read line");
-    input.trim().to_string()
-}
+pub fn validate_password_strength(password: &str) -> bool {
+    let mut has_upper = false;
+    let mut has_lower = false;
+    let mut has_digit = false;
+    let mut has_special = false;
 
-fn parse_bool_input(input: &str) -> bool {
-    match input.to_lowercase().as_str() {
-        "y" | "yes" | "true" | "1" => true,
-        _ => false,
-    }
-}
-
-fn main() {
-    println!("=== Secure Password Generator ===");
-    
-    let length_input = get_user_input("Enter password length (default: 16):");
-    let length = if length_input.is_empty() {
-        DEFAULT_LENGTH
-    } else {
-        length_input.parse().unwrap_or(DEFAULT_LENGTH)
-    };
-
-    let use_uppercase = parse_bool_input(&get_user_input("Include uppercase letters? (Y/n):"));
-    let use_lowercase = parse_bool_input(&get_user_input("Include lowercase letters? (Y/n):"));
-    let use_numbers = parse_bool_input(&get_user_input("Include numbers? (Y/n):"));
-    let use_symbols = parse_bool_input(&get_user_input("Include symbols? (Y/n):"));
-
-    let generator = PasswordGenerator::new()
-        .with_length(length)
-        .with_uppercase(use_uppercase)
-        .with_lowercase(use_lowercase)
-        .with_numbers(use_numbers)
-        .with_symbols(use_symbols);
-
-    match generator.generate() {
-        Ok(password) => {
-            println!("\nGenerated Password: {}", password);
-            println!("Password Length: {}", password.len());
-            
-            let mut strength = "Weak";
-            if password.len() >= 12 && use_uppercase && use_lowercase && use_numbers && use_symbols {
-                strength = "Strong";
-            } else if password.len() >= 8 && (use_uppercase || use_lowercase) && use_numbers {
-                strength = "Medium";
-            }
-            
-            println!("Estimated Strength: {}", strength);
+    for ch in password.chars() {
+        if ch.is_ascii_uppercase() {
+            has_upper = true;
+        } else if ch.is_ascii_lowercase() {
+            has_lower = true;
+        } else if ch.is_ascii_digit() {
+            has_digit = true;
+        } else if ch.is_ascii_punctuation() {
+            has_special = true;
         }
-        Err(e) => println!("Error: {}", e),
+    }
+
+    password.len() >= 8 && has_upper && has_lower && has_digit && has_special
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_password_generation() {
+        let generator = PasswordGenerator::new(12);
+        let password = generator.generate().unwrap();
+        assert_eq!(password.len(), 12);
+    }
+
+    #[test]
+    fn test_custom_character_sets() {
+        let generator = PasswordGenerator::new(10)
+            .uppercase(true)
+            .lowercase(false)
+            .digits(true)
+            .special(false);
+        
+        let password = generator.generate().unwrap();
+        assert!(password.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn test_password_strength() {
+        let strong_password = "Abc123!@#";
+        let weak_password = "abc123";
+        
+        assert!(validate_password_strength(strong_password));
+        assert!(!validate_password_strength(weak_password));
+    }
+
+    #[test]
+    fn test_empty_character_set() {
+        let generator = PasswordGenerator::new(10)
+            .uppercase(false)
+            .lowercase(false)
+            .digits(false)
+            .special(false);
+        
+        let result = generator.generate();
+        assert!(result.is_err());
     }
 }
