@@ -340,4 +340,80 @@ mod tests {
         let decrypted_data = fs::read(decrypted_file.path()).unwrap();
         assert_eq!(decrypted_data, plaintext);
     }
+}use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Key, Nonce
+};
+use argon2::{
+    password_hash::{
+        rand_core::OsRng,
+        PasswordHash, PasswordHasher, PasswordVerifier, SaltString
+    },
+    Argon2
+};
+use std::fs;
+use std::io::{Read, Write};
+use std::path::Path;
+
+const NONCE_SIZE: usize = 12;
+const SALT_SIZE: usize = 16;
+
+pub struct FileEncryptor {
+    cipher: Aes256Gcm,
+}
+
+impl FileEncryptor {
+    pub fn from_password(password: &str, salt: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        let argon2 = Argon2::default();
+        let mut key = [0u8; 32];
+        argon2.hash_password_into(password.as_bytes(), salt, &mut key)?;
+        
+        let key = Key::<Aes256Gcm>::from_slice(&key);
+        let cipher = Aes256Gcm::new(key);
+        Ok(FileEncryptor { cipher })
+    }
+
+    pub fn encrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let mut file_data = Vec::new();
+        fs::File::open(input_path)?.read_to_end(&mut file_data)?;
+
+        let mut nonce = [0u8; NONCE_SIZE];
+        OsRng.fill_bytes(&mut nonce);
+
+        let ciphertext = self.cipher.encrypt(Nonce::from_slice(&nonce), file_data.as_ref())?;
+
+        let mut output_file = fs::File::create(output_path)?;
+        output_file.write_all(&nonce)?;
+        output_file.write_all(&ciphertext)?;
+
+        Ok(())
+    }
+
+    pub fn decrypt_file(&self, input_path: &Path, output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let mut encrypted_data = Vec::new();
+        fs::File::open(input_path)?.read_to_end(&mut encrypted_data)?;
+
+        if encrypted_data.len() < NONCE_SIZE {
+            return Err("Invalid encrypted file format".into());
+        }
+
+        let (nonce_bytes, ciphertext) = encrypted_data.split_at(NONCE_SIZE);
+        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let plaintext = self.cipher.decrypt(nonce, ciphertext)?;
+
+        fs::File::create(output_path)?.write_all(&plaintext)?;
+        Ok(())
+    }
+}
+
+pub fn generate_salt() -> [u8; SALT_SIZE] {
+    let mut salt = [0u8; SALT_SIZE];
+    OsRng.fill_bytes(&mut salt);
+    salt
+}
+
+pub fn verify_password(password: &str, stored_hash: &str) -> bool {
+    let parsed_hash = PasswordHash::new(stored_hash).ok()?;
+    Argon2::default().verify_password(password.as_bytes(), &parsed_hash).is_ok()
 }
