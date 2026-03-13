@@ -163,4 +163,88 @@ mod tests {
         let errors = result.unwrap_err();
         assert!(errors.iter().any(|e| e.contains("must be a number")));
     }
+}use serde_json::{Value, json};
+use std::collections::HashSet;
+
+pub struct JsonValidator {
+    required_fields: HashSet<String>,
+    allowed_types: Vec<&'static str>,
+}
+
+impl JsonValidator {
+    pub fn new() -> Self {
+        JsonValidator {
+            required_fields: HashSet::new(),
+            allowed_types: vec!["object", "array", "string", "number", "boolean", "null"],
+        }
+    }
+
+    pub fn add_required_field(&mut self, field: &str) {
+        self.required_fields.insert(field.to_string());
+    }
+
+    pub fn validate(&self, json_str: &str) -> Result<Value, String> {
+        let parsed: Value = serde_json::from_str(json_str)
+            .map_err(|e| format!("Invalid JSON: {}", e))?;
+
+        self.validate_structure(&parsed)?;
+        Ok(parsed)
+    }
+
+    fn validate_structure(&self, value: &Value) -> Result<(), String> {
+        match value {
+            Value::Object(map) => {
+                for field in &self.required_fields {
+                    if !map.contains_key(field) {
+                        return Err(format!("Missing required field: {}", field));
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub fn create_sample_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "age": {"type": "number"},
+                "active": {"type": "boolean"}
+            },
+            "required": ["name"]
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_json() {
+        let mut validator = JsonValidator::new();
+        validator.add_required_field("name");
+        
+        let result = validator.validate(r#"{"name": "John", "age": 30}"#);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_missing_required_field() {
+        let mut validator = JsonValidator::new();
+        validator.add_required_field("name");
+        
+        let result = validator.validate(r#"{"age": 30}"#);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Missing required field"));
+    }
+
+    #[test]
+    fn test_invalid_json() {
+        let validator = JsonValidator::new();
+        let result = validator.validate(r#"{"name": "John""#);
+        assert!(result.is_err());
+    }
 }
