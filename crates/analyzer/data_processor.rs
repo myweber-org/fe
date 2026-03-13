@@ -412,3 +412,198 @@ pub fn filter_by_category(records: Vec<Record>, category: &str) -> Vec<Record> {
         .filter(|r| r.category == category)
         .collect()
 }
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataRecord {
+    pub id: u64,
+    pub value: f64,
+    pub timestamp: i64,
+    pub category: String,
+}
+
+#[derive(Debug)]
+pub enum ProcessingError {
+    InvalidValue(f64),
+    InvalidTimestamp(i64),
+    EmptyCategory,
+    ValidationFailed(String),
+}
+
+impl fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProcessingError::InvalidValue(v) => write!(f, "Invalid value: {}", v),
+            ProcessingError::InvalidTimestamp(t) => write!(f, "Invalid timestamp: {}", t),
+            ProcessingError::EmptyCategory => write!(f, "Category cannot be empty"),
+            ProcessingError::ValidationFailed(msg) => write!(f, "Validation failed: {}", msg),
+        }
+    }
+}
+
+impl Error for ProcessingError {}
+
+pub struct DataProcessor {
+    validation_enabled: bool,
+    max_value_threshold: f64,
+}
+
+impl DataProcessor {
+    pub fn new(validation_enabled: bool, max_value_threshold: f64) -> Self {
+        DataProcessor {
+            validation_enabled,
+            max_value_threshold,
+        }
+    }
+
+    pub fn process_record(&self, record: &DataRecord) -> Result<DataRecord, ProcessingError> {
+        if self.validation_enabled {
+            self.validate_record(record)?;
+        }
+
+        let processed_value = self.transform_value(record.value);
+        let normalized_category = self.normalize_category(&record.category);
+
+        Ok(DataRecord {
+            id: record.id,
+            value: processed_value,
+            timestamp: record.timestamp,
+            category: normalized_category,
+        })
+    }
+
+    fn validate_record(&self, record: &DataRecord) -> Result<(), ProcessingError> {
+        if record.value.is_nan() || record.value.is_infinite() {
+            return Err(ProcessingError::InvalidValue(record.value));
+        }
+
+        if record.value > self.max_value_threshold {
+            return Err(ProcessingError::ValidationFailed(format!(
+                "Value {} exceeds threshold {}",
+                record.value, self.max_value_threshold
+            )));
+        }
+
+        if record.timestamp < 0 {
+            return Err(ProcessingError::InvalidTimestamp(record.timestamp));
+        }
+
+        if record.category.trim().is_empty() {
+            return Err(ProcessingError::EmptyCategory);
+        }
+
+        Ok(())
+    }
+
+    fn transform_value(&self, value: f64) -> f64 {
+        if value < 0.0 {
+            value.abs()
+        } else {
+            value
+        }
+    }
+
+    fn normalize_category(&self, category: &str) -> String {
+        category.trim().to_lowercase()
+    }
+
+    pub fn batch_process(
+        &self,
+        records: Vec<DataRecord>,
+    ) -> (Vec<DataRecord>, Vec<ProcessingError>) {
+        let mut processed = Vec::new();
+        let mut errors = Vec::new();
+
+        for record in records {
+            match self.process_record(&record) {
+                Ok(processed_record) => processed.push(processed_record),
+                Err(err) => errors.push(err),
+            }
+        }
+
+        (processed, errors)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_record_processing() {
+        let processor = DataProcessor::new(true, 1000.0);
+        let record = DataRecord {
+            id: 1,
+            value: 42.5,
+            timestamp: 1625097600,
+            category: String::from("TEMPERATURE"),
+        };
+
+        let result = processor.process_record(&record);
+        assert!(result.is_ok());
+
+        let processed = result.unwrap();
+        assert_eq!(processed.value, 42.5);
+        assert_eq!(processed.category, "temperature");
+    }
+
+    #[test]
+    fn test_negative_value_transformation() {
+        let processor = DataProcessor::new(false, 1000.0);
+        let record = DataRecord {
+            id: 2,
+            value: -15.3,
+            timestamp: 1625097600,
+            category: String::from("pressure"),
+        };
+
+        let result = processor.process_record(&record);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().value, 15.3);
+    }
+
+    #[test]
+    fn test_validation_threshold_exceeded() {
+        let processor = DataProcessor::new(true, 100.0);
+        let record = DataRecord {
+            id: 3,
+            value: 150.0,
+            timestamp: 1625097600,
+            category: String::from("humidity"),
+        };
+
+        let result = processor.process_record(&record);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_batch_processing() {
+        let processor = DataProcessor::new(true, 500.0);
+        let records = vec![
+            DataRecord {
+                id: 1,
+                value: 100.0,
+                timestamp: 1625097600,
+                category: String::from("A"),
+            },
+            DataRecord {
+                id: 2,
+                value: 600.0,
+                timestamp: 1625097600,
+                category: String::from("B"),
+            },
+            DataRecord {
+                id: 3,
+                value: -50.0,
+                timestamp: -100,
+                category: String::from("C"),
+            },
+        ];
+
+        let (processed, errors) = processor.batch_process(records);
+        assert_eq!(processed.len(), 1);
+        assert_eq!(errors.len(), 2);
+    }
+}
