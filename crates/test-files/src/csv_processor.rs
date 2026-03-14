@@ -83,3 +83,61 @@ mod tests {
         std::fs::remove_file(output_path).unwrap();
     }
 }
+use csv::{ReaderBuilder, WriterBuilder};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
+use std::path::Path;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Record {
+    id: u32,
+    name: String,
+    email: String,
+    active: bool,
+}
+
+fn validate_email(email: &str) -> bool {
+    email.contains('@') && email.contains('.')
+}
+
+fn clean_name(name: &str) -> String {
+    name.trim().to_string()
+}
+
+fn process_csv(input_path: &Path, output_path: &Path) -> Result<(), Box<dyn Error>> {
+    let file = File::open(input_path)?;
+    let mut rdr = ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(file);
+
+    let output_file = File::create(output_path)?;
+    let mut wtr = WriterBuilder::new()
+        .has_headers(true)
+        .from_writer(output_file);
+
+    for result in rdr.deserialize() {
+        let mut record: Record = result?;
+        
+        record.name = clean_name(&record.name);
+        
+        if !validate_email(&record.email) {
+            eprintln!("Invalid email for record {}: {}", record.id, record.email);
+            continue;
+        }
+
+        wtr.serialize(&record)?;
+    }
+
+    wtr.flush()?;
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let input = Path::new("data/input.csv");
+    let output = Path::new("data/cleaned_output.csv");
+    
+    process_csv(input, output)?;
+    println!("CSV processing completed successfully");
+    Ok(())
+}
